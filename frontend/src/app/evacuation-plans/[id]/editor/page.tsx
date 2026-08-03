@@ -9,7 +9,7 @@ import dynamic from "next/dynamic";
 import { ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, FileDown, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste } from "lucide-react";
 import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource } from "@/utils/safetyIcons";
 import { CanvasIcon, EraserShape, PlanCanvasHandle } from "@/components/PlanCanvas";
-import { API_URL } from "@/lib/api";
+import { buildApiUrl } from "@/lib/api";
 import jsPDF from "jspdf";
 
 // Dynamically load PlanCanvas with SSR disabled since Konva depends on the DOM
@@ -305,7 +305,7 @@ export default function PlanEditorPage() {
       }
 
       try {
-        const res = await fetch(`${API_URL}/api/plans/${id}/`, {
+        const res = await fetch(buildApiUrl(`/api/plans/${id}/`), {
           headers,
           cache: "no-store",
         });
@@ -345,7 +345,7 @@ export default function PlanEditorPage() {
       if (!("Authorization" in headers)) return;
 
       try {
-        const res = await fetch(`${API_URL}/api/plans/pictograms/`, {
+        const res = await fetch(buildApiUrl(`/api/plans/pictograms/`), {
           headers,
           cache: "no-store",
         });
@@ -487,7 +487,7 @@ export default function PlanEditorPage() {
     const fetchOpenAISettings = async () => {
       setOpenaiSettingsLoading(true);
       try {
-        const res = await fetch(`${API_URL}/api/openai-settings/`, {
+        const res = await fetch(buildApiUrl(`/api/openai-settings/`), {
           headers: getPlanAuthHeaders(),
           cache: "no-store",
         });
@@ -563,7 +563,7 @@ export default function PlanEditorPage() {
     setSaveStatus("Sauvegarde...");
     try {
       // Sync icons to DB
-      const res = await fetch(`${API_URL}/api/plans/${id}/sync-icons/`, {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/sync-icons/`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -590,7 +590,7 @@ export default function PlanEditorPage() {
     setCleaning(true);
     setCleaningText("Nettoyage OpenCV du plan...");
     try {
-      const res = await fetch(`${API_URL}/api/plans/${id}/clean/`, {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/clean/`), {
         method: "POST",
         headers: getPlanAuthHeaders(),
       });
@@ -614,7 +614,7 @@ export default function PlanEditorPage() {
     setCleaning(true);
     setCleaningText("Extraction des murs uniquement...");
     try {
-      const res = await fetch(`${API_URL}/api/plans/${id}/clean-walls/`, {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/clean-walls/`), {
         method: "POST",
         headers: getPlanAuthHeaders(),
       });
@@ -640,7 +640,7 @@ export default function PlanEditorPage() {
 
     setSavingErase(true);
     try {
-      const res = await fetch(`${API_URL}/api/plans/${id}/apply-manual-edit/`, {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/apply-manual-edit/`), {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
         body: JSON.stringify({ image_data: canvas.toDataURL("image/png") })
@@ -670,7 +670,7 @@ export default function PlanEditorPage() {
     setCleaning(true);
     setCleaningText("Retour au plan original...");
     try {
-      const res = await fetch(`${API_URL}/api/plans/${id}/revert/`, {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/revert/`), {
         method: "POST",
         headers: getPlanAuthHeaders(),
       });
@@ -696,7 +696,7 @@ export default function PlanEditorPage() {
 
     setOpenaiKeyStatus(openaiApiKey.trim() ? "Test de la clé saisie..." : "Test de la clé sauvegardée...");
     try {
-      const res = await fetch(`${API_URL}/api/openai/test-key/`, {
+      const res = await fetch(buildApiUrl(`/api/openai/test-key/`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -721,7 +721,7 @@ export default function PlanEditorPage() {
     setOpenaiKeySaving(true);
     setOpenaiKeyStatus(openaiHasSavedKey ? "Remplacement en cours..." : "Sauvegarde en cours...");
     try {
-      const res = await fetch(`${API_URL}/api/openai-settings/save/`, {
+      const res = await fetch(buildApiUrl(`/api/openai-settings/save/`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -754,7 +754,7 @@ export default function PlanEditorPage() {
     setOpenaiKeyDeleting(true);
     setOpenaiKeyStatus("Suppression en cours...");
     try {
-      const res = await fetch(`${API_URL}/api/openai-settings/delete/`, {
+      const res = await fetch(buildApiUrl(`/api/openai-settings/delete/`), {
         method: "DELETE",
         headers: getPlanAuthHeaders(),
       });
@@ -855,7 +855,7 @@ export default function PlanEditorPage() {
 
     setOpenaiCostLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/plans/${id}/openai-clean-cost-estimate/`, {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/openai-clean-cost-estimate/`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -885,7 +885,7 @@ export default function PlanEditorPage() {
     if (!id) return;
     setOpenaiHistoryLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/plans/${id}/openai-clean-history/`, {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/openai-clean-history/`), {
         headers: getPlanAuthHeaders(),
         cache: "no-store",
       });
@@ -955,7 +955,7 @@ export default function PlanEditorPage() {
             instructions_supplementaires: openaiAdditionalInstructions,
           };
 
-      const res = await fetch(`${API_URL}/api/plans/${id}/openai-clean/`, {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/openai-clean/`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -975,7 +975,7 @@ export default function PlanEditorPage() {
       let latestStatus = data;
       while (latestStatus.status !== "completed" && latestStatus.status !== "failed") {
         await new Promise((resolve) => window.setTimeout(resolve, 1000));
-        const statusRes = await fetch(`${API_URL}/api/plans/${id}/openai-clean-status/?job_id=${data.job_id}`, {
+        const statusRes = await fetch(buildApiUrl(`/api/plans/${id}/openai-clean-status/?job_id=${data.job_id}`), {
           headers: getPlanAuthHeaders(),
           cache: "no-store",
         });
@@ -1010,7 +1010,7 @@ export default function PlanEditorPage() {
     setOpenaiApplying(true);
     setOpenaiError("");
     try {
-      const res = await fetch(`${API_URL}/api/plans/${id}/use-openai-cleaned/`, {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/use-openai-cleaned/`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1041,7 +1041,7 @@ export default function PlanEditorPage() {
     setOpenaiHistoryApplyingId(historyItem.id);
     setOpenaiError("");
     try {
-      const res = await fetch(`${API_URL}/api/plans/${id}/use-openai-clean-history/`, {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/use-openai-clean-history/`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { API_BASE_URL, buildApiUrl } from "@/lib/api";
 
 interface User {
   id: number;
@@ -22,8 +23,6 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
-import { API_URL } from "@/lib/api";
 
 type AuthResult = {
   ok: boolean;
@@ -63,7 +62,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const fetchUser = async (authToken: string) => {
     try {
-      const res = await fetch(`${API_URL}/api/auth/me/`, {
+      const res = await fetch(buildApiUrl(`/api/auth/me/`), {
         headers: {
           Authorization: `Bearer ${authToken}`,
         },
@@ -85,7 +84,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (username: string, password: string): Promise<AuthResult> => {
     try {
-      const res = await fetch(`${API_URL}/api/auth/token/`, {
+      const res = await fetch(buildApiUrl(`/api/auth/token/`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
@@ -103,14 +102,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.error("Login request failed:", err);
       return {
         ok: false,
-        error: `Impossible de joindre le backend Django sur ${API_URL}. Vérifiez que le serveur est lancé sur le port 8000.`,
+        error: `Impossible de joindre le backend Django sur ${API_BASE_URL || "l'URL relative /api"}. Vérifiez que le serveur est accessible.`,
       };
     }
   };
 
   const register = async (username: string, email: string, password: string, firstName = "", lastName = ""): Promise<AuthResult> => {
     try {
-      const res = await fetch(`${API_URL}/api/auth/register/`, {
+      const res = await fetch(buildApiUrl(`/api/auth/register/`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -130,7 +129,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.error("Registration request failed:", err);
       return {
         ok: false,
-        error: `Impossible de joindre le backend Django sur ${API_URL}. Vérifiez que le serveur est lancé sur le port 8000.`,
+        error: `Impossible de joindre le backend Django sur ${API_BASE_URL || "l'URL relative /api"}. Vérifiez que le serveur est accessible.`,
       };
     }
   };

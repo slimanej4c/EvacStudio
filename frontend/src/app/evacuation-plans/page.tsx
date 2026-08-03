@@ -5,7 +5,7 @@ import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { useAuth } from "@/context/AuthContext";
-import { API_URL } from "@/lib/api";
+import { buildApiUrl } from "@/lib/api";
 import { Edit2, Eye, FileText, Plus, Trash2 } from "lucide-react";
 
 interface EvacuationPlan {
@@ -41,7 +41,7 @@ export default function EvacuationPlansPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`${API_URL}/api/plans/`, {
+      const res = await fetch(buildApiUrl(`/api/plans/`), {
         headers,
         cache: "no-store",
       });
@@ -83,7 +83,7 @@ export default function EvacuationPlansPage() {
 
   const handleDelete = async (id: number) => {
     if (!confirm("Voulez-vous vraiment supprimer ce plan d'évacuation ?")) return;
-    const res = await fetch(`${API_URL}/api/plans/${id}/`, {
+    const res = await fetch(buildApiUrl(`/api/plans/${id}/`), {
       method: "DELETE",
       headers: getPlanAuthHeaders(),
     });

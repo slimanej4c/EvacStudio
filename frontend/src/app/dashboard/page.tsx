@@ -5,7 +5,7 @@ import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { useAuth } from "@/context/AuthContext";
-import { API_URL } from "@/lib/api";
+import { buildApiUrl } from "@/lib/api";
 import { FilePlus2, Files, ShieldCheck } from "lucide-react";
 
 type ApiList<T> = T[] | { results?: T[] };
@@ -23,7 +23,7 @@ export default function DashboardPage() {
 
     const loadPlans = async () => {
       try {
-        const res = await fetch(`${API_URL}/api/plans/`, { headers: getAuthHeaders(), cache: "no-store" });
+        const res = await fetch(buildApiUrl(`/api/plans/`), { headers: getAuthHeaders(), cache: "no-store" });
         if (!res.ok) return;
         setPlanCount(normalizeList<unknown>(await res.json()).length);
       } catch {

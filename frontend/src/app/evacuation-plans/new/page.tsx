@@ -5,7 +5,7 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { API_URL } from "@/lib/api";
+import { buildApiUrl } from "@/lib/api";
 import { ArrowLeft, Upload, FileText, ImageIcon, CheckCircle } from "lucide-react";
 
 export default function NewPlanPage() {
@@ -63,7 +63,7 @@ export default function NewPlanPage() {
 
     try {
       const headers = getAuthHeaders() as Record<string, string>;
-      const res = await fetch(`${API_URL}/api/plans/`, {
+      const res = await fetch(buildApiUrl(`/api/plans/`), {
         method: "POST",
         headers: {
           ...headers,

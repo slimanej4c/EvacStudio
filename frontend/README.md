@@ -4,11 +4,13 @@ Application Next.js pour creer, modifier et exporter des plans d'evacuation.
 
 ## Configuration
 
-Creer `frontend/.env`:
+Creer `frontend/.env.local` en developpement local:
 
 ```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
 ```
+
+En production, laisser `NEXT_PUBLIC_API_URL` vide ou ne pas definir la variable. Les appels utilisent alors les URLs relatives `/api/...`.
 
 ## Lancement
 
