@@ -1,0 +1,7 @@
+
+# Secrets et variables d'environnement
+.env
+**/.env
+.env.*
+**/.env.*
+!**/.env.example

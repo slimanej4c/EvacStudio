@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 170 170">
+  <!-- Generator: Adobe Illustrator 30.0.0, SVG Export Plug-In . SVG Version: 2.1.1 Build 123)  -->
+  <defs>
+    <style>
+      .st0 {
+        fill: none;
+        stroke: #ec1c24;
+        stroke-miterlimit: 10;
+        stroke-width: 3px;
+      }
+
+      .st1 {
+        font-size: 32.05px;
+      }
+
+      .st1, .st2 {
+        fill: #231f20;
+        font-family: ArialMT, Arial;
+      }
+
+      .st2 {
+        font-size: 35.37px;
+      }
+    </style>
+  </defs>
+  <path class="st0" d="M146.4,85c0,33.91-27.49,61.4-61.4,61.4s-61.4-27.49-61.4-61.4,27.49-61.4,61.4-61.4,61.4,27.5,61.4,61.4Z"/>
+  <g>
+    <g>
+      <polygon class="st0" points="104.48 104.18 85.81 85.52 105.5 65.83 104.48 104.18"/>
+      <line class="st0" x1="105.5" y1="85.52" x2="146.32" y2="85.52"/>
+    </g>
+    <g>
+      <polygon class="st0" points="65.52 104.18 84.19 85.52 64.5 65.83 65.52 104.18"/>
+      <line class="st0" x1="64.5" y1="85.52" x2="23.68" y2="85.52"/>
+    </g>
+  </g>
+  <text class="st1" transform="translate(74.86 63.15) scale(1.01 1)"><tspan x="0" y="0">E</tspan></text>
+  <text class="st2" transform="translate(80.76 127.9)"><tspan x="0" y="0">I</tspan></text>
+</svg>

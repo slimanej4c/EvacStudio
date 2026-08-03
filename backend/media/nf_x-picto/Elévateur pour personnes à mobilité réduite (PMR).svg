@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 170 170">
+  <!-- Generator: Adobe Illustrator 30.0.0, SVG Export Plug-In . SVG Version: 2.1.1 Build 123)  -->
+  <defs>
+    <style>
+      .st0 {
+        fill: #231f20;
+        font-family: ArialMT, Arial;
+        font-size: 47.09px;
+      }
+
+      .st1 {
+        fill: none;
+        stroke: #231f20;
+        stroke-miterlimit: 10;
+      }
+    </style>
+  </defs>
+  <rect class="st1" x="27.8" y="27.8" width="114.4" height="114.4"/>
+  <text class="st0" transform="translate(40.94 100.14) scale(.86 1)"><tspan x="0" y="0">PMR</tspan></text>
+</svg>
