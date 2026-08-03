@@ -90,10 +90,10 @@ export function AppSidebar() {
     <aside className="sticky left-0 top-0 flex h-screen w-72 shrink-0 flex-col border-r border-slate-200 bg-white">
       <div className="flex h-16 items-center justify-between gap-3 border-b border-slate-200 px-5">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-safety-green text-sm font-black text-white">
-            P
+          <div className="flex h-10 w-40 shrink-0 items-center overflow-hidden rounded-lg">
+            <img src="/evacstudio-logo.png" alt="EvacStudio" className="h-full w-full object-contain" />
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 hidden">
             <p className="truncate text-base font-bold leading-tight text-slate-950">Plan intervention et évacuation</p>
             <p className="truncate text-xs text-slate-500">Sécurité incendie</p>
           </div>

@@ -3,25 +3,28 @@
 import Link from "next/link";
 import { ArrowRight, FilePlus2, ShieldCheck } from "lucide-react";
 
+const SHOW_REGISTER_ENTRY_POINTS = false;
+
 export default function Home() {
   return (
     <div className="flex min-h-screen flex-col bg-white text-slate-950">
       <header className="sticky top-0 z-40 w-full border-b border-slate-200 bg-white/90 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
           <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-safety-green font-bold text-white shadow-md">
-              P
+            <div className="flex h-10 w-44 items-center overflow-hidden rounded-lg">
+              <img src="/evacstudio-logo.png" alt="EvacStudio" className="h-full w-full object-contain" />
             </div>
-            <span className="text-xl font-bold tracking-tight text-slate-950">Plan intervention et évacuation</span>
           </div>
 
           <div className="flex items-center gap-4">
             <Link href="/login" className="text-sm font-semibold text-slate-600 transition-colors hover:text-safety-green">
               Connexion
             </Link>
-            <Link href="/register" className="inline-flex items-center justify-center rounded-lg bg-safety-green px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-safety-green/10 transition-all hover:bg-green-600">
-              Créer un compte
-            </Link>
+            {SHOW_REGISTER_ENTRY_POINTS && (
+              <Link href="/register" className="inline-flex items-center justify-center rounded-lg bg-safety-green px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-safety-green/10 transition-all hover:bg-green-600">
+                Créer un compte
+              </Link>
+            )}
           </div>
         </div>
       </header>
@@ -42,12 +45,15 @@ export default function Home() {
           </p>
 
           <div className="flex flex-col gap-4 pt-4 sm:flex-row">
-            <Link href="/register" className="inline-flex items-center justify-center gap-2 rounded-lg bg-safety-green px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-safety-green/20 transition-all hover:bg-green-600">
-              Démarrer
-              <ArrowRight className="h-5 w-5" />
-            </Link>
+            {SHOW_REGISTER_ENTRY_POINTS && (
+              <Link href="/register" className="inline-flex items-center justify-center gap-2 rounded-lg bg-safety-green px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-safety-green/20 transition-all hover:bg-green-600">
+                Démarrer
+                <ArrowRight className="h-5 w-5" />
+              </Link>
+            )}
             <Link href="/login" className="inline-flex items-center justify-center gap-2 rounded-lg border border-green-200 bg-green-50 px-6 py-3.5 text-sm font-semibold text-safety-green transition-all hover:bg-green-100">
               Accéder à mes plans
+              <ArrowRight className="h-5 w-5" />
             </Link>
           </div>
         </section>

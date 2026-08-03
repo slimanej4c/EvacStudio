@@ -3,8 +3,13 @@ import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
 
 export const metadata: Metadata = {
-  title: "HSEsmart - Plateforme de gestion HSE",
-  description: "Centralisez les tâches HSE, les sites, les équipements, les actions et les plans d'évacuation de votre entreprise.",
+  title: "EvacStudio - Plan intervention et évacuation",
+  description: "Créez, annotez et exportez vos plans d'intervention et d'évacuation.",
+  icons: {
+    icon: "/evacstudio-favicon.png",
+    shortcut: "/evacstudio-favicon.png",
+    apple: "/evacstudio-favicon.png",
+  },
 };
 
 export default function RootLayout({

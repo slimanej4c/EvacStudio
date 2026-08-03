@@ -3,7 +3,9 @@
 import React, { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import Link from "next/link";
-import { AlertTriangle, Lock, ShieldCheck, User as UserIcon } from "lucide-react";
+import { AlertTriangle, Lock, User as UserIcon } from "lucide-react";
+
+const SHOW_REGISTER_ENTRY_POINTS = false;
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -28,8 +30,8 @@ export default function LoginPage() {
       <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white p-8 shadow-xl">
 
         <div className="flex flex-col items-center">
-          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl border border-green-100 bg-green-50 text-safety-green shadow-lg shadow-safety-green/5">
-            <ShieldCheck className="h-7 w-7" />
+          <div className="mb-4 flex h-16 w-64 items-center overflow-hidden rounded-xl">
+            <img src="/evacstudio-logo.png" alt="EvacStudio" className="h-full w-full object-contain" />
           </div>
           <h2 className="text-center text-3xl font-extrabold tracking-tight text-slate-950">
             Plan intervention et évacuation
@@ -98,12 +100,14 @@ export default function LoginPage() {
           </div>
         </form>
 
-        <div className="mt-4 text-center text-sm text-slate-500">
-          Nouveau sur Plan intervention et évacuation ?{" "}
-          <Link href="/register" className="font-semibold text-safety-green transition-colors hover:text-green-700">
-            Créer un compte
-          </Link>
-        </div>
+        {SHOW_REGISTER_ENTRY_POINTS && (
+          <div className="mt-4 text-center text-sm text-slate-500">
+            Nouveau sur Plan intervention et évacuation ?{" "}
+            <Link href="/register" className="font-semibold text-safety-green transition-colors hover:text-green-700">
+              Créer un compte
+            </Link>
+          </div>
+        )}
       </div>
     </div>
   );
