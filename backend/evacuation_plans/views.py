@@ -9,14 +9,14 @@ from urllib.parse import quote
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from django.conf import settings
-from django.db import close_old_connections
+from django.db import close_old_connections, transaction
 from django.core.files.base import ContentFile
 from rest_framework import viewsets, permissions, status, generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.contrib.auth.models import User
-from .models import EvacuationPlan, OpenAIPlanCleaningJob, PlanCleaningHistory, PlanIcon, UserOpenAISettings
+from .models import EvacuationPlan, OpenAIPlanCleaningJob, PlanCleaningHistory, PlanIcon, PlanShape, PlanText, UserOpenAISettings
 from .openai_analysis import OpenAIPlanAnalysisError, analyze_plan_image_with_openai
 from .pipeline import (
     InvalidGeneratedPromptError,
@@ -31,6 +31,8 @@ from .serializers import (
     UserSerializer,
     EvacuationPlanSerializer,
     PlanIconSerializer,
+    PlanShapeSerializer,
+    PlanTextSerializer,
     SaveUserOpenAISettingsSerializer,
     TestOpenAIKeySerializer,
     PlanCleaningHistorySerializer,
@@ -40,6 +42,8 @@ from .serializers import (
     UserOpenAISettingsSerializer
 )
 from .openai_pricing import estimate_cleaning_cost
+from .plan_analyzer import normalize_cleanup_level
+from .plan_type_detector import PlanTypeDetectionError, detect_plan_type
 
 PLAN_PICTOGRAM_DIRS = ('plan_picto', 'nf_x-picto')
 PLAN_PICTOGRAM_EXTENSIONS = {'.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif'}
@@ -166,6 +170,11 @@ def serialize_openai_cleaning_job(job):
         "pricing_currency": job.pricing_currency,
         "actual_cost": float(job.actual_cost) if job.actual_cost is not None else None,
         "actual_cost_available": job.actual_cost_available,
+        "detected_plan_type": job.detected_plan_type or "",
+        "detection_confidence": job.detection_confidence,
+        "detected_elements": job.detected_elements or {},
+        "confirmed_plan_type": job.confirmed_plan_type or "",
+        "cleanup_level": job.cleanup_level or "medium",
     }
     if job.status == OpenAIPlanCleaningJob.STATUS_COMPLETED:
         data.update({
@@ -239,9 +248,17 @@ def run_openai_cleaning_job(job_id):
         if job.status == OpenAIPlanCleaningJob.STATUS_FAILED:
             return
 
+        after_image_data = image_bytes_to_data_url(result.cleaned_image_bytes)
+        # "Completed" must never be reported before the image actually exists. The
+        # status and the image go out in the same UPDATE below, so a client polling
+        # the job can never see a finished job without its result.
+        if not result.cleaned_image_bytes or not after_image_data:
+            job.mark_failed("IMAGE_SAVE_FAILED", "Image nettoyée vide.", "empty_cleaned_image")
+            return
+
         job.status = OpenAIPlanCleaningJob.STATUS_COMPLETED
         job.before_image_data = before_image_data
-        job.after_image_data = image_bytes_to_data_url(result.cleaned_image_bytes)
+        job.after_image_data = after_image_data
         job.analysis = result.analysis
         job.generation_prompt = result.generation_prompt
         job.models_used = {
@@ -496,6 +513,48 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
     def pictograms(self, request):
         return Response(list_plan_pictograms(request), status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'], url_path='detect-plan-type')
+    def detect_plan_type_action(self, request, pk=None):
+        """Step 1: classify the imported plan so the options can follow."""
+        plan = self.get_object()
+
+        settings_obj = UserOpenAISettings.objects.filter(user=request.user).first()
+        if not settings_obj:
+            return Response(
+                {"error": "Aucune clé API OpenAI enregistrée.", "error_code": "OPENAI_KEY_INVALID"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        image, error = load_plan_image(plan, dpi=200)
+        if error:
+            return Response({"error": error, "error_code": "IMAGE_SAVE_FAILED"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        image_bytes = encode_image_to_png_bytes(image)
+        if image_bytes is None:
+            return Response({"error": "Impossible de préparer le plan.", "error_code": "IMAGE_SAVE_FAILED"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            detection = detect_plan_type(image_bytes, settings_obj.get_api_key())
+        except PlanTypeDetectionError as exc:
+            logger.warning("openai_detect.failed diagnostic=%s", exc.diagnostic,
+                           extra={"user_id": request.user.id, "plan_id": plan.id})
+            return Response(
+                {"error": str(exc), "error_code": exc.error_code, "diagnostic": exc.diagnostic},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except Exception as exc:
+            logger.exception("openai_detect.unexpected",
+                             extra={"user_id": request.user.id, "plan_id": plan.id})
+            return Response(
+                {"error": "Erreur pendant la détection du type de plan.",
+                 "error_code": "DETECTION_FAILED", "diagnostic": exc.__class__.__name__},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response(detection.as_dict(), status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['post'], url_path='openai-clean-cost-estimate')
     def openai_clean_cost_estimate(self, request, pk=None):
         self.get_object()
@@ -581,6 +640,12 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
             quality=cost_estimate["details"]["quality"],
             generation_attempts=cost_estimate["details"]["generation_count_max"],
             verification_enabled=cost_estimate["details"]["verification"],
+            detected_plan_type=serializer.validated_data.get("detected_plan_type", ""),
+            detection_confidence=serializer.validated_data.get("detection_confidence"),
+            detected_elements=serializer.validated_data.get("detected_elements") or {},
+            confirmed_plan_type=serializer.validated_data.get("plan_type", ""),
+            cleanup_level=normalize_cleanup_level(serializer.validated_data.get("niveau_nettoyage")),
+            cleaning_profile=serializer.validated_data.get("cleaning_profile", ""),
         )
         thread = threading.Thread(target=run_openai_cleaning_job, args=(job.id,), daemon=True)
         thread.start()
@@ -691,6 +756,21 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(plan)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'], url_path='sync-shapes')
+    def sync_shapes(self, request, pk=None):
+        """Replaces the plan's shapes with the supplied list, all or nothing."""
+        plan = self.get_object()
+        serializer = PlanShapeSerializer(data=request.data, many=True)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            plan.shapes.all().delete()
+            created = PlanShape.objects.bulk_create([
+                PlanShape(plan=plan, **item) for item in serializer.validated_data
+            ])
+
+        return Response(PlanShapeSerializer(created, many=True).data, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['post'], url_path='sync-icons')
     def sync_icons(self, request, pk=None):
         """
@@ -716,13 +796,30 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 width=icon_data.get('width'),
                 height=icon_data.get('height'),
                 rotation=icon_data.get('rotation', 0.0),
-                label=icon_data.get('label', '')
+                label=icon_data.get('label', ''),
+                anchor_x=icon_data.get('anchor_x'),
+                anchor_y=icon_data.get('anchor_y')
             )
             icon.save()
             created_icons.append(icon)
 
         serializer = PlanIconSerializer(created_icons, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='sync-texts')
+    def sync_texts(self, request, pk=None):
+        """Replaces the plan's texts with the supplied list, all or nothing."""
+        plan = self.get_object()
+        serializer = PlanTextSerializer(data=request.data, many=True)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            plan.texts.all().delete()
+            created = PlanText.objects.bulk_create([
+                PlanText(plan=plan, **item) for item in serializer.validated_data
+            ])
+
+        return Response(PlanTextSerializer(created, many=True).data, status=status.HTTP_200_OK)
 
 class PlanIconViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]

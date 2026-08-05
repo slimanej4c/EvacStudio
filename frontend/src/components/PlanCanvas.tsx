@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback, useImperativeHandle } from "react";
-import { Stage, Layer, Image as KonvaImage, Transformer, Group, Rect, Text } from "react-konva";
-import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource } from "@/utils/safetyIcons";
+import { Stage, Layer, Image as KonvaImage, Transformer, Group, Rect, Text, Line, Ellipse, Circle } from "react-konva";
+import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource, isDirectionalIcon, isYouAreHereIcon } from "@/utils/safetyIcons";
 
 export interface CanvasIcon {
   id?: number;
@@ -14,9 +14,56 @@ export interface CanvasIcon {
   height: number;
   rotation: number;
   label: string;
+  /** True position of the equipment when the pictogram was moved aside. */
+  anchor_x?: number | null;
+  anchor_y?: number | null;
 }
 
 export type EraserShape = "square" | "circle";
+
+export type ShapeKind = "line" | "rect" | "circle";
+
+export interface CanvasShape {
+  id?: number;
+  tempId: string;
+  shape_type: ShapeKind;
+  /** Top-left of the bounding box; for a line, the start point. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  stroke_width: number;
+  color: string;
+}
+
+/** Web-safe fonts offered for plan text annotations. */
+export const FONT_OPTIONS = [
+  "Arial",
+  "Helvetica",
+  "Times New Roman",
+  "Georgia",
+  "Courier New",
+  "Verdana",
+  "Tahoma",
+  "Trebuchet MS",
+] as const;
+
+export interface CanvasText {
+  id?: number;
+  tempId: string;
+  text: string;
+  x: number;
+  y: number;
+  font_size: number;
+  font_family: string;
+  color: string;
+  bold: boolean;
+  italic: boolean;
+  /** Optional background color behind the text; null/undefined means transparent. */
+  background_color?: string | null;
+  rotation: number;
+}
 
 interface PlanCanvasProps {
   backgroundUrl: string;
@@ -44,6 +91,28 @@ interface PlanCanvasProps {
   resetEraseSignal?: number;
   /** Fires after each stroke with the number of strokes currently applied. */
   onEraseStrokesChange?: (count: number) => void;
+  shapes?: CanvasShape[];
+  onShapesChange?: (shapes: CanvasShape[]) => void;
+  selectedShapeId?: string | null;
+  onSelectShape?: (id: string | null) => void;
+  /** When set, dragging on the plan draws a new shape of this kind. */
+  shapeTool?: ShapeKind | null;
+  shapeStrokeWidth?: number;
+  shapeColor?: string;
+  /**
+   * Turns the whole sheet — plan, shapes, leader lines and pictogram positions —
+   * to match the reader's viewing direction. Equipment pictograms are kept
+   * upright inside it; directional ones follow the plan.
+   */
+  planRotation?: number;
+  /** Free text annotations placed on the plan. */
+  texts?: CanvasText[];
+  onTextsChange?: (texts: CanvasText[]) => void;
+  selectedTextId?: string | null;
+  onSelectText?: (id: string | null) => void;
+  /** When true, the next click on the plan places a new text. */
+  placementText?: boolean;
+  onPlaceText?: (x: number, y: number) => void;
 }
 
 export interface PlanCanvasHandle {
@@ -53,6 +122,69 @@ export interface PlanCanvasHandle {
 
 // Share of the workspace the plan occupies when fitted, leaving a margin around it.
 const FIT_VIEWPORT_RATIO = 0.75;
+
+/**
+ * Where a leader line must stop: on the pictogram's box edge, on the anchor's
+ * side. Running it to the centre would draw a stroke straight across the symbol.
+ */
+function leaderEndpoint(icon: CanvasIcon, anchorX: number, anchorY: number) {
+  const centreX = icon.x + icon.width / 2;
+  const centreY = icon.y + icon.height / 2;
+  const dx = centreX - anchorX;
+  const dy = centreY - anchorY;
+  if (dx === 0 && dy === 0) return { x: centreX, y: centreY };
+
+  // Slab clipping: the entry point into the box along the anchor -> centre ray.
+  let entry = 0;
+  if (dx !== 0) {
+    entry = Math.max(
+      entry,
+      Math.min((icon.x - anchorX) / dx, (icon.x + icon.width - anchorX) / dx)
+    );
+  }
+  if (dy !== 0) {
+    entry = Math.max(
+      entry,
+      Math.min((icon.y - anchorY) / dy, (icon.y + icon.height - anchorY) / dy)
+    );
+  }
+
+  const clamped = Math.min(Math.max(entry, 0), 1);
+  return { x: anchorX + dx * clamped, y: anchorY + dy * clamped };
+}
+
+/**
+ * How a pictogram's artwork behaves when the sheet is turned. Three cases:
+ *
+ * - the orientation marker: its rotation is an *input* — it is what sets the
+ *   sheet angle — so it must not turn the drawing as well, or the angle applies
+ *   twice. On an oriented sheet the reader faces the top, so it always points up;
+ * - directional symbols: their meaning is a direction in the building, so they
+ *   follow the plan;
+ * - everything else marks equipment at a spot and must stay upright and readable.
+ */
+function iconOrientationClass(
+  type: IconType,
+  definitions: Record<string, SafetyIconDefinition>
+) {
+  if (isYouAreHereIcon(type, definitions)) return "iconOrientationMarker";
+  return isDirectionalIcon(type, definitions) ? "iconDirectional" : "iconUpright";
+}
+
+function iconArtworkRotation(
+  icon: CanvasIcon,
+  definitions: Record<string, SafetyIconDefinition>,
+  planRotation: number
+) {
+  switch (iconOrientationClass(icon.icon_type, definitions)) {
+    case "iconOrientationMarker":
+      return -(planRotation + icon.rotation);
+    case "iconDirectional":
+      return 0;
+    default:
+      return -planRotation;
+  }
+}
 
 // Global PDF.js loading helper (client-side only)
 let pdfjsLib: any = null;
@@ -87,6 +219,20 @@ function PlanCanvas({
   undoEraseSignal = 0,
   resetEraseSignal = 0,
   onEraseStrokesChange,
+  shapes = [],
+  onShapesChange,
+  selectedShapeId = null,
+  onSelectShape,
+  shapeTool = null,
+  shapeStrokeWidth = 3,
+  shapeColor = "#000000",
+  planRotation = 0,
+  texts = [],
+  onTextsChange,
+  selectedTextId = null,
+  onSelectText,
+  placementText = false,
+  onPlaceText,
   canvasRef
 }: PlanCanvasProps & { canvasRef?: React.Ref<PlanCanvasHandle> }) {
   const stageRef = useRef<any>(null);
@@ -142,6 +288,88 @@ function PlanCanvas({
     onEraseStrokesChangeRef.current?.(0);
   }, [bgImage]);
 
+  // ── Shape drawing ───────────────────────────────────────────────────────
+  // The draft lives in a ref, mirrored into state only for rendering: mouse
+  // events can be delivered in a single task, in which case React has not
+  // re-rendered yet and reading the state on mouseup would give a stale draft.
+  const [draftShape, setDraftShape] = useState<CanvasShape | null>(null);
+  const draftShapeRef = useRef<CanvasShape | null>(null);
+  const draftOriginRef = useRef<{ x: number; y: number } | null>(null);
+
+  const setDraft = (shape: CanvasShape | null) => {
+    draftShapeRef.current = shape;
+    setDraftShape(shape);
+  };
+
+  const makeShapeTempId = () =>
+    `shape-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+
+  const beginShape = (stage: any) => {
+    if (!shapeTool) return;
+    const point = stage.getAbsoluteTransform().copy().invert().point(stage.getPointerPosition());
+    if (!point) return;
+
+    draftOriginRef.current = { x: point.x, y: point.y };
+    setDraft({
+      tempId: makeShapeTempId(),
+      shape_type: shapeTool,
+      x: point.x,
+      y: point.y,
+      width: 0,
+      height: 0,
+      rotation: 0,
+      stroke_width: shapeStrokeWidth,
+      color: shapeColor
+    });
+  };
+
+  const extendShape = (stage: any) => {
+    const origin = draftOriginRef.current;
+    const current = draftShapeRef.current;
+    if (!origin || !current || !shapeTool) return;
+
+    const point = stage.getAbsoluteTransform().copy().invert().point(stage.getPointerPosition());
+    if (!point) return;
+
+    if (current.shape_type === "line") {
+      // A line keeps its true endpoints, so any angle is possible.
+      setDraft({ ...current, width: point.x - origin.x, height: point.y - origin.y });
+      return;
+    }
+
+    setDraft({
+      ...current,
+      x: Math.min(origin.x, point.x),
+      y: Math.min(origin.y, point.y),
+      width: Math.abs(point.x - origin.x),
+      height: Math.abs(point.y - origin.y)
+    });
+  };
+
+  const finishShape = () => {
+    const origin = draftOriginRef.current;
+    const draft = draftShapeRef.current;
+    draftOriginRef.current = null;
+    if (!origin || !draft) return;
+
+    const isLine = draft.shape_type === "line";
+    const meaningful = isLine
+      ? Math.hypot(draft.width, draft.height) >= 4
+      : draft.width >= 4 && draft.height >= 4;
+
+    if (meaningful) {
+      onShapesChange?.([...shapes, draft]);
+      onSelectShape?.(draft.tempId);
+    }
+    setDraft(null);
+  };
+
+  const updateShape = (tempId: string, patch: Partial<CanvasShape>) => {
+    onShapesChange?.(
+      shapes.map((shape) => (shape.tempId === tempId ? { ...shape, ...patch } : shape))
+    );
+  };
+
   // The white sheet is not the plan image: it is the plan *plus* anything placed
   // outside it. An assembly point often sits well away from the building, so the
   // sheet has to grow to hold it — and the export follows this rectangle.
@@ -158,10 +386,41 @@ function PlanCanvas({
       maxX = Math.max(maxX, icon.x + icon.width + SHEET_MARGIN);
       // Labels are drawn just under the icon, so leave a little more room below.
       maxY = Math.max(maxY, icon.y + icon.height + SHEET_MARGIN + (icon.label ? 18 : 0));
+
+      if (icon.anchor_x != null && icon.anchor_y != null) {
+        minX = Math.min(minX, icon.anchor_x - SHEET_MARGIN);
+        minY = Math.min(minY, icon.anchor_y - SHEET_MARGIN);
+        maxX = Math.max(maxX, icon.anchor_x + SHEET_MARGIN);
+        maxY = Math.max(maxY, icon.anchor_y + SHEET_MARGIN);
+      }
+    });
+
+    shapes.forEach((shape) => {
+      // A line's width/height are signed offsets, so normalise before comparing.
+      const left = Math.min(shape.x, shape.x + shape.width);
+      const top = Math.min(shape.y, shape.y + shape.height);
+      const right = Math.max(shape.x, shape.x + shape.width);
+      const bottom = Math.max(shape.y, shape.y + shape.height);
+      const pad = SHEET_MARGIN + shape.stroke_width;
+
+      minX = Math.min(minX, left - pad);
+      minY = Math.min(minY, top - pad);
+      maxX = Math.max(maxX, right + pad);
+      maxY = Math.max(maxY, bottom + pad);
+    });
+
+    texts.forEach((t) => {
+      // Approximate the text box so the sheet grows to contain it.
+      const w = Math.max(20, (t.text || "").length * t.font_size * 0.55);
+      const h = Math.max(t.font_size * 1.3, (t.text || "").split("\n").length * t.font_size * 1.3);
+      minX = Math.min(minX, t.x - SHEET_MARGIN);
+      minY = Math.min(minY, t.y - SHEET_MARGIN);
+      maxX = Math.max(maxX, t.x + w + SHEET_MARGIN);
+      maxY = Math.max(maxY, t.y + h + SHEET_MARGIN);
     });
 
     return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-  }, [icons, imageSize]);
+  }, [icons, shapes, texts, imageSize]);
 
   /** Plan units -> pixels of the working canvas (a PDF is rasterised much larger). */
   const canvasScale = editedBackground && imageSize.width
@@ -335,21 +594,32 @@ function PlanCanvas({
     if (!width || !height) return;
     if (!contentBounds.width || !contentBounds.height) return;
 
-    // Fit the whole sheet, not just the plan: icons placed outside must stay in view.
-    const scale =
-      Math.min(width / contentBounds.width, height / contentBounds.height) * FIT_VIEWPORT_RATIO;
+    // Fit the whole sheet, not just the plan: icons placed outside must stay in
+    // view. Turned, the sheet needs its rotated bounding box or it spills over.
+    const radians = (planRotation * Math.PI) / 180;
+    const cos = Math.abs(Math.cos(radians));
+    const sin = Math.abs(Math.sin(radians));
+    const rotatedWidth = contentBounds.width * cos + contentBounds.height * sin;
+    const rotatedHeight = contentBounds.width * sin + contentBounds.height * cos;
+
+    const scale = Math.min(width / rotatedWidth, height / rotatedHeight) * FIT_VIEWPORT_RATIO;
     const clampedScale = Math.max(0.1, Math.min(5, scale));
+
+    // The scene pivots on the sheet's centre, so that point stays put: park it
+    // in the middle of the workspace.
+    const centreX = contentBounds.x + contentBounds.width / 2;
+    const centreY = contentBounds.y + contentBounds.height / 2;
 
     setZoom(clampedScale);
     setStagePos({
-      x: (width - contentBounds.width * clampedScale) / 2 - contentBounds.x * clampedScale,
-      y: (height - contentBounds.height * clampedScale) / 2 - contentBounds.y * clampedScale
+      x: width / 2 - centreX * clampedScale,
+      y: height / 2 - centreY * clampedScale
     });
 
     // This position is already correct for the new size — tell the centre-keeping
     // effect not to shift it again when it observes the resize.
     previousStageSizeRef.current = { width, height };
-  }, [contentBounds, setZoom]);
+  }, [contentBounds, planRotation, setZoom]);
 
   // Re-measure after every render. A dock collapsing or the workspace-width
   // setting changing resizes this container without firing any resize event,
@@ -478,8 +748,10 @@ function PlanCanvas({
       const stage = stageRef.current;
       if (!stage) return;
 
-      if (selectedIconId) {
-        const selectedNode = stage.findOne("." + selectedIconId);
+      // Icons, shapes and texts share the Transformer: whichever is selected gets it.
+      const activeId = selectedIconId || selectedShapeId || selectedTextId;
+      if (activeId) {
+        const selectedNode = stage.findOne("." + activeId);
         if (selectedNode) {
           transformerRef.current.nodes([selectedNode]);
           transformerRef.current.getLayer().batchDraw();
@@ -489,29 +761,42 @@ function PlanCanvas({
       transformerRef.current.nodes([]);
       transformerRef.current.getLayer().batchDraw();
     }
-  }, [selectedIconId, icons]);
+  }, [selectedIconId, selectedShapeId, selectedTextId, icons, shapes, texts]);
 
-  // Keyboard shortcut to delete selected icon
+  // Keyboard shortcut to delete the selected icon or shape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedIconId) {
-        // Prevent deleting if typing in label input
-        if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") {
-          return;
-        }
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      // Prevent deleting if typing in label input
+      if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") {
+        return;
+      }
+
+      if (selectedIconId) {
         onIconsChange(icons.filter((icon) => icon.tempId !== selectedIconId));
         onSelectIcon(null);
+      } else if (selectedShapeId) {
+        onShapesChange?.(shapes.filter((shape) => shape.tempId !== selectedShapeId));
+        onSelectShape?.(null);
+      } else if (selectedTextId) {
+        onTextsChange?.(texts.filter((t) => t.tempId !== selectedTextId));
+        onSelectText?.(null);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [selectedIconId, icons, onIconsChange, onSelectIcon]);
+  }, [selectedIconId, selectedShapeId, selectedTextId, icons, shapes, texts, onIconsChange, onSelectIcon, onShapesChange, onSelectShape, onTextsChange, onSelectText]);
 
   const handleStageMouseDown = (e: any) => {
     if (mode === "erase") {
       beginEraseStroke(e.target.getStage());
+      return;
+    }
+
+    if (shapeTool) {
+      beginShape(e.target.getStage());
       return;
     }
 
@@ -534,9 +819,21 @@ function PlanCanvas({
       return;
     }
 
+    if (placementText && onPlaceText) {
+      const stage = e.target.getStage();
+      const pointer = stage?.getPointerPosition();
+      if (!stage || !pointer) return;
+
+      const planPoint = stage.getAbsoluteTransform().copy().invert().point(pointer);
+      onPlaceText(planPoint.x, planPoint.y);
+      return;
+    }
+
     // Clicked on stage background -> deselect
     if (e.target === e.target.getStage() || e.target.name() === "bgImage") {
       onSelectIcon(null);
+      onSelectShape?.(null);
+      onSelectText?.(null);
       return;
     }
   };
@@ -624,20 +921,31 @@ function PlanCanvas({
         onTouchStart={handleStageMouseDown}
         onMouseMove={(e: any) => {
           if (mode === "erase") extendEraseStroke(e.target.getStage());
+          else if (shapeTool) extendShape(e.target.getStage());
         }}
         onTouchMove={(e: any) => {
           if (mode === "erase") extendEraseStroke(e.target.getStage());
+          else if (shapeTool) extendShape(e.target.getStage());
         }}
-        onMouseUp={finishEraseStroke}
-        onTouchEnd={finishEraseStroke}
-        onMouseLeave={finishEraseStroke}
+        onMouseUp={() => {
+          finishEraseStroke();
+          finishShape();
+        }}
+        onTouchEnd={() => {
+          finishEraseStroke();
+          finishShape();
+        }}
+        onMouseLeave={() => {
+          finishEraseStroke();
+          finishShape();
+        }}
         onDragEnd={handleStageDrag}
         onWheel={handleWheel}
         style={{
           cursor:
             mode === "erase"
               ? "cell"
-              : placementIconType
+              : placementIconType || placementText
                 ? "crosshair"
                 : mode === "pan"
                   ? "grab"
@@ -645,6 +953,17 @@ function PlanCanvas({
         }}
       >
         <Layer ref={layerRef}>
+          {/* Everything that belongs to the sheet turns together, pivoting on the
+              sheet's centre: the plan, the shapes, the leader lines and the
+              pictogram positions keep their exact relationship. */}
+          <Group
+            name="planScene"
+            x={contentBounds.x + contentBounds.width / 2}
+            y={contentBounds.y + contentBounds.height / 2}
+            offsetX={contentBounds.x + contentBounds.width / 2}
+            offsetY={contentBounds.y + contentBounds.height / 2}
+            rotation={planRotation}
+          >
           {/* Sheet backing: the plan plus anything placed outside it. Also the
               rectangle the export captures — see getStageDataUrl. */}
           {bgImage && (
@@ -672,6 +991,126 @@ function PlanCanvas({
               name="bgImage"
             />
           )}
+
+          {/* Drawn shapes — under the pictograms so icons stay readable */}
+          {[...shapes, ...(draftShape ? [draftShape] : [])].map((shape) => {
+            const isDraft = draftShape?.tempId === shape.tempId;
+            const common = {
+              id: shape.tempId,
+              name: shape.tempId,
+              stroke: shape.color,
+              strokeWidth: shape.stroke_width,
+              rotation: shape.rotation,
+              draggable: mode === "select" && !shapeTool && !isDraft,
+              onClick: () => onSelectShape?.(shape.tempId),
+              onTap: () => onSelectShape?.(shape.tempId),
+              // A thin line is hard to grab, so widen its hit area.
+              hitStrokeWidth: Math.max(12, shape.stroke_width + 8),
+              onDragEnd: (e: any) =>
+                updateShape(shape.tempId, { x: e.target.x(), y: e.target.y() }),
+              onTransformEnd: (e: any) => {
+                const node = e.target;
+                const scaleX = node.scaleX();
+                const scaleY = node.scaleY();
+                node.scaleX(1);
+                node.scaleY(1);
+                updateShape(shape.tempId, {
+                  x: node.x(),
+                  y: node.y(),
+                  width: Math.max(1, shape.width * scaleX),
+                  height: shape.shape_type === "line"
+                    ? shape.height * scaleY
+                    : Math.max(1, shape.height * scaleY),
+                  rotation: node.rotation()
+                });
+              }
+            };
+
+            if (shape.shape_type === "line") {
+              return (
+                <Line
+                  key={shape.tempId}
+                  {...common}
+                  x={shape.x}
+                  y={shape.y}
+                  points={[0, 0, shape.width, shape.height]}
+                  lineCap="round"
+                />
+              );
+            }
+
+            if (shape.shape_type === "circle") {
+              return (
+                <Ellipse
+                  key={shape.tempId}
+                  {...common}
+                  x={shape.x + shape.width / 2}
+                  y={shape.y + shape.height / 2}
+                  radiusX={Math.max(1, shape.width / 2)}
+                  radiusY={Math.max(1, shape.height / 2)}
+                  onDragEnd={(e: any) =>
+                    updateShape(shape.tempId, {
+                      x: e.target.x() - shape.width / 2,
+                      y: e.target.y() - shape.height / 2
+                    })
+                  }
+                />
+              );
+            }
+
+            return (
+              <Rect
+                key={shape.tempId}
+                {...common}
+                x={shape.x}
+                y={shape.y}
+                width={Math.max(1, shape.width)}
+                height={Math.max(1, shape.height)}
+              />
+            );
+          })}
+
+          {/* Leader lines. Pure geometry linking two real positions, so unlike the
+              pictograms these turn with the plan — they sit outside the
+              ".iconUpright" groups that hold the artwork straight. */}
+          {icons.map((icon) => {
+            if (icon.anchor_x == null || icon.anchor_y == null) return null;
+
+            const end = leaderEndpoint(icon, icon.anchor_x, icon.anchor_y);
+            const dotRadius = Math.max(3, Math.min(7, icon.width * 0.1));
+
+            return (
+              <Group key={`leader-${icon.tempId}`}>
+                <Line
+                  points={[icon.anchor_x, icon.anchor_y, end.x, end.y]}
+                  stroke="#111827"
+                  strokeWidth={1.5}
+                  listening={false}
+                />
+                <Circle
+                  x={icon.anchor_x}
+                  y={icon.anchor_y}
+                  radius={dotRadius}
+                  fill="#111827"
+                  stroke="#ffffff"
+                  strokeWidth={1}
+                  hitStrokeWidth={14}
+                  draggable={mode === "select" && !shapeTool}
+                  onClick={() => onSelectIcon(icon.tempId)}
+                  onTap={() => onSelectIcon(icon.tempId)}
+                  onDragEnd={(e: any) => {
+                    onIconsChange(
+                      icons.map((item) =>
+                        item.tempId === icon.tempId
+                          ? { ...item, anchor_x: e.target.x(), anchor_y: e.target.y() }
+                          : item
+                      )
+                    );
+                  }}
+                />
+              </Group>
+            );
+          })}
 
           {/* Render Safety Icons */}
           {icons.map((icon) => {
@@ -728,39 +1167,137 @@ function PlanCanvas({
                   onIconsChange(updated);
                 }}
               >
-                {/* SVG Render */}
-                {iconImage ? (
-                  <KonvaImage
-                    image={iconImage}
-                    width={icon.width}
-                    height={icon.height}
-                  />
-                ) : (
-                  <Rect
-                    width={icon.width}
-                    height={icon.height}
-                    fill={iconDefinitions[icon.icon_type]?.color || "#ffffff"}
-                    cornerRadius={4}
-                  />
-                )}
-                {/* Custom label indicator */}
-                {icon.label && (
-                  <Text
-                    text={icon.label}
-                    y={icon.height + 4}
-                    x={0}
-                    width={icon.width}
-                    align="center"
-                    fontSize={11}
-                    fill="#ffffff"
-                    fontStyle="bold"
-                    shadowColor="#000000"
-                    shadowBlur={4}
-                  />
-                )}
+                {/* Inner group carrying the artwork, pivoting on the icon's centre.
+                    The export rotates this one to cancel the plan's orientation for
+                    pictograms that must stay upright — see getStageDataUrl. The
+                    outer group keeps its own transform so drag and resize are
+                    untouched. */}
+                <Group
+                  name={`iconContent ${iconOrientationClass(icon.icon_type, iconDefinitions)}`}
+                  x={icon.width / 2}
+                  y={icon.height / 2}
+                  offsetX={icon.width / 2}
+                  offsetY={icon.height / 2}
+                  rotation={iconArtworkRotation(icon, iconDefinitions, planRotation)}
+                >
+                  {/* SVG Render */}
+                  {iconImage ? (
+                    <KonvaImage
+                      image={iconImage}
+                      width={icon.width}
+                      height={icon.height}
+                    />
+                  ) : (
+                    <Rect
+                      width={icon.width}
+                      height={icon.height}
+                      fill={iconDefinitions[icon.icon_type]?.color || "#ffffff"}
+                      cornerRadius={4}
+                    />
+                  )}
+                  {/* Custom label indicator */}
+                  {icon.label && (
+                    <Text
+                      text={icon.label}
+                      y={icon.height + 4}
+                      x={0}
+                      width={icon.width}
+                      align="center"
+                      fontSize={11}
+                      fill="#ffffff"
+                      fontStyle="bold"
+                      shadowColor="#000000"
+                      shadowBlur={4}
+                    />
+                  )}
+                </Group>
               </Group>
             );
           })}
+
+          {/* Render free text annotations */}
+          {texts.map((t) => {
+            const fontStyle = `${t.italic ? "italic" : ""} ${t.bold ? "bold" : "normal"}`.trim() || "normal";
+            // Measure width/height indirectly via Konva: we render a transparent
+            // measure node and rely on the visible Text for layout. To keep the
+            // background rect and selection tight, approximate from font metrics.
+            const approxWidth = Math.max(20, t.text.length * t.font_size * 0.55);
+            const approxHeight = Math.max(t.font_size * 1.3, (t.text.split("\n").length) * t.font_size * 1.3);
+            const padX = 6;
+            const padY = 4;
+            return (
+              <Group
+                key={t.tempId}
+                id={t.tempId}
+                name={t.tempId}
+                x={t.x}
+                y={t.y}
+                rotation={t.rotation}
+                draggable={mode === "select"}
+                onClick={() => onSelectText?.(t.tempId)}
+                onTap={() => onSelectText?.(t.tempId)}
+                onDragEnd={(e) => {
+                  const updated = texts.map((item) =>
+                    item.tempId === t.tempId
+                      ? { ...item, x: e.target.x(), y: e.target.y() }
+                      : item
+                  );
+                  onTextsChange?.(updated);
+                }}
+                onTransformEnd={(e) => {
+                  const node = e.target;
+                  const scaleX = node.scaleX();
+                  node.scaleX(1);
+                  node.scaleY(1);
+                  const updated = texts.map((item) =>
+                    item.tempId === t.tempId
+                      ? {
+                          ...item,
+                          x: node.x(),
+                          y: node.y(),
+                          rotation: node.rotation(),
+                          // Uniform scale → grow the font size proportionally.
+                          font_size: Math.max(6, item.font_size * scaleX),
+                        }
+                      : item
+                  );
+                  onTextsChange?.(updated);
+                }}
+              >
+                {/* Inner group carrying the text artwork, pivoting on the text's
+                    centre so it stays upright when the sheet is turned — mirroring
+                    how upright equipment pictograms are kept readable. The outer
+                    group keeps its own transform so drag and resize are untouched. */}
+                <Group
+                  x={approxWidth / 2}
+                  y={approxHeight / 2}
+                  offsetX={approxWidth / 2}
+                  offsetY={approxHeight / 2}
+                  rotation={-planRotation}
+                >
+                  {t.background_color ? (
+                    <Rect
+                      x={-padX}
+                      y={-padY}
+                      width={approxWidth + padX * 2}
+                      height={approxHeight + padY * 2}
+                      fill={t.background_color}
+                      cornerRadius={2}
+                    />
+                  ) : null}
+                  <Text
+                    text={t.text || "Texte"}
+                    fontSize={t.font_size}
+                    fontFamily={t.font_family}
+                    fill={t.color}
+                    fontStyle={fontStyle}
+                    lineHeight={1.3}
+                  />
+                </Group>
+              </Group>
+            );
+          })}
+          </Group>
 
           {/* Selection Transformer handles resizing & rotation */}
           {mode === "select" && (

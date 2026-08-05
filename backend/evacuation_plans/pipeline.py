@@ -9,11 +9,15 @@ from .image_generator import (
     MissingAPIKeyError,
     PlanImageGenerationError,
 )
+from .cleaning_profiles import normalize_cleanup_level, normalize_quality, resolve_profile
 from .plan_analyzer import (
+    EXISTING_PLAN_PROMPT_CONCEPTS,
+    SKETCH_PROMPT_CONCEPTS,
     PlanAnalyzerError,
     PlanAnalysisResult,
     analyze_existing_plan_and_build_prompt,
     analyze_plan_and_build_prompt,
+    analyze_with_profile,
 )
 from .plan_image_generator import (
     generate_cleaned_plan,
@@ -69,6 +73,17 @@ def _normalize_pipeline_options(options: dict, user_instructions: str | None = N
         "correct_perspective": bool(options.get("correct_perspective", options.get("corriger_perspective", False))),
         "preserve_openings": bool(options.get("preserve_openings", options.get("conserver_ouvertures", True))),
         "wall_thickness": options.get("wall_thickness", options.get("epaisseur_murs", "medium")),
+        "plan_type": options.get("plan_type") or options.get("confirmed_plan_type") or "architectural_plan",
+        "remove_existing_pictograms": bool(options.get("remove_existing_pictograms", options.get("supprimer_pictogrammes", True))),
+        "remove_routes": bool(options.get("remove_routes", options.get("supprimer_itineraires", True))),
+        "remove_you_are_here": bool(options.get("remove_you_are_here", options.get("supprimer_vous_etes_ici", True))),
+        "remove_legend": bool(options.get("remove_legend", options.get("supprimer_legende", True))),
+        "remove_logos": bool(options.get("remove_logos", options.get("supprimer_logos", True))),
+        "remove_paper_shadows": bool(options.get("remove_paper_shadows", options.get("supprimer_ombres_papier", False))),
+        "straighten_lines": bool(options.get("straighten_lines", options.get("redresser_lignes", False))),
+        "reduce_visual_noise": bool(options.get("reduce_visual_noise", options.get("reduire_bruit", True))),
+        "keep_room_labels": bool(options.get("keep_room_labels", options.get("conserver_noms_locaux", True))),
+        "preserve_windows": bool(options.get("preserve_windows", options.get("conserver_fenetres", True))),
         "remove_annotations": bool(options.get("remove_annotations", options.get("supprimer_annotations", True))),
         "remove_title_block": bool(options.get("remove_title_block", options.get("supprimer_cartouche", True))),
         "remove_hatching": bool(options.get("remove_hatching", options.get("supprimer_hachures", True))),
@@ -79,6 +94,26 @@ def _normalize_pipeline_options(options: dict, user_instructions: str | None = N
         "cleanup_level": options.get("cleanup_level", options.get("niveau_nettoyage", "moyen")),
     }
     normalized["user_instructions"] = user_instructions or options.get("user_instructions") or ""
+    normalized["cleanup_level"] = normalize_cleanup_level(normalized["cleanup_level"])
+    normalized["quality"] = normalize_quality(normalized["quality"])
+
+    # Resolve the cleaning family once, here, so every downstream step agrees on it.
+    profile_key = options.get("cleaning_profile") or options.get("profil_nettoyage")
+    if profile_key or options.get("plan_type"):
+        try:
+            profile = resolve_profile(normalized["plan_type"], profile_key)
+        except ValueError:
+            profile = None
+        if profile is not None:
+            normalized["_profile"] = profile
+            normalized["cleaning_profile"] = profile.key
+            normalized["objective"] = profile.objective
+            # The family's own default level applies unless the user picked one.
+            if not (options.get("cleanup_level") or options.get("niveau_nettoyage")):
+                normalized["cleanup_level"] = profile.default_cleanup_level
+            # Options the family does not expose must not leak into its prompt.
+            for key, value in profile.default_options.items():
+                normalized.setdefault(key, value)
     return normalized
 
 
@@ -143,55 +178,10 @@ def validate_generation_prompt_for_image_model(analysis_result: PlanAnalysisResu
     if "geometry_to_preserve" in analysis:
         if len(prompt.strip()) < 500:
             raise InvalidGeneratedPromptError("generation_prompt_too_short")
-        required_concepts = {
-            "geometry_to_preserve": (
-                "geometry to preserve",
-                "preserve the exact building geometry",
-                "preserve the exact layout",
-                "preserve all exterior and interior walls",
-            ),
-            "removal_rules": (
-                "elements to remove",
-                "remove dimensions",
-                "remove technical annotations",
-                "remove only selected",
-            ),
-            "constraints": (
-                "critical constraints",
-                "requirements",
-                "must",
-                "do not redesign",
-                "do not reinterpret",
-                "do not invent",
-            ),
-            "source_reference": (
-                "authoritative geometric reference",
-                "source image",
-                "original image",
-                "supplied image",
-                "reference image",
-            ),
-            "no_evacuation_symbols": (
-                "do not add evacuation symbols",
-                "add no evacuation symbols",
-                "no evacuation symbols",
-                "do not add evacuation pictograms",
-                "add no evacuation pictograms",
-                "no evacuation pictograms",
-                "do not add pictograms",
-                "add no pictograms",
-                "no pictograms",
-                "do not add evacuation icons",
-                "add no evacuation icons",
-                "no evacuation icons",
-                "do not add safety symbols",
-                "add no safety symbols",
-                "no safety symbols",
-                "do not add symbols",
-                "add no symbols",
-                "no symbols",
-            ),
-        }
+        # Reuses the analyzer's table: a prompt the analyzer accepted must never
+        # be rejected here. The two lists used to be written separately and drifted,
+        # which is what made OpenAI cleaning fail intermittently.
+        required_concepts = EXISTING_PLAN_PROMPT_CONCEPTS
         for diagnostic, phrases in required_concepts.items():
             if not _prompt_contains_any(prompt, phrases):
                 raise InvalidGeneratedPromptError(f"missing_existing_prompt_concept:{diagnostic}")
@@ -205,53 +195,7 @@ def validate_generation_prompt_for_image_model(analysis_result: PlanAnalysisResu
         raise InvalidGeneratedPromptError("missing_outer_perimeter_description")
     if analysis.get("openings") and not _prompt_contains_any(prompt, ("opening", "gap", "passage", "doorway")):
         raise InvalidGeneratedPromptError("missing_openings_in_prompt")
-    required_concepts = {
-        "geometry_to_preserve": (
-            "visible geometry to preserve",
-            "geometry to preserve",
-            "preserve the exact layout",
-            "preserve the exact visible topology",
-            "preserve the topology",
-            "keep all walls",
-        ),
-        "removal_rules": (
-            "elements to remove",
-            "remove",
-            "remove only",
-            "do not add",
-            "no extra",
-        ),
-        "constraints": (
-            "critical constraints",
-            "constraints",
-            "requirements",
-            "must",
-            "never",
-            "do not",
-        ),
-        "source_reference": (
-            "authoritative geometric reference",
-            "source image",
-            "original image",
-            "supplied image",
-            "reference image",
-        ),
-        # Kept in step with plan_analyzer._validate_generation_prompt: a prompt that
-        # clears the analyzer must not then be rejected here.
-        "no_invention": (
-            "do not invent",
-            "never invent",
-            "not invent",
-            "do not add",
-            "never add",
-            "add no",
-            "no extra",
-            "no new",
-            "without adding",
-            "do not create",
-            "never create",
-        ),
-    }
+    required_concepts = SKETCH_PROMPT_CONCEPTS
     for diagnostic, phrases in required_concepts.items():
         if not _prompt_contains_any(prompt, phrases):
             raise InvalidGeneratedPromptError(f"missing_prompt_concept:{diagnostic}")
@@ -311,7 +255,12 @@ def clean_plan_with_openai(
         logger.info("openai_clean.analysis.started", extra={"user_id": user_id, "plan_id": plan_id})
         if status_callback:
             status_callback("analyzing")
-        if normalized_options["cleaning_mode"] == "existing_plan_cleanup":
+        # The family decides the whole prompt. Falling back to the legacy modes only
+        # when no profile was resolved keeps older jobs working.
+        profile = normalized_options.get("_profile")
+        if profile is not None:
+            analysis_result = analyze_with_profile(source_image, profile, normalized_options, api_key)
+        elif normalized_options["cleaning_mode"] == "existing_plan_cleanup":
             analysis_result = analyze_existing_plan_and_build_prompt(source_image, normalized_options, api_key)
         else:
             analysis_result = analyze_plan_and_build_prompt(source_image, normalized_options, api_key)

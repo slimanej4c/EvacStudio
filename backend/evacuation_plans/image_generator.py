@@ -74,7 +74,7 @@ class ImageTooLargeError(PlanImageGenerationError):
 
 
 class OpenAIRequestTimeoutError(PlanImageGenerationError):
-    user_message = "La requête OpenAI a expiré."
+    user_message = "La génération OpenAI a pris trop de temps. Réessayez avec une qualité plus basse ou un plan moins lourd."
 
 
 class OpenAIRateLimitError(PlanImageGenerationError):
@@ -145,7 +145,7 @@ def get_plan_image_model() -> str:
 
 
 def get_request_timeout_seconds() -> int:
-    return _get_env_int("OPENAI_REQUEST_TIMEOUT_SECONDS", 120)
+    return _get_env_int("OPENAI_REQUEST_TIMEOUT_SECONDS", 300)
 
 
 def get_max_image_size_mb() -> int:

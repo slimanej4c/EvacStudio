@@ -77,11 +77,77 @@ class PlanIcon(models.Model):
     height = models.FloatField()
     rotation = models.FloatField(default=0.0)
     label = models.CharField(max_length=255, blank=True, null=True)
+    # Leader-line anchor: the equipment's true position when the pictogram had to
+    # be moved aside to stay legible. Null means the pictogram sits on the spot.
+    anchor_x = models.FloatField(null=True, blank=True)
+    anchor_y = models.FloatField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    @property
+    def is_offset(self):
+        return self.anchor_x is not None and self.anchor_y is not None
+
     def __str__(self):
         return f"{self.icon_type} on {self.plan.title}"
+
+
+class PlanShape(models.Model):
+    """Free-hand annotation drawn on the plan: a line, a rectangle or a circle."""
+
+    SHAPE_LINE = 'line'
+    SHAPE_RECT = 'rect'
+    SHAPE_CIRCLE = 'circle'
+
+    SHAPE_CHOICES = [
+        (SHAPE_LINE, 'Line'),
+        (SHAPE_RECT, 'Rectangle'),
+        (SHAPE_CIRCLE, 'Circle'),
+    ]
+
+    plan = models.ForeignKey(EvacuationPlan, on_delete=models.CASCADE, related_name='shapes')
+    shape_type = models.CharField(max_length=16, choices=SHAPE_CHOICES)
+    x = models.FloatField()
+    y = models.FloatField()
+    width = models.FloatField()
+    height = models.FloatField()
+    rotation = models.FloatField(default=0.0)
+    stroke_width = models.FloatField(default=3.0)
+    color = models.CharField(max_length=16, default='#000000')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['id']
+
+    def __str__(self):
+        return f"{self.shape_type} on {self.plan.title}"
+
+
+class PlanText(models.Model):
+    """Free text label placed on the plan, with full typographic control."""
+
+    plan = models.ForeignKey(EvacuationPlan, on_delete=models.CASCADE, related_name='texts')
+    text = models.TextField(blank=True, default='')
+    x = models.FloatField()
+    y = models.FloatField()
+    font_size = models.FloatField(default=24.0)
+    font_family = models.CharField(max_length=64, default='Arial')
+    color = models.CharField(max_length=16, default='#000000')
+    bold = models.BooleanField(default=False)
+    italic = models.BooleanField(default=False)
+    # Optional colored background behind the text. Null/blank means no background.
+    background_color = models.CharField(max_length=16, null=True, blank=True)
+    rotation = models.FloatField(default=0.0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['id']
+
+    def __str__(self):
+        snippet = (self.text or '')[:20]
+        return f'"{snippet}" on {self.plan.title}'
 
 
 class PlanCleaningHistory(models.Model):
@@ -142,6 +208,7 @@ class UserOpenAISettings(models.Model):
 class OpenAIPlanCleaningJob(models.Model):
     STATUS_PENDING = 'pending'
     STATUS_LOADING_SOURCE = 'loading_source'
+    STATUS_DETECTING_TYPE = 'detecting_type'
     STATUS_ANALYZING = 'analyzing'
     STATUS_PROMPT_READY = 'prompt_ready'
     STATUS_GENERATING = 'generating'
@@ -152,6 +219,7 @@ class OpenAIPlanCleaningJob(models.Model):
     STATUS_CHOICES = [
         (STATUS_PENDING, 'Pending'),
         (STATUS_LOADING_SOURCE, 'Loading source'),
+        (STATUS_DETECTING_TYPE, 'Detecting plan type'),
         (STATUS_ANALYZING, 'Analyzing'),
         (STATUS_PROMPT_READY, 'Prompt ready'),
         (STATUS_GENERATING, 'Generating'),
@@ -177,6 +245,13 @@ class OpenAIPlanCleaningJob(models.Model):
     estimated_cost_max = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
     pricing_currency = models.CharField(max_length=8, default='USD')
     quality = models.CharField(max_length=16, default='medium')
+    # Step 1 of the flow: what the detector concluded, and what the user confirmed.
+    detected_plan_type = models.CharField(max_length=32, blank=True)
+    detection_confidence = models.FloatField(null=True, blank=True)
+    detected_elements = models.JSONField(default=dict, blank=True)
+    confirmed_plan_type = models.CharField(max_length=32, blank=True)
+    cleanup_level = models.CharField(max_length=16, default='medium')
+    cleaning_profile = models.CharField(max_length=64, blank=True)
     generation_attempts = models.PositiveIntegerField(default=1)
     verification_enabled = models.BooleanField(default=False)
     actual_cost = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)

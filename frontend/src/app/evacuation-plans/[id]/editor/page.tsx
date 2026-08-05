@@ -4,11 +4,10 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter, useParams } from "next/navigation";
-import Link from "next/link";
 import dynamic from "next/dynamic";
-import { ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, FileDown, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste } from "lucide-react";
-import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource } from "@/utils/safetyIcons";
-import { CanvasIcon, EraserShape, PlanCanvasHandle } from "@/components/PlanCanvas";
+import { ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, FileDown, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Type, AlertTriangle } from "lucide-react";
+import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource, isYouAreHereIcon } from "@/utils/safetyIcons";
+import { CanvasIcon, CanvasShape, CanvasText, ShapeKind, EraserShape, PlanCanvasHandle, FONT_OPTIONS } from "@/components/PlanCanvas";
 import { buildApiUrl } from "@/lib/api";
 import jsPDF from "jspdf";
 
@@ -37,6 +36,131 @@ const EXPORT_PAPER_SIZES = {
   a3: { label: "A3", widthMm: 420, heightMm: 297 }
 } as const;
 type ExportPaperFormat = keyof typeof EXPORT_PAPER_SIZES;
+const EXPORT_THEMES = {
+  modern: {
+    label: "Moderne",
+    description: "Bandeau vert, cartes sobres et légende latérale."
+  },
+  consignes: {
+    label: "Consignes latérales",
+    description: "Colonne rouge/verte à gauche, grand plan à droite."
+  },
+  ocean: {
+    label: "Océan pro",
+    description: "Bleu pétrole, turquoise et fond très clair."
+  },
+  graphite: {
+    label: "Graphite or",
+    description: "Noir doux, vert signalétique et accents dorés."
+  },
+  coral: {
+    label: "Corail clair",
+    description: "Couleurs chaudes, rouge sécurité et vert frais."
+  }
+} as const;
+type ExportTheme = keyof typeof EXPORT_THEMES;
+
+const EXPORT_THEME_PALETTES = {
+  modern: {
+    sheet: "#eef3f0",
+    headerStart: "#0d6b41",
+    headerEnd: "#168f5a",
+    accent: "#f5c518",
+    safety: "#c8362c",
+    intervention: "#33475b",
+    legend: "#168f5a",
+    panelTint: "#f4f8f6",
+    chipFill: "#f0f5f2",
+    text: "#1f2d27",
+    muted: "#7d8c85",
+    border: "rgba(12, 42, 28, 0.16)",
+    shadow: "rgba(12, 42, 28, 0.16)"
+  },
+  ocean: {
+    sheet: "#edf8fa",
+    headerStart: "#074b63",
+    headerEnd: "#00a7a7",
+    accent: "#ffd166",
+    safety: "#d62828",
+    intervention: "#146c94",
+    legend: "#00a896",
+    panelTint: "#e8f7f7",
+    chipFill: "#dff5f2",
+    text: "#12343b",
+    muted: "#607d86",
+    border: "rgba(7, 75, 99, 0.18)",
+    shadow: "rgba(7, 75, 99, 0.18)"
+  },
+  graphite: {
+    sheet: "#f3f4f2",
+    headerStart: "#20252b",
+    headerEnd: "#48515a",
+    accent: "#d9a441",
+    safety: "#c92a2a",
+    intervention: "#3f6f50",
+    legend: "#168f5a",
+    panelTint: "#f7f5ef",
+    chipFill: "#f1eadb",
+    text: "#222831",
+    muted: "#70777c",
+    border: "rgba(32, 37, 43, 0.18)",
+    shadow: "rgba(32, 37, 43, 0.18)"
+  },
+  coral: {
+    sheet: "#fff7f1",
+    headerStart: "#b83227",
+    headerEnd: "#ff7a45",
+    accent: "#20bf6b",
+    safety: "#d7263d",
+    intervention: "#168f5a",
+    legend: "#0e9f6e",
+    panelTint: "#fff0e6",
+    chipFill: "#ffe7d6",
+    text: "#3d2c29",
+    muted: "#8b6f69",
+    border: "rgba(184, 50, 39, 0.18)",
+    shadow: "rgba(184, 50, 39, 0.16)"
+  },
+  consignes: {
+    sheet: "#ffffff",
+    headerStart: "#007a3d",
+    headerEnd: "#00a651",
+    accent: "#f5c518",
+    safety: "#e5231b",
+    intervention: "#00a651",
+    legend: "#00a651",
+    panelTint: "#f4f8f6",
+    chipFill: "#f0f5f2",
+    text: "#1f2d27",
+    muted: "#7f8585",
+    border: "rgba(12, 42, 28, 0.16)",
+    shadow: "rgba(12, 42, 28, 0.16)"
+  }
+} as const;
+type ExportPalette = { [K in keyof typeof EXPORT_THEME_PALETTES.modern]: string };
+
+const EXPORT_CUSTOM_COLOR_FIELDS = [
+  { key: "headerStart", label: "Bandeau début" },
+  { key: "headerEnd", label: "Bandeau fin" },
+  { key: "accent", label: "Ligne accent" },
+  { key: "safety", label: "Cadre consignes" },
+  { key: "intervention", label: "Cadre intervention" },
+  { key: "legend", label: "Cadre légende" },
+  { key: "sheet", label: "Fond page" },
+  { key: "text", label: "Texte" }
+] as const;
+type ExportCustomColorKey = typeof EXPORT_CUSTOM_COLOR_FIELDS[number]["key"];
+
+const DEFAULT_EXPORT_CUSTOM_COLORS: Record<ExportCustomColorKey, string> = {
+  headerStart: "#0d6b41",
+  headerEnd: "#168f5a",
+  accent: "#f5c518",
+  safety: "#c8362c",
+  intervention: "#33475b",
+  legend: "#168f5a",
+  sheet: "#eef3f0",
+  text: "#1f2d27"
+};
 
 const EXPORT_CANVAS_HEIGHT = 1131; // 1600 / √2, rounded
 const ICON_CLIPBOARD_KEY = "securplan:icon-clipboard";
@@ -74,6 +198,32 @@ interface EvacuationPlanBackend {
     height: number;
     rotation: number;
     label: string;
+    anchor_x: number | null;
+    anchor_y: number | null;
+  }>;
+  shapes?: Array<{
+    id: number;
+    shape_type: ShapeKind;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    rotation: number;
+    stroke_width: number;
+    color: string;
+  }>;
+  texts?: Array<{
+    id: number;
+    text: string;
+    x: number;
+    y: number;
+    font_size: number;
+    font_family: string;
+    color: string;
+    bold: boolean;
+    italic: boolean;
+    background_color: string | null;
+    rotation: number;
   }>;
 }
 
@@ -158,9 +308,18 @@ export default function PlanEditorPage() {
   const [plan, setPlan] = useState<EvacuationPlanBackend | null>(null);
   const [availableIconDefinitions, setAvailableIconDefinitions] = useState<Record<string, SafetyIconDefinition>>(SAFETY_ICONS);
   const [icons, setIcons] = useState<CanvasIcon[]>([]);
+  const [shapes, setShapes] = useState<CanvasShape[]>([]);
+  const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
+  const [shapeTool, setShapeTool] = useState<ShapeKind | null>(null);
+  const [shapeStrokeWidth, setShapeStrokeWidth] = useState(3);
   const [selectedIconId, setSelectedIconId] = useState<string | null>(null);
   const [placementIconType, setPlacementIconType] = useState<IconType | null>(null);
   const [defaultIconSize, setDefaultIconSize] = useState({ width: 40, height: 40 });
+
+  // Free text annotations
+  const [texts, setTexts] = useState<CanvasText[]>([]);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [placementText, setPlacementText] = useState(false);
   
   const [zoom, setZoom] = useState(1.0);
   const [fitSignal, setFitSignal] = useState(0);
@@ -169,6 +328,8 @@ export default function PlanEditorPage() {
   const modeBeforeSpaceRef = useRef<"select" | "pan" | "erase">("select");
   const [leftDockOpen, setLeftDockOpen] = useState(true);
   const [rightDockOpen, setRightDockOpen] = useState(true);
+  // Default to 100% so the canvas fills the available space and no inert
+  // backdrop is left on the right side of the window.
   const [canvasWidthPercent, setCanvasWidthPercent] = useState(100);
   const planCanvasRef = useRef<PlanCanvasHandle>(null);
   const [eraserSize, setEraserSize] = useState(24);
@@ -224,6 +385,8 @@ export default function PlanEditorPage() {
   const [openaiWallThickness, setOpenaiWallThickness] = useState(3);
   const [openaiAdditionalInstructions, setOpenaiAdditionalInstructions] = useState("");
   const [existingRemoveDimensions, setExistingRemoveDimensions] = useState(true);
+  const [existingRemovePictograms, setExistingRemovePictograms] = useState(true);
+  const [existingRemoveText, setExistingRemoveText] = useState(false);
   const [existingRemoveAnnotations, setExistingRemoveAnnotations] = useState(true);
   const [existingRemoveTitleBlock, setExistingRemoveTitleBlock] = useState(true);
   const [existingRemoveHatching, setExistingRemoveHatching] = useState(true);
@@ -243,14 +406,23 @@ export default function PlanEditorPage() {
   const [openaiHistoryLoading, setOpenaiHistoryLoading] = useState(false);
   const [openaiHistoryApplyingId, setOpenaiHistoryApplyingId] = useState<number | null>(null);
   const [saveStatus, setSaveStatus] = useState("");
+  // Unsaved-changes guard: a JSON snapshot of icons/shapes/texts captured at the
+  // last successful save (and at initial load). Comparing the current state to it
+  // tells us whether leaving the editor would discard work.
+  const [savedSnapshot, setSavedSnapshot] = useState("");
+  const [pendingNav, setPendingNav] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<"png" | "pdf">("pdf");
+  const [exportTheme, setExportTheme] = useState<ExportTheme>("modern");
+  const [exportUseCustomColors, setExportUseCustomColors] = useState(false);
+  const [exportCustomColors, setExportCustomColors] = useState<Record<ExportCustomColorKey, string>>(DEFAULT_EXPORT_CUSTOM_COLORS);
   const [exportPaperFormat, setExportPaperFormat] = useState<ExportPaperFormat>("a4");
   const [exporting, setExporting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [exportPreviewUrl, setExportPreviewUrl] = useState("");
   const [exportAdjustmentPreviewUrl, setExportAdjustmentPreviewUrl] = useState("");
   const [exportAdjustmentPreviewLoading, setExportAdjustmentPreviewLoading] = useState(false);
+  const [exportPlanTitle, setExportPlanTitle] = useState("PLAN D'ÉVACUATION");
   const [exportSiteName, setExportSiteName] = useState("");
   const [exportSafetyText, setExportSafetyText] = useState(
     "INCENDIE\n- Appuyez sur le bouton d'alarme incendie.\n- Appelez les secours et indiquez votre position.\n- Fermez portes et fenêtres sans vous mettre en danger.\n\nEVACUATION\n- Suivez le cheminement indiqué.\n- N'utilisez pas les ascenseurs.\n- Rejoignez le point de rassemblement."
@@ -268,6 +440,16 @@ export default function PlanEditorPage() {
   const [exportPlanRotation, setExportPlanRotation] = useState(0);
   const [exportPlanOffsetX, setExportPlanOffsetX] = useState(0);
   const [exportPlanOffsetY, setExportPlanOffsetY] = useState(0);
+  // Logos overlaid on the export sheet: the client's brand (left of the header)
+  // and our studio's brand (right of the header). Stored as data URLs so the
+  // export works fully offline once loaded.
+  const [exportClientLogo, setExportClientLogo] = useState("");
+  const [exportStudioLogo, setExportStudioLogo] = useState("");
+  // Section visibility: each block can be hidden independently. When a whole
+  // column is empty the plan widens to reclaim the space.
+  const [exportShowSafety, setExportShowSafety] = useState(true);
+  const [exportShowIntervention, setExportShowIntervention] = useState(true);
+  const [exportShowLegend, setExportShowLegend] = useState(true);
   const iconDefinitions = useMemo(
     () => ({ ...SAFETY_ICONS, ...availableIconDefinitions }),
     [availableIconDefinitions]
@@ -282,8 +464,12 @@ export default function PlanEditorPage() {
         Math.round((viewportWidth - leftDockWidth - rightDockWidth) * (canvasWidthPercent / 100))
       )
     : 0;
-  // Total interface width: docks + workspace. Always <= the window.
-  const interfaceWidth = viewportWidth ? leftDockWidth + canvasColumnWidth + rightDockWidth : 0;
+  // Total interface width: docks + workspace. Clamped to the viewport so the
+  // fixed container can never exceed the window (no horizontal scroll, no
+  // inert backdrop on the right when the min-width floor kicks in).
+  const interfaceWidth = viewportWidth
+    ? Math.min(viewportWidth, leftDockWidth + canvasColumnWidth + rightDockWidth)
+    : 0;
 
   const getPlanAuthHeaders = (): Record<string, string> => {
     const authToken = token || (typeof window !== "undefined" ? localStorage.getItem("token") : null);
@@ -294,6 +480,49 @@ export default function PlanEditorPage() {
     if (url.startsWith("blob:")) {
       URL.revokeObjectURL(url);
     }
+  };
+
+  const normalizeHexColor = (value: string, fallback: string) => {
+    const trimmed = value.trim();
+    const match = trimmed.match(/^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+    if (!match) return fallback;
+
+    const hex = match[1];
+    if (hex.length === 3) {
+      return `#${hex.split("").map((char) => char + char).join("")}`.toLowerCase();
+    }
+    return `#${hex}`.toLowerCase();
+  };
+
+  const isValidHexColor = (value: string) => /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value.trim());
+
+  const getExportPalette = (): ExportPalette => {
+    const base = (EXPORT_THEME_PALETTES[exportTheme as keyof typeof EXPORT_THEME_PALETTES] || EXPORT_THEME_PALETTES.modern) as ExportPalette;
+    if (!exportUseCustomColors) return base;
+
+    return {
+      ...base,
+      headerStart: normalizeHexColor(exportCustomColors.headerStart, base.headerStart),
+      headerEnd: normalizeHexColor(exportCustomColors.headerEnd, base.headerEnd),
+      accent: normalizeHexColor(exportCustomColors.accent, base.accent),
+      safety: normalizeHexColor(exportCustomColors.safety, base.safety),
+      intervention: normalizeHexColor(exportCustomColors.intervention, base.intervention),
+      legend: normalizeHexColor(exportCustomColors.legend, base.legend),
+      sheet: normalizeHexColor(exportCustomColors.sheet, base.sheet),
+      text: normalizeHexColor(exportCustomColors.text, base.text),
+    };
+  };
+
+  const updateExportCustomColor = (key: ExportCustomColorKey, value: string) => {
+    setExportCustomColors((current) => ({ ...current, [key]: value }));
+  };
+
+  const getThemeCustomColors = (theme: ExportTheme = exportTheme) => {
+    const base = (EXPORT_THEME_PALETTES[theme as keyof typeof EXPORT_THEME_PALETTES] || EXPORT_THEME_PALETTES.modern) as ExportPalette;
+    return EXPORT_CUSTOM_COLOR_FIELDS.reduce<Record<ExportCustomColorKey, string>>((colors, field) => {
+      colors[field.key] = base[field.key] || DEFAULT_EXPORT_CUSTOM_COLORS[field.key];
+      return colors;
+    }, { ...DEFAULT_EXPORT_CUSTOM_COLORS });
   };
 
   useEffect(() => {
@@ -322,9 +551,54 @@ export default function PlanEditorPage() {
             width: icon.width,
             height: icon.height,
             rotation: icon.rotation,
-            label: icon.label || ""
+            label: icon.label || "",
+            anchor_x: icon.anchor_x ?? null,
+            anchor_y: icon.anchor_y ?? null
           }));
           setIcons(canvasIcons);
+
+          const canvasShapes: CanvasShape[] = (data.shapes || []).map((shape) => ({
+            id: shape.id,
+            tempId: `shape-${shape.id}-${Math.random().toString(36).slice(2, 11)}`,
+            shape_type: shape.shape_type,
+            x: shape.x,
+            y: shape.y,
+            width: shape.width,
+            height: shape.height,
+            rotation: shape.rotation,
+            stroke_width: shape.stroke_width,
+            color: shape.color
+          }));
+          setShapes(canvasShapes);
+
+          const canvasTexts: CanvasText[] = (data.texts || []).map((t) => ({
+            id: t.id,
+            tempId: `text-${t.id}-${Math.random().toString(36).slice(2, 11)}`,
+            text: t.text,
+            x: t.x,
+            y: t.y,
+            font_size: t.font_size,
+            font_family: t.font_family,
+            color: t.color,
+            bold: t.bold,
+            italic: t.italic,
+            background_color: t.background_color ?? null,
+            rotation: t.rotation,
+          }));
+          setTexts(canvasTexts);
+
+          // Baseline for the unsaved-changes guard: the freshly loaded state.
+          setSavedSnapshot(JSON.stringify({
+            icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y }) => ({
+              icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y,
+            })),
+            shapes: canvasShapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color }) => ({
+              shape_type, x, y, width, height, rotation, stroke_width, color,
+            })),
+            texts: canvasTexts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation }) => ({
+              text, x, y, font_size, font_family, color, bold, italic, background_color, rotation,
+            })),
+          }));
         } else if (res.status === 401 || res.status === 403) {
           router.push("/login");
         } else {
@@ -382,12 +656,38 @@ export default function PlanEditorPage() {
     };
   }, [exportPreviewUrl]);
 
+  // Warn the user through the browser's native dialog when they close the tab
+  // or navigate away while there are unsaved edits. The latest state is read
+  // inside the handler so the listener never goes stale.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      const current = JSON.stringify({
+        icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y }) => ({
+          icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y,
+        })),
+        shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color }) => ({
+          shape_type, x, y, width, height, rotation, stroke_width, color,
+        })),
+        texts: texts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation }) => ({
+          text, x, y, font_size, font_family, color, bold, italic, background_color, rotation,
+        })),
+      });
+      if (current !== savedSnapshot) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [icons, shapes, texts, savedSnapshot]);
+
   useEffect(() => {
     if (!placementIconType) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setPlacementIconType(null);
+        setPlacementText(false);
       }
     };
 
@@ -558,6 +858,73 @@ export default function PlanEditorPage() {
     });
   };
 
+  // ─── Text annotations ────────────────────────────────────────────────
+  const handleAddText = () => {
+    setPlacementText(true);
+    setPlacementIconType(null);
+    setShapeTool(null);
+    setSelectedIconId(null);
+    setSelectedShapeId(null);
+    setSelectedTextId(null);
+    setMode("select");
+  };
+
+  const handlePlaceText = (x: number, y: number) => {
+    const newText: CanvasText = {
+      tempId: `text-new-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      text: "Texte",
+      x,
+      y,
+      font_size: 24,
+      font_family: "Arial",
+      color: "#000000",
+      bold: false,
+      italic: false,
+      background_color: null,
+      rotation: 0,
+    };
+    setTexts((current) => [...current, newText]);
+    setSelectedTextId(newText.tempId);
+    setSelectedIconId(null);
+    setSelectedShapeId(null);
+    setPlacementText(false);
+  };
+
+  const handleTextsChange = (updated: CanvasText[]) => {
+    setTexts(updated);
+  };
+
+  const handleUpdateSelectedText = (field: keyof CanvasText, value: unknown) => {
+    if (!selectedTextId) return;
+    setTexts((current) =>
+      current.map((t) => (t.tempId === selectedTextId ? { ...t, [field]: value } : t))
+    );
+  };
+
+  const handleDeleteSelectedText = () => {
+    if (!selectedTextId) return;
+    setTexts((current) => current.filter((t) => t.tempId !== selectedTextId));
+    setSelectedTextId(null);
+  };
+  // ─────────────────────────────────────────────────────────────────────
+
+  // Serialise the editable layers (without volatile client-only fields like
+  // tempId/id) so a deep-equality check detects any real change.
+  const buildEditableSnapshot = () =>
+    JSON.stringify({
+      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y }) => ({
+        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y,
+      })),
+      shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color }) => ({
+        shape_type, x, y, width, height, rotation, stroke_width, color,
+      })),
+      texts: texts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation }) => ({
+        text, x, y, font_size, font_family, color, bold, italic, background_color, rotation,
+      })),
+    });
+
+  const hasUnsavedChanges = () => buildEditableSnapshot() !== savedSnapshot;
+
   const handleSave = async () => {
     setSaving(true);
     setSaveStatus("Sauvegarde...");
@@ -572,9 +939,53 @@ export default function PlanEditorPage() {
         body: JSON.stringify(icons),
       });
 
-      if (res.ok) {
+      const shapesRes = await fetch(buildApiUrl(`/api/plans/${id}/sync-shapes/`), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...getPlanAuthHeaders(),
+        },
+        body: JSON.stringify(
+          shapes.map((shape) => ({
+            shape_type: shape.shape_type,
+            x: shape.x,
+            y: shape.y,
+            width: shape.width,
+            height: shape.height,
+            rotation: shape.rotation,
+            stroke_width: shape.stroke_width,
+            color: shape.color
+          }))
+        ),
+      });
+
+      const textsRes = await fetch(buildApiUrl(`/api/plans/${id}/sync-texts/`), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...getPlanAuthHeaders(),
+        },
+        body: JSON.stringify(
+          texts.map((t) => ({
+            text: t.text,
+            x: t.x,
+            y: t.y,
+            font_size: t.font_size,
+            font_family: t.font_family,
+            color: t.color,
+            bold: t.bold,
+            italic: t.italic,
+            background_color: t.background_color,
+            rotation: t.rotation,
+          }))
+        ),
+      });
+
+      if (res.ok && shapesRes.ok && textsRes.ok) {
         setSaveStatus("Sauvegardé !");
         setTimeout(() => setSaveStatus(""), 2000);
+        // Refresh the baseline so the just-saved state is no longer "unsaved".
+        setSavedSnapshot(buildEditableSnapshot());
       } else {
         setSaveStatus("Erreur");
       }
@@ -816,7 +1227,10 @@ export default function PlanEditorPage() {
 
   const formatOpenAIBackendError = (data: Partial<OpenAICleanJobStatus>) => {
     const errorCode = data.error_code ? `${data.error_code} - ` : "";
-    return `${errorCode}${data.error || "Erreur pendant le nettoyage OpenAI."}`;
+    const message = `${errorCode}${data.error || "Erreur pendant le nettoyage OpenAI."}`;
+    // The diagnostic names the exact check that failed. Without it an intermittent
+    // PROMPT_INVALID is impossible to tell apart from any other.
+    return data.diagnostic ? `${message}\n\nDétail technique : ${data.diagnostic}` : message;
   };
 
   const formatEstimatedCost = (estimate: OpenAICostEstimate) => {
@@ -928,6 +1342,8 @@ export default function PlanEditorPage() {
             output_size: openaiOutputSize,
             verification_enabled: openaiVerificationEnabled,
             max_automatic_corrections: openaiMaxAutomaticCorrections,
+            supprimer_pictogrammes: existingRemovePictograms,
+            supprimer_texte: existingRemoveText,
             supprimer_dimensions: existingRemoveDimensions,
             supprimer_annotations: existingRemoveAnnotations,
             supprimer_cartouche: existingRemoveTitleBlock,
@@ -1068,6 +1484,28 @@ export default function PlanEditorPage() {
   };
 
   const selectedIcon = icons.find((i) => i.tempId === selectedIconId);
+  const selectedText = texts.find((t) => t.tempId === selectedTextId);
+
+  // The "Vous êtes ici" marker defines the reading direction: the plan is turned
+  // so that what the reader faces points up. Rotating the marker in the editor is
+  // therefore how you orient the exported plan.
+  const youAreHereIcon = icons.find((icon) => isYouAreHereIcon(icon.icon_type, iconDefinitions));
+  const planReadingAngle = youAreHereIcon ? youAreHereIcon.rotation : null;
+
+  const previousReadingAngleRef = useRef<number | null>(null);
+  useEffect(() => {
+    const previous = previousReadingAngleRef.current;
+    previousReadingAngleRef.current = planReadingAngle;
+
+    if (planReadingAngle !== null) {
+      setExportPlanRotation(planReadingAngle);
+      return;
+    }
+
+    // The marker drove the orientation and has just been deleted: drop the angle
+    // with it, otherwise the sheet stays turned with nothing explaining why.
+    if (previous !== null) setExportPlanRotation(0);
+  }, [planReadingAngle]);
   const usedIconTypes = Array.from(new Set(icons.map((icon) => icon.icon_type)));
 
   const handleUpdateSelectedIcon = (field: keyof CanvasIcon, value: any) => {
@@ -1092,6 +1530,56 @@ export default function PlanEditorPage() {
     if (!selectedIconId) return;
     setIcons(icons.filter((i) => i.tempId !== selectedIconId));
     setSelectedIconId(null);
+  };
+
+  // ── Pictogram offset (leader line) ────────────────────────────────────────
+  // In a cramped corridor the symbol cannot sit on the equipment without becoming
+  // unreadable. Offsetting keeps the position exact — a dot stays on the spot —
+  // while the pictogram moves into free space, joined by a thin line.
+  const OFFSET_STEP = 70;
+
+  const handleOffsetIcon = () => {
+    if (!selectedIcon) return;
+
+    const anchorX = selectedIcon.x + selectedIcon.width / 2;
+    const anchorY = selectedIcon.y + selectedIcon.height / 2;
+
+    setIcons((currentIcons) =>
+      currentIcons.map((icon) =>
+        icon.tempId === selectedIcon.tempId
+          ? {
+              ...icon,
+              anchor_x: anchorX,
+              anchor_y: anchorY,
+              // Move the symbol clear of its anchor so the leader is visible at once.
+              x: icon.x + OFFSET_STEP,
+              y: icon.y - OFFSET_STEP
+            }
+          : icon
+      )
+    );
+  };
+
+  const handleClearIconOffset = () => {
+    if (!selectedIcon || selectedIcon.anchor_x == null || selectedIcon.anchor_y == null) return;
+
+    const anchorX = selectedIcon.anchor_x;
+    const anchorY = selectedIcon.anchor_y;
+
+    setIcons((currentIcons) =>
+      currentIcons.map((icon) =>
+        icon.tempId === selectedIcon.tempId
+          ? {
+              ...icon,
+              // Put the pictogram back on the equipment it was pointing at.
+              x: anchorX - icon.width / 2,
+              y: anchorY - icon.height / 2,
+              anchor_x: null,
+              anchor_y: null
+            }
+          : icon
+      )
+    );
   };
 
   // ── Icon clipboard ────────────────────────────────────────────────────────
@@ -1352,6 +1840,22 @@ export default function PlanEditorPage() {
     return trimmedCanvas;
   };
 
+  /** Largest font size at which the title still fits the band, down to a floor. */
+  const fitTitleFontSize = (
+    context: CanvasRenderingContext2D,
+    title: string,
+    maxWidth: number,
+    startSize: number
+  ) => {
+    let size = startSize;
+    while (size > 18) {
+      context.font = `800 ${size}px ${EXPORT_FONT}`;
+      if (context.measureText(title).width <= maxWidth) break;
+      size -= 1;
+    }
+    return size;
+  };
+
   const tracePath = (
     context: CanvasRenderingContext2D,
     x: number,
@@ -1501,14 +2005,18 @@ export default function PlanEditorPage() {
 
         stage.position({ x: 0, y: 0 });
         stage.scale({ x: 1, y: 1 });
+
         stage.draw();
 
         try {
+          // The sheet turns with the scene, so its axis-aligned bounding box —
+          // not its own width/height — is what has to be captured.
+          const bounds = backgroundNode.getClientRect({ relativeTo: stage, skipShadow: true });
           return stage.toDataURL({
-            x: backgroundNode.x(),
-            y: backgroundNode.y(),
-            width: backgroundNode.width(),
-            height: backgroundNode.height(),
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
             pixelRatio
           });
         } finally {
@@ -1548,7 +2056,9 @@ export default function PlanEditorPage() {
       backgroundType: plan?.background_type,
       useCleaned: Boolean(plan?.use_cleaned_background),
       // No zoom here on purpose: the capture neutralises the view transform, so
-      // panning or zooming no longer invalidates the cached render.
+      // panning or zooming no longer invalidates the cached render. The plan
+      // rotation does belong here — it is baked into the pictogram compensation.
+      exportPlanRotation,
       eraseStrokeCount,
       icons: icons.map((icon) => [
         icon.icon_type,
@@ -1571,6 +2081,59 @@ export default function PlanEditorPage() {
     const trimmedPlan = trimWhiteMargins(planImage);
     planRenderCacheRef.current = { key, image: trimmedPlan };
     return trimmedPlan;
+  };
+
+  /**
+   * Draws a logo inside the header band. A white rounded plate keeps coloured or
+   * dark logos legible over any theme gradient. When no explicit X bounds are
+   * given, the logo hugs the sheet's left/right margin.
+   *
+   * The logo is fit by height first, then clamped by width so wide wordmarks do
+   * not overflow their plate.
+   */
+  const drawHeaderLogo = (
+    context: CanvasRenderingContext2D,
+    image: HTMLImageElement | null,
+    side: "left" | "right",
+    headerHeight: number,
+    explicitLeftX?: number,
+    explicitRightX?: number
+  ) => {
+    if (!image || !image.width || !image.height) return;
+
+    const platePad = 6;
+    const plateH = headerHeight - 22;
+    // A logo plate is at most ~120px wide so the title stays the focal point.
+    const maxPlateW = 120;
+    const aspect = image.width / image.height;
+
+    let drawH = plateH - platePad * 2;
+    let drawW = drawH * aspect;
+    if (drawW > maxPlateW - platePad * 2) {
+      drawW = maxPlateW - platePad * 2;
+      drawH = drawW / aspect;
+    }
+
+    const plateW = drawW + platePad * 2;
+    const leftX = explicitLeftX ?? (side === "left" ? EXPORT_MARGIN : EXPORT_CANVAS_WIDTH - EXPORT_MARGIN - plateW);
+    const rightX = explicitRightX ?? (side === "left" ? leftX + plateW : EXPORT_CANVAS_WIDTH - EXPORT_MARGIN);
+    const plateX = side === "left" ? leftX : rightX - plateW;
+    const plateY = (headerHeight - plateH) / 2;
+
+    context.save();
+    context.shadowColor = "rgba(0,0,0,0.18)";
+    context.shadowBlur = 8;
+    context.shadowOffsetY = 2;
+    context.fillStyle = "#ffffff";
+    tracePath(context, plateX, plateY, plateW, plateH, 8);
+    context.fill();
+    context.restore();
+
+    context.save();
+    tracePath(context, plateX, plateY, plateW, plateH, 8);
+    context.clip();
+    context.drawImage(image, plateX + (plateW - drawW) / 2, plateY + (plateH - drawH) / 2, drawW, drawH);
+    context.restore();
   };
 
   const buildTemplateImage = async ({
@@ -1597,6 +2160,14 @@ export default function PlanEditorPage() {
     );
     const loadedLegendImages = legendImages.filter((item): item is { type: IconType; image: HTMLImageElement } => Boolean(item));
 
+    // Logos are optional: resolve whichever data URL was set, ignore failures.
+    const logoResults = await Promise.allSettled([
+      exportClientLogo ? loadImage(exportClientLogo) : Promise.resolve(null),
+      exportStudioLogo ? loadImage(exportStudioLogo) : Promise.resolve(null)
+    ]);
+    const clientLogoImage = logoResults[0].status === "fulfilled" ? logoResults[0].value : null;
+    const studioLogoImage = logoResults[1].status === "fulfilled" ? logoResults[1].value : null;
+
     const canvas = document.createElement("canvas");
     canvas.width = EXPORT_CANVAS_WIDTH * outputScale;
     canvas.height = EXPORT_CANVAS_HEIGHT * outputScale;
@@ -1605,26 +2176,195 @@ export default function PlanEditorPage() {
 
     context.scale(outputScale, outputScale);
     context.textBaseline = "alphabetic";
+    const palette = getExportPalette();
+
+    if (exportTheme === "consignes") {
+      context.fillStyle = palette.sheet;
+      context.fillRect(0, 0, EXPORT_CANVAS_WIDTH, EXPORT_CANVAS_HEIGHT);
+
+      const sideW = 388;
+      const mainX = sideW;
+      const headerH = 90;
+      const red = palette.safety;
+      const green = palette.legend;
+      const darkGreen = palette.headerStart;
+      const grey = palette.muted;
+
+      context.fillStyle = red;
+      context.fillRect(0, 0, sideW, 94);
+      context.fillStyle = "#ffffff";
+      context.font = `900 38px ${EXPORT_FONT}`;
+      context.textAlign = "center";
+      drawTrackedText(context, "CONSIGNES", sideW / 2, 42, "0.14em");
+      context.font = `700 13px ${EXPORT_FONT}`;
+      context.fillText("EN CAS D'INCENDIE", sideW / 2, 69);
+
+      const consignesHeaderGradient = context.createLinearGradient(mainX, 0, EXPORT_CANVAS_WIDTH, headerH);
+      consignesHeaderGradient.addColorStop(0, palette.headerStart);
+      consignesHeaderGradient.addColorStop(1, palette.headerEnd);
+      context.fillStyle = consignesHeaderGradient;
+      context.fillRect(mainX, 0, EXPORT_CANVAS_WIDTH - mainX, headerH);
+      context.fillStyle = "#ffffff";
+      context.font = `900 42px ${EXPORT_FONT}`;
+      const bandTitle = exportPlanTitle.trim() || "PLAN D'ÉVACUATION";
+      const bandWidth = EXPORT_CANVAS_WIDTH - mainX;
+      context.font = `800 ${fitTitleFontSize(context, bandTitle, bandWidth - 80, 48)}px ${EXPORT_FONT}`;
+      drawTrackedText(context, bandTitle, mainX + bandWidth / 2, 58, "0.16em");
+
+      const levelW = 72;
+      context.fillStyle = darkGreen;
+      context.fillRect(mainX, headerH, levelW, 70);
+      context.fillStyle = "#ffffff";
+      context.font = `700 15px ${EXPORT_FONT}`;
+      context.fillText("Niveau", mainX + levelW / 2, headerH + 21);
+      context.font = `800 36px ${EXPORT_FONT}`;
+      context.fillText(plan?.floor_name || "0", mainX + levelW / 2, headerH + 58);
+
+      context.fillStyle = palette.text;
+      context.font = `800 26px ${EXPORT_FONT}`;
+      context.fillText(exportSiteName || plan?.building_name || "Nom du site", mainX + (EXPORT_CANVAS_WIDTH - mainX) / 2, headerH + 34);
+      context.font = `500 16px ${EXPORT_FONT}`;
+      context.fillText(plan?.floor_name || plan?.title || "", mainX + (EXPORT_CANVAS_WIDTH - mainX) / 2, headerH + 57);
+      context.textAlign = "left";
+
+      // Logos sit in the plan header band (from mainX to the right edge).
+      // Offset them so they clear the level block on the far left of that band.
+      drawHeaderLogo(context, clientLogoImage, "left", headerH, mainX + levelW + 12, mainX + levelW + 96);
+      drawHeaderLogo(context, studioLogoImage, "right", headerH, EXPORT_CANVAS_WIDTH - 108, EXPORT_CANVAS_WIDTH - 12);
+
+      const drawSectionBar = (y: number, label: string, color: string) => {
+        context.fillStyle = color;
+        context.fillRect(16, y, sideW - 32, 24);
+        context.fillStyle = "#ffffff";
+        context.font = `800 14px ${EXPORT_FONT}`;
+        context.textAlign = "center";
+        drawTrackedText(context, label, sideW / 2, y + 17, "0.14em");
+        context.textAlign = "left";
+      };
+
+      const drawInstructionBlock = (
+        y: number,
+        title: string,
+        body: string,
+        color: string,
+        height: number,
+        fontSize: number
+      ) => {
+        drawSectionBar(y, title, color);
+        context.save();
+        context.beginPath();
+        context.rect(18, y + 34, sideW - 36, height - 44);
+        context.clip();
+        context.fillStyle = palette.text;
+        context.font = `500 ${fontSize}px ${EXPORT_FONT}`;
+        drawWrappedText(context, body, 24, y + 54, sideW - 48, Math.round(fontSize * 1.38));
+        context.restore();
+      };
+
+      if (exportShowSafety) {
+        drawInstructionBlock(112, "INCENDIE", exportSafetyText, red, 300, Math.max(10, exportSafetyFontSize - 3));
+        drawInstructionBlock(426, "ÉVACUATION", "Suivez le cheminement indiqué.\nN'utilisez pas les ascenseurs.\nRejoignez le point de rassemblement.\nAidez les personnes en difficulté sans vous mettre en danger.", green, 255, 13);
+      }
+      if (exportShowIntervention) {
+        drawInstructionBlock(700, "RESPONSABLES D'INTERVENTION", exportInterventionText, green, 205, Math.max(10, exportInterventionFontSize - 3));
+      }
+
+      drawSectionBar(922, "PRÉVENTION", grey);
+      context.fillStyle = palette.text;
+      context.font = `500 12px ${EXPORT_FONT}`;
+      drawWrappedText(
+        context,
+        "Fermez portes et fenêtres.\nN'encombrez pas les issues.\nInterdiction de fumer dans les zones signalées.",
+        24,
+        970,
+        sideW - 48,
+        18
+      );
+
+      const leftColumnVisibleConsignes = exportShowSafety || exportShowIntervention;
+      const planX = leftColumnVisibleConsignes ? mainX + 36 : 36;
+      const planY = headerH + 84;
+      const planW = EXPORT_CANVAS_WIDTH - planX - 36;
+      const planH = EXPORT_CANVAS_HEIGHT - planY - 118;
+      const baseScale = Math.min(planW / trimmedPlan.width, planH / trimmedPlan.height);
+      const scale = baseScale * (exportPlanScale / 100);
+      const drawW = trimmedPlan.width * scale;
+      const drawH = trimmedPlan.height * scale;
+      const drawX = planX + planW / 2 + exportPlanOffsetX;
+      const drawY = planY + planH / 2 + exportPlanOffsetY;
+
+      context.save();
+      context.beginPath();
+      context.rect(planX, planY, planW, planH);
+      context.clip();
+      context.translate(drawX, drawY);
+      context.drawImage(trimmedPlan, -drawW / 2, -drawH / 2, drawW, drawH);
+      context.restore();
+
+      if (exportShowLegend) {
+      const legendW = 410;
+      const legendH = 150;
+      const legendX = planX + 60;
+      const legendY = EXPORT_CANVAS_HEIGHT - legendH - 62;
+      context.fillStyle = "rgba(255,255,255,0.96)";
+      tracePath(context, legendX, legendY, legendW, legendH, 8);
+      context.fill();
+      context.strokeStyle = palette.border;
+      context.lineWidth = 1.5;
+      tracePath(context, legendX, legendY, legendW, legendH, 8);
+      context.stroke();
+      context.fillStyle = palette.text;
+      context.font = `800 13px ${EXPORT_FONT}`;
+      context.textAlign = "center";
+      context.fillText("LÉGENDE PLAN", legendX + legendW / 2, legendY + 22);
+      context.textAlign = "left";
+
+      const legendColumns = 2;
+      const legendRows = Math.ceil(Math.min(loadedLegendImages.length, 10) / legendColumns);
+      const rowH = Math.max(21, Math.floor((legendH - 38) / Math.max(1, legendRows)));
+      loadedLegendImages.slice(0, 10).forEach(({ type, image }, index) => {
+        const col = index % legendColumns;
+        const row = Math.floor(index / legendColumns);
+        const x = legendX + 18 + col * (legendW / legendColumns);
+        const y = legendY + 38 + row * rowH;
+        context.drawImage(image, x, y - 12, 18, 18);
+        context.fillStyle = palette.text;
+        context.font = `500 10px ${EXPORT_FONT}`;
+        const label = iconDefinitions[type]?.label || type;
+        context.fillText(label.length > 26 ? `${label.slice(0, 24)}...` : label, x + 26, y + 2);
+      });
+      } // end legend block (consignes)
+
+      context.fillStyle = "#ffffff";
+      context.fillRect(mainX + 16, EXPORT_CANVAS_HEIGHT - 46, 250, 26);
+      context.fillStyle = palette.text;
+      context.font = `600 13px ${EXPORT_FONT}`;
+      context.fillText(`Mis à jour le ${new Date().toLocaleDateString("fr-FR")}`, mainX + 24, EXPORT_CANVAS_HEIGHT - 28);
+
+      return canvas.toDataURL("image/png", 1);
+    }
 
     // ── Sheet background ────────────────────────────────────────────────
-    context.fillStyle = "#eef3f0";
+    context.fillStyle = palette.sheet;
     context.fillRect(0, 0, EXPORT_CANVAS_WIDTH, EXPORT_CANVAS_HEIGHT);
 
     // ── Header band ─────────────────────────────────────────────────────
     const headerGradient = context.createLinearGradient(0, 0, EXPORT_CANVAS_WIDTH, EXPORT_HEADER_H);
-    headerGradient.addColorStop(0, EXPORT_GREEN_DARK);
-    headerGradient.addColorStop(1, EXPORT_GREEN);
+    headerGradient.addColorStop(0, palette.headerStart);
+    headerGradient.addColorStop(1, palette.headerEnd);
     context.fillStyle = headerGradient;
     context.fillRect(0, 0, EXPORT_CANVAS_WIDTH, EXPORT_HEADER_H);
 
     // Safety-signage accent rule under the band
-    context.fillStyle = "#f5c518";
+    context.fillStyle = palette.accent;
     context.fillRect(0, EXPORT_HEADER_H, EXPORT_CANVAS_WIDTH, 4);
 
     context.textAlign = "center";
     context.fillStyle = "#ffffff";
     context.font = `800 42px ${EXPORT_FONT}`;
-    drawTrackedText(context, "PLAN D'ÉVACUATION", EXPORT_CANVAS_WIDTH / 2, 50, "0.12em");
+    const sheetTitle = exportPlanTitle.trim() || "PLAN D'ÉVACUATION";
+    context.font = `800 ${fitTitleFontSize(context, sheetTitle, EXPORT_CANVAS_WIDTH - 120, 42)}px ${EXPORT_FONT}`;
+    drawTrackedText(context, sheetTitle, EXPORT_CANVAS_WIDTH / 2, 50, "0.12em");
 
     context.fillStyle = "rgba(255,255,255,0.92)";
     context.font = `600 24px ${EXPORT_FONT}`;
@@ -1635,13 +2375,25 @@ export default function PlanEditorPage() {
     );
     context.textAlign = "left";
 
+    // ── Header logos: client on the left, studio on the right ───────────
+    // Both sit inside the coloured band, so a white plate keeps coloured or
+    // dark logos legible regardless of the theme palette.
+    drawHeaderLogo(context, clientLogoImage, "left", EXPORT_HEADER_H);
+    drawHeaderLogo(context, studioLogoImage, "right", EXPORT_HEADER_H);
+
     // ── Column geometry ─────────────────────────────────────────────────
+    // Columns are dropped entirely when every panel they hold is hidden, and the
+    // plan reclaims the freed width so the sheet never shows a dead side strip.
+    const leftColumnVisible = exportShowSafety || exportShowIntervention;
     const contentTop = EXPORT_HEADER_H + 22;
     const contentBottom = EXPORT_CANVAS_HEIGHT - EXPORT_FOOTER_H - 18;
     const leftX = EXPORT_MARGIN;
-    const rightX = EXPORT_CANVAS_WIDTH - EXPORT_MARGIN - EXPORT_SIDE_W;
-    const planX = leftX + EXPORT_SIDE_W + EXPORT_GUTTER;
-    const planW = rightX - EXPORT_GUTTER - planX;
+    const leftColumnWidth = leftColumnVisible ? EXPORT_SIDE_W : 0;
+    const rightX = exportShowLegend
+      ? EXPORT_CANVAS_WIDTH - EXPORT_MARGIN - EXPORT_SIDE_W
+      : EXPORT_CANVAS_WIDTH - EXPORT_MARGIN;
+    const planX = leftX + leftColumnWidth + (leftColumnVisible ? EXPORT_GUTTER : 0);
+    const planW = Math.max(0, rightX - EXPORT_GUTTER - planX);
     const planY = contentTop;
     const planH = contentBottom - contentTop;
 
@@ -1651,31 +2403,36 @@ export default function PlanEditorPage() {
     const legendHeight = exportLegendPanelHeight;
 
     // ── Left column: instructions ───────────────────────────────────────
-    drawPanel(
-      context,
-      leftX,
-      contentTop,
-      EXPORT_SIDE_W,
-      topPanelH,
-      "Consignes de sécurité",
-      exportSafetyText,
-      exportSafetyFontSize,
-      EXPORT_RED
-    );
-    drawPanel(
-      context,
-      leftX,
-      bottomPanelY,
-      EXPORT_SIDE_W,
-      bottomPanelH,
-      "Équipe d'intervention",
-      exportInterventionText,
-      exportInterventionFontSize,
-      EXPORT_SLATE
-    );
+    if (exportShowSafety) {
+      drawPanel(
+        context,
+        leftX,
+        contentTop,
+        EXPORT_SIDE_W,
+        topPanelH,
+        "Consignes de sécurité",
+        exportSafetyText,
+        exportSafetyFontSize,
+        palette.safety
+      );
+    }
+    if (exportShowIntervention) {
+      drawPanel(
+        context,
+        leftX,
+        bottomPanelY,
+        EXPORT_SIDE_W,
+        bottomPanelH,
+        "Équipe d'intervention",
+        exportInterventionText,
+        exportInterventionFontSize,
+        palette.intervention
+      );
+    }
 
     // ── Right column: legend ────────────────────────────────────────────
-    drawCard(context, rightX, contentTop, EXPORT_SIDE_W, legendHeight, "Légende", EXPORT_GREEN);
+    if (exportShowLegend) {
+    drawCard(context, rightX, contentTop, EXPORT_SIDE_W, legendHeight, "Légende", palette.legend);
 
     context.save();
     context.beginPath();
@@ -1684,7 +2441,7 @@ export default function PlanEditorPage() {
     context.font = `400 ${exportLegendFontSize}px ${EXPORT_FONT}`;
 
     if (loadedLegendImages.length === 0) {
-      context.fillStyle = "#7d8c85";
+      context.fillStyle = palette.muted;
       context.fillText("Aucun équipement placé sur le plan.", rightX + 17, contentTop + EXPORT_CARD_HEADER_H + 32);
     }
 
@@ -1721,22 +2478,22 @@ export default function PlanEditorPage() {
 
       // Zebra striping keeps long legends readable in print
       if (index % 2 === 1) {
-        context.fillStyle = "#f4f8f6";
+        context.fillStyle = palette.panelTint;
         context.fillRect(rightX + 1, legendRowY, EXPORT_SIDE_W - 2, rowHeight);
       }
 
       const chipX = rightX + 16;
       const chipY = legendRowY + (rowHeight - chipSize) / 2;
-      context.fillStyle = "#f0f5f2";
+      context.fillStyle = palette.chipFill;
       tracePath(context, chipX, chipY, chipSize, chipSize, 7);
       context.fill();
-      context.strokeStyle = "rgba(12, 42, 28, 0.10)";
+      context.strokeStyle = palette.border;
       context.lineWidth = 1;
       tracePath(context, chipX, chipY, chipSize, chipSize, 7);
       context.stroke();
       context.drawImage(image, chipX + 6, chipY + 6, iconSize, iconSize);
 
-      context.fillStyle = "#1f2d27";
+      context.fillStyle = palette.text;
       const textBlockTop = legendRowY + (rowHeight - labelLines.length * lineHeight) / 2 + lineHeight * 0.72;
       labelLines.forEach((line, lineIndex) => {
         context.fillText(line, textX, textBlockTop + lineIndex * lineHeight);
@@ -1745,10 +2502,11 @@ export default function PlanEditorPage() {
       legendRowY += rowHeight;
     });
     context.restore();
+    } // end legend block
 
     // ── Centre: the plan itself ─────────────────────────────────────────
     context.save();
-    context.shadowColor = "rgba(12, 42, 28, 0.16)";
+    context.shadowColor = palette.shadow;
     context.shadowBlur = 14;
     context.shadowOffsetY = 4;
     context.fillStyle = "#ffffff";
@@ -1767,11 +2525,12 @@ export default function PlanEditorPage() {
     tracePath(context, planX, planY, planW, planH, EXPORT_CARD_RADIUS);
     context.clip();
     context.translate(drawX, drawY);
-    context.rotate((exportPlanRotation * Math.PI) / 180);
+    // No rotation here: the canvas already captured the sheet turned, pictograms
+    // upright. Turning the bitmap again would double the angle and tilt them back.
     context.drawImage(trimmedPlan, -drawW / 2, -drawH / 2, drawW, drawH);
     context.restore();
 
-    context.strokeStyle = "rgba(12, 42, 28, 0.16)";
+    context.strokeStyle = palette.border;
     context.lineWidth = 1.5;
     tracePath(context, planX, planY, planW, planH, EXPORT_CARD_RADIUS);
     context.stroke();
@@ -1783,18 +2542,26 @@ export default function PlanEditorPage() {
     context.fillStyle = "rgba(255,255,255,0.92)";
     tracePath(context, northX - 20, northY - 18, 40, 56, 8);
     context.fill();
-    context.strokeStyle = "rgba(12, 42, 28, 0.14)";
+    context.strokeStyle = palette.border;
     context.lineWidth = 1;
     tracePath(context, northX - 20, northY - 18, 40, 56, 8);
     context.stroke();
-    context.fillStyle = "#1f2d27";
+    // The needle turns with the plan: north moves when the sheet is oriented to
+    // the reader. The "N" itself stays upright so it remains readable.
+    context.save();
+    context.translate(northX, northY);
+    context.rotate((exportPlanRotation * Math.PI) / 180);
+    context.fillStyle = palette.text;
     context.beginPath();
-    context.moveTo(northX, northY - 12);
-    context.lineTo(northX + 9, northY + 10);
-    context.lineTo(northX, northY + 4);
-    context.lineTo(northX - 9, northY + 10);
+    context.moveTo(0, -12);
+    context.lineTo(9, 10);
+    context.lineTo(0, 4);
+    context.lineTo(-9, 10);
     context.closePath();
     context.fill();
+    context.restore();
+
+    context.fillStyle = palette.text;
     context.textAlign = "center";
     context.font = `700 14px ${EXPORT_FONT}`;
     context.fillText("N", northX, northY + 32);
@@ -1805,18 +2572,18 @@ export default function PlanEditorPage() {
     const footerY = EXPORT_CANVAS_HEIGHT - EXPORT_FOOTER_H;
     context.fillStyle = "#ffffff";
     context.fillRect(0, footerY, EXPORT_CANVAS_WIDTH, EXPORT_FOOTER_H);
-    context.fillStyle = EXPORT_GREEN;
+    context.fillStyle = palette.legend;
     context.fillRect(0, footerY, EXPORT_CANVAS_WIDTH, 2);
 
     context.save();
     context.textBaseline = "middle";
-    context.fillStyle = "#4a5b53";
+    context.fillStyle = palette.text;
     context.font = `600 15px ${EXPORT_FONT}`;
     const footerParts = [plan?.building_name, plan?.floor_name].filter(Boolean).join("  ·  ");
     context.fillText(footerParts || plan?.title || "", EXPORT_MARGIN, footerY + EXPORT_FOOTER_H / 2);
 
     context.textAlign = "center";
-    context.fillStyle = "#7d8c85";
+    context.fillStyle = palette.muted;
     context.font = `400 14px ${EXPORT_FONT}`;
     context.fillText(
       `${loadedLegendImages.length} type${loadedLegendImages.length > 1 ? "s" : ""} d'équipement  ·  ${icons.length} implantation${icons.length > 1 ? "s" : ""}`,
@@ -1825,7 +2592,7 @@ export default function PlanEditorPage() {
     );
 
     context.textAlign = "right";
-    context.fillStyle = "#7d8c85";
+    context.fillStyle = palette.muted;
     context.fillText(
       `Mis à jour le ${new Date().toLocaleDateString("fr-FR")}`,
       EXPORT_CANVAS_WIDTH - EXPORT_MARGIN,
@@ -1880,6 +2647,10 @@ export default function PlanEditorPage() {
     loading,
     cleaning,
     icons,
+    exportTheme,
+    exportUseCustomColors,
+    exportCustomColors,
+    exportPlanTitle,
     exportSiteName,
     exportSafetyText,
     exportInterventionText,
@@ -1893,6 +2664,11 @@ export default function PlanEditorPage() {
     exportPlanRotation,
     exportPlanOffsetX,
     exportPlanOffsetY,
+    exportClientLogo,
+    exportStudioLogo,
+    exportShowSafety,
+    exportShowIntervention,
+    exportShowLegend,
     iconDefinitions,
   ]);
 
@@ -2110,6 +2886,12 @@ export default function PlanEditorPage() {
     </div>
   );
 
+  // Save the current edits then leave the editor.
+  const handleSaveAndLeave = async () => {
+    await handleSave();
+    router.push("/dashboard");
+  };
+
   return (
     <ProtectedRoute>
       {/* Fixed application frame. The geometry is inline rather than utility classes
@@ -2131,13 +2913,17 @@ export default function PlanEditorPage() {
         {/* ───────────────── Top bar ───────────────── */}
         <header className="flex h-11 shrink-0 items-center justify-between gap-4 overflow-hidden border-b border-black/50 bg-[#2d2d30] px-2">
           <div className="flex min-w-0 items-center gap-2">
-            <Link
-              href="/dashboard"
+            <button
+              type="button"
+              onClick={() => {
+                if (hasUnsavedChanges()) setPendingNav(true);
+                else router.push("/dashboard");
+              }}
               title="Retour au tableau de bord"
               className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-neutral-400 transition-colors hover:bg-white/10 hover:text-neutral-100"
             >
               <ArrowLeft className="h-4 w-4" />
-            </Link>
+            </button>
             <span className="h-5 w-px shrink-0 bg-white/10" />
             <button
               type="button"
@@ -2223,6 +3009,9 @@ export default function PlanEditorPage() {
               activeIconType={placementIconType}
               onCancelPlacement={() => setPlacementIconType(null)}
               iconDefinitions={availableIconDefinitions}
+              onAddText={handleAddText}
+              placementTextActive={placementText}
+              onCancelTextPlacement={() => setPlacementText(false)}
             />
           </aside>
 
@@ -2249,7 +3038,13 @@ export default function PlanEditorPage() {
                   icons={icons}
                   onIconsChange={handleIconsChange}
                   selectedIconId={selectedIconId}
-                  onSelectIcon={setSelectedIconId}
+                  onSelectIcon={(iconId) => {
+                    setSelectedIconId(iconId);
+                    if (iconId) {
+                      setSelectedShapeId(null);
+                      setSelectedTextId(null);
+                    }
+                  }}
                   zoom={zoom}
                   setZoom={setZoom}
                   mode={mode}
@@ -2264,6 +3059,31 @@ export default function PlanEditorPage() {
                   undoEraseSignal={undoEraseSignal}
                   resetEraseSignal={resetEraseSignal}
                   onEraseStrokesChange={setEraseStrokeCount}
+                  shapes={shapes}
+                  onShapesChange={setShapes}
+                  selectedShapeId={selectedShapeId}
+                  onSelectShape={(shapeId) => {
+                    setSelectedShapeId(shapeId);
+                    if (shapeId) {
+                      setSelectedIconId(null);
+                      setSelectedTextId(null);
+                    }
+                  }}
+                  shapeTool={shapeTool}
+                  shapeStrokeWidth={shapeStrokeWidth}
+                  planRotation={exportPlanRotation}
+                  texts={texts}
+                  onTextsChange={handleTextsChange}
+                  selectedTextId={selectedTextId}
+                  onSelectText={(textId) => {
+                    setSelectedTextId(textId);
+                    if (textId) {
+                      setSelectedIconId(null);
+                      setSelectedShapeId(null);
+                    }
+                  }}
+                  placementText={placementText}
+                  onPlaceText={handlePlaceText}
                 />
               )
             )}
@@ -2312,6 +3132,42 @@ export default function PlanEditorPage() {
                 })()}
 
                 <div className="space-y-4 p-3">
+                  {/* The marker that orients the whole sheet */}
+                  {isYouAreHereIcon(selectedIcon.icon_type, iconDefinitions) && (
+                    <div className="rounded border border-emerald-500/30 bg-emerald-500/10 p-2.5">
+                      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-300">
+                        Orientation du plan
+                      </span>
+                      <p className="mb-2 text-[10px] leading-relaxed text-neutral-400">
+                        La rotation de ce repère est la direction du regard du lecteur. Le plan
+                        exporté est tourné d&apos;autant, et les pictogrammes d&apos;équipement sont
+                        automatiquement redressés — seules les flèches directionnelles suivent.
+                      </p>
+                      <div className="mb-2 grid grid-cols-4 gap-1">
+                        {[0, 90, 180, 270].map((angle) => (
+                          <button
+                            key={angle}
+                            type="button"
+                            onClick={() => handleUpdateSelectedIcon("rotation", angle)}
+                            className={`cursor-pointer rounded py-1 text-[11px] font-semibold transition-colors ${
+                              Math.round(selectedIcon.rotation) === angle
+                                ? "bg-emerald-600 text-white"
+                                : "bg-white/[0.06] text-neutral-300 hover:bg-white/15"
+                            }`}
+                          >
+                            {angle}°
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-neutral-400">
+                        <span>Angle appliqué</span>
+                        <span className="tabular-nums text-emerald-300">
+                          {Math.round(selectedIcon.rotation)}°
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Label */}
                   <div>
                     <label className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
@@ -2404,6 +3260,39 @@ export default function PlanEditorPage() {
                     </div>
                   </div>
 
+                  {/* Offset with a leader line */}
+                  <div className="border-t border-black/40 pt-3">
+                    <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                      Déport
+                    </span>
+                    {selectedIcon.anchor_x == null ? (
+                      <button
+                        onClick={handleOffsetIcon}
+                        title="Laisser un point à l'emplacement réel et déplacer le pictogramme"
+                        className="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
+                      >
+                        <Anchor className="h-3.5 w-3.5" />
+                        Déporter le pictogramme
+                      </button>
+                    ) : (
+                      <>
+                        <p className="mb-2 text-[10px] leading-relaxed text-neutral-500">
+                          Point à X {Math.round(selectedIcon.anchor_x)} · Y{" "}
+                          {Math.round(selectedIcon.anchor_y ?? 0)}. Faites glisser le point sur
+                          le plan pour corriger l&apos;emplacement réel.
+                        </p>
+                        <button
+                          onClick={handleClearIconOffset}
+                          title="Ramener le pictogramme sur son point"
+                          className="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
+                        >
+                          <Undo2 className="h-3.5 w-3.5" />
+                          Supprimer le déport
+                        </button>
+                      </>
+                    )}
+                  </div>
+
                   {/* Clipboard */}
                   <div className="border-t border-black/40 pt-3">
                     <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
@@ -2450,11 +3339,199 @@ export default function PlanEditorPage() {
                   </div>
                 </div>
               </div>
+            ) : selectedText ? (
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {/* Text identity */}
+                <div className="flex items-center gap-3 border-b border-black/40 px-3 py-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded border border-white/10 bg-emerald-500/10 p-1.5 text-emerald-300">
+                    <Type className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-semibold text-neutral-100">Texte</p>
+                    <p className="text-[10px] text-neutral-500">Annotation texte</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4 p-3">
+                  {/* Content */}
+                  <div>
+                    <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                      Contenu
+                    </span>
+                    <textarea
+                      value={selectedText.text}
+                      onChange={(e) => handleUpdateSelectedText("text", e.target.value)}
+                      rows={3}
+                      placeholder="Saisir le texte…"
+                      className="w-full resize-y rounded border border-black/50 bg-[#1b1b1d] px-2 py-1.5 text-xs text-neutral-200 placeholder-neutral-600 focus:border-emerald-500/60 focus:outline-none"
+                    />
+                  </div>
+
+                  {/* Font family */}
+                  <div>
+                    <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                      Police
+                    </span>
+                    <select
+                      value={selectedText.font_family}
+                      onChange={(e) => handleUpdateSelectedText("font_family", e.target.value)}
+                      className="w-full cursor-pointer rounded border border-black/50 bg-[#1b1b1d] px-2 py-1.5 text-xs text-neutral-200 focus:border-emerald-500/60 focus:outline-none"
+                    >
+                      {FONT_OPTIONS.map((font) => (
+                        <option key={font} value={font} className="bg-[#252527]">
+                          {font}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Font size */}
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                        Taille
+                      </span>
+                      <input
+                        type="number"
+                        min={6}
+                        max={400}
+                        value={Math.round(selectedText.font_size)}
+                        onChange={(e) => handleUpdateSelectedText("font_size", Math.max(6, Number(e.target.value)))}
+                        className="w-16 rounded border border-black/50 bg-[#1b1b1d] px-1.5 py-0.5 text-right text-[11px] tabular-nums text-neutral-200 focus:border-emerald-500/60 focus:outline-none"
+                      />
+                    </div>
+                    <input
+                      type="range"
+                      min={6}
+                      max={200}
+                      value={Math.round(selectedText.font_size)}
+                      onChange={(e) => handleUpdateSelectedText("font_size", Number(e.target.value))}
+                      className="mt-1.5 h-1 w-full cursor-pointer accent-emerald-500"
+                    />
+                  </div>
+
+                  {/* Style: bold / italic */}
+                  <div>
+                    <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                      Style
+                    </span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateSelectedText("bold", !selectedText.bold)}
+                        className={`flex cursor-pointer items-center justify-center rounded border py-1.5 text-[11px] font-bold transition-colors ${
+                          selectedText.bold
+                            ? "border-emerald-500 bg-emerald-500/15 text-emerald-300"
+                            : "border-white/10 bg-white/[0.04] text-neutral-300 hover:bg-white/10"
+                        }`}
+                      >
+                        Gras
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateSelectedText("italic", !selectedText.italic)}
+                        className={`flex cursor-pointer items-center justify-center rounded border py-1.5 text-[11px] italic transition-colors ${
+                          selectedText.italic
+                            ? "border-emerald-500 bg-emerald-500/15 text-emerald-300"
+                            : "border-white/10 bg-white/[0.04] text-neutral-300 hover:bg-white/10"
+                        }`}
+                      >
+                        Italique
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Text color */}
+                  <div>
+                    <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                      Couleur du texte
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={selectedText.color}
+                        onChange={(e) => handleUpdateSelectedText("color", e.target.value)}
+                        className="h-7 w-9 shrink-0 cursor-pointer rounded border border-black/50 bg-transparent"
+                      />
+                      <input
+                        type="text"
+                        value={selectedText.color}
+                        onChange={(e) => handleUpdateSelectedText("color", e.target.value)}
+                        className="w-full rounded border border-black/50 bg-[#1b1b1d] px-2 py-1 text-[11px] tabular-nums text-neutral-200 focus:border-emerald-500/60 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Background */}
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                        Fond coloré
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={!!selectedText.background_color}
+                        onChange={(e) =>
+                          handleUpdateSelectedText("background_color", e.target.checked ? "#ffffff" : null)
+                        }
+                        className="h-3.5 w-3.5 cursor-pointer accent-emerald-500"
+                      />
+                    </div>
+                    {selectedText.background_color && (
+                      <div className="mt-1.5 flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={selectedText.background_color}
+                          onChange={(e) => handleUpdateSelectedText("background_color", e.target.value)}
+                          className="h-7 w-9 shrink-0 cursor-pointer rounded border border-black/50 bg-transparent"
+                        />
+                        <input
+                          type="text"
+                          value={selectedText.background_color}
+                          onChange={(e) => handleUpdateSelectedText("background_color", e.target.value)}
+                          className="w-full rounded border border-black/50 bg-[#1b1b1d] px-2 py-1 text-[11px] tabular-nums text-neutral-200 focus:border-emerald-500/60 focus:outline-none"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Rotation */}
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                        Rotation
+                      </span>
+                      <span className="text-[10px] tabular-nums text-neutral-400">
+                        {Math.round(selectedText.rotation)}&deg;
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={360}
+                      value={Math.round(selectedText.rotation)}
+                      onChange={(e) => handleUpdateSelectedText("rotation", Number(e.target.value))}
+                      className="mt-1.5 h-1 w-full cursor-pointer accent-emerald-500"
+                    />
+                  </div>
+
+                  {/* Destructive action */}
+                  <div className="border-t border-black/40 pt-3">
+                    <button
+                      onClick={handleDeleteSelectedText}
+                      className="flex w-full cursor-pointer items-center justify-center gap-2 rounded border border-red-500/30 bg-red-500/10 py-2 text-[11px] font-semibold text-red-400 transition-colors hover:bg-red-500/20 hover:text-red-300"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Supprimer le texte</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
             ) : (
               <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
                 <HelpCircle className="h-8 w-8 text-neutral-700" />
                 <p className="text-[11px] leading-relaxed text-neutral-500">
-                  Sélectionnez un équipement sur le plan pour ajuster sa taille, sa rotation et son libellé.
+                  Sélectionnez un équipement ou un texte sur le plan pour l&apos;ajuster.
                 </p>
                 {clipboardHasIcon && (
                   <button
@@ -2481,6 +3558,49 @@ export default function PlanEditorPage() {
               onModeChange={setMode}
               onFitToView={() => setFitSignal((signal) => signal + 1)}
             />
+
+            <span className="h-4 w-px bg-white/10" />
+
+            {/* Shape tools */}
+            <div className="flex items-center gap-0.5 rounded bg-black/30 p-0.5">
+              {([
+                { kind: "line" as ShapeKind, Icon: Minus, label: "Ligne" },
+                { kind: "rect" as ShapeKind, Icon: Square, label: "Carré" },
+                { kind: "circle" as ShapeKind, Icon: Circle, label: "Cercle" }
+              ]).map(({ kind, Icon, label }) => (
+                <button
+                  key={kind}
+                  onClick={() => {
+                    setShapeTool((current) => (current === kind ? null : kind));
+                    setMode("select");
+                    setPlacementIconType(null);
+                  }}
+                  title={`${label} — glissez sur le plan pour tracer`}
+                  className={`flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
+                    shapeTool === kind
+                      ? "bg-sky-600 text-white"
+                      : "text-neutral-400 hover:bg-white/10 hover:text-neutral-200"
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  <span className="hidden 2xl:inline">{label}</span>
+                </button>
+              ))}
+            </div>
+
+            {shapeTool && (
+              <label className="flex items-center gap-1.5 text-[11px] text-neutral-500" title="Épaisseur du trait">
+                <input
+                  type="range"
+                  min="1"
+                  max="30"
+                  value={shapeStrokeWidth}
+                  onChange={(event) => setShapeStrokeWidth(Number(event.target.value))}
+                  className="h-1 w-20 cursor-pointer accent-sky-500"
+                />
+                <span className="w-6 tabular-nums text-neutral-400">{shapeStrokeWidth}</span>
+              </label>
+            )}
 
             {mode === "erase" && (
               <>
@@ -2597,6 +3717,24 @@ export default function PlanEditorPage() {
             <span className="hidden xl:inline">
               2 doigts : déplacer &middot; &#8984;/pincer : zoom &middot; V/H : outil
             </span>
+            <span className="h-3 w-px bg-white/10" />
+            {planReadingAngle === null ? (
+              <span
+                className="text-neutral-500"
+                title="Placez le pictogramme « vous etes ici » sur le plan : sa rotation orientera le plan exporté et redressera les pictogrammes."
+              >
+                Orientation : non définie
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => youAreHereIcon && setSelectedIconId(youAreHereIcon.tempId)}
+                title="Sélectionner le repère « Vous êtes ici » pour régler l'orientation"
+                className="cursor-pointer rounded px-1.5 py-0.5 text-emerald-400 transition-colors hover:bg-white/10"
+              >
+                Orientation : {Math.round(planReadingAngle)}° (Vous êtes ici)
+              </button>
+            )}
             <span className="h-3 w-px bg-white/10" />
             <span className={plan?.use_cleaned_background ? "text-emerald-400" : ""}>
               {plan?.use_cleaned_background ? "Fond nettoyé" : "Fond original"}
@@ -3008,6 +4146,8 @@ export default function PlanEditorPage() {
 
                         <div className="grid gap-3 sm:grid-cols-2">
                           {[
+                            ["Supprimer les pictogrammes existants", existingRemovePictograms, setExistingRemovePictograms],
+                            ["Supprimer tous les textes", existingRemoveText, setExistingRemoveText],
                             ["Supprimer les dimensions", existingRemoveDimensions, setExistingRemoveDimensions],
                             ["Supprimer les annotations", existingRemoveAnnotations, setExistingRemoveAnnotations],
                             ["Supprimer le cartouche", existingRemoveTitleBlock, setExistingRemoveTitleBlock],
@@ -3068,7 +4208,7 @@ export default function PlanEditorPage() {
                     </div>
 
                     {openaiError ? (
-                      <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+                      <div className="whitespace-pre-line rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
                         {openaiError}
                       </div>
                     ) : null}
@@ -3210,8 +4350,11 @@ export default function PlanEditorPage() {
                 </button>
               </div>
 
-              <div className="grid flex-1 min-h-0 gap-5 overflow-y-auto p-5 lg:grid-cols-[1fr_340px]">
-                <div className="rounded-xl border border-emerald-900/30 bg-emerald-50 p-3">
+              <div className="grid flex-1 min-h-0 gap-5 p-5 lg:grid-cols-[1fr_340px]">
+                {/* The preview stays pinned: only the options column scrolls.
+                    Putting overflow-y-auto on the grid itself made the plan
+                    scroll away with the controls. */}
+                <div className="lg:sticky lg:top-0 self-start rounded-xl border border-emerald-900/30 bg-emerald-50 p-3">
                   <div className="relative flex min-h-[380px] items-center justify-center overflow-hidden border border-emerald-800/20 bg-[#f3f8f5] shadow-sm">
                     {exportAdjustmentPreviewLoading && (
                       <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/65">
@@ -3231,12 +4374,102 @@ export default function PlanEditorPage() {
                       </div>
                     )}
                   </div>
-                </div>
+	                </div>
 
-                <div className="space-y-3">
+	                <div className="space-y-3 lg:max-h-[calc(92vh-7rem)] lg:overflow-y-auto lg:pr-1">
                   <div className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-bold text-slate-950">Ajuster le plan central</h3>
+                    <h3 className="mb-3 text-sm font-bold text-slate-950">Thème d'export</h3>
+	                    <div className="grid grid-cols-2 gap-2">
+	                      {(Object.keys(EXPORT_THEMES) as ExportTheme[]).map((theme) => (
+	                        <button
+	                          key={theme}
+	                          type="button"
+	                          onClick={() => {
+	                            setExportTheme(theme);
+	                            if (!exportUseCustomColors) {
+	                              setExportCustomColors(getThemeCustomColors(theme));
+	                            }
+	                          }}
+	                          className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+	                            exportTheme === theme
+	                              ? "border-safety-green bg-green-50 text-slate-950"
+	                              : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+	                          }`}
+	                        >
+	                          <span className="block text-xs font-bold">{EXPORT_THEMES[theme].label}</span>
+	                          <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+	                            {EXPORT_THEMES[theme].description}
+	                          </span>
+	                        </button>
+	                      ))}
+	                    </div>
+	                  </div>
+
+	                  <div className="rounded-xl border border-slate-200 bg-white p-3">
+	                    <div className="mb-3 flex items-center justify-between gap-3">
+	                      <div>
+	                        <h3 className="text-sm font-bold text-slate-950">Couleurs personnalisées</h3>
+	                        <p className="text-[11px] leading-4 text-slate-500">Sélecteur direct ou code hexadécimal.</p>
+	                      </div>
+	                      <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-600">
+	                        <input
+	                          type="checkbox"
+	                          checked={exportUseCustomColors}
+	                          onChange={(event) => {
+	                            setExportUseCustomColors(event.target.checked);
+	                            if (event.target.checked) {
+	                              setExportCustomColors(getThemeCustomColors());
+	                            }
+	                          }}
+	                          className="h-4 w-4 rounded border-slate-300 accent-safety-green"
+	                        />
+	                        Activer
+	                      </label>
+	                    </div>
+	                    <div className="grid grid-cols-2 gap-2">
+	                      {EXPORT_CUSTOM_COLOR_FIELDS.map((field) => {
+	                        const normalized = normalizeHexColor(
+	                          exportCustomColors[field.key],
+	                          DEFAULT_EXPORT_CUSTOM_COLORS[field.key]
+	                        );
+	                        const invalid = exportCustomColors[field.key].trim() !== "" && !isValidHexColor(exportCustomColors[field.key]);
+	                        return (
+	                          <label key={field.key} className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+	                            <span className="mb-1 block text-[11px] font-bold text-slate-600">{field.label}</span>
+	                            <div className="flex items-center gap-2">
+	                              <input
+	                                type="color"
+	                                value={normalized}
+	                                disabled={!exportUseCustomColors}
+	                                onChange={(event) => updateExportCustomColor(field.key, event.target.value)}
+	                                className="h-8 w-9 shrink-0 cursor-pointer rounded border border-slate-200 bg-white disabled:opacity-50"
+	                              />
+	                              <input
+	                                value={exportCustomColors[field.key]}
+	                                disabled={!exportUseCustomColors}
+	                                onChange={(event) => updateExportCustomColor(field.key, event.target.value)}
+	                                placeholder="#168f5a"
+	                                className={`min-w-0 flex-1 rounded-md border bg-white px-2 py-1.5 text-xs font-semibold text-slate-800 outline-none disabled:opacity-50 ${
+	                                  invalid ? "border-red-300 text-red-700" : "border-slate-200 focus:border-safety-green"
+	                                }`}
+	                              />
+	                            </div>
+	                          </label>
+	                        );
+	                      })}
+	                    </div>
+	                    <button
+	                      type="button"
+	                      onClick={() => setExportCustomColors(DEFAULT_EXPORT_CUSTOM_COLORS)}
+	                      className="mt-2 text-xs font-semibold text-safety-green hover:text-green-700"
+	                    >
+	                      Réinitialiser les couleurs
+	                    </button>
+	                  </div>
+
+	                  <div className="rounded-xl border border-slate-200 bg-white p-3">
+	                    <div className="mb-3 flex items-center justify-between">
+	                      <h3 className="text-sm font-bold text-slate-950">Ajuster le plan central</h3>
                       <button
                         type="button"
                         onClick={() => {
@@ -3280,6 +4513,22 @@ export default function PlanEditorPage() {
                           onChange={(e) => setExportPlanRotation(Number(e.target.value))}
                           className="w-full accent-safety-green"
                         />
+                        <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                          {planReadingAngle === null ? (
+                            <>
+                              Placez le pictogramme <strong>« vous etes ici »</strong> sur le plan
+                              et tournez-le : la rotation suivra automatiquement la direction du
+                              regard, et les pictogrammes d&apos;équipement resteront droits.
+                            </>
+                          ) : (
+                            <>
+                              Repris du repère <strong>« Vous êtes ici »</strong> (
+                              {Math.round(planReadingAngle)}°). Les pictogrammes d&apos;équipement
+                              sont redressés automatiquement ; les flèches directionnelles suivent
+                              le plan.
+                            </>
+                          )}
+                        </p>
                       </div>
 
                       <div className="grid grid-cols-2 gap-3">
@@ -3314,6 +4563,21 @@ export default function PlanEditorPage() {
                         </div>
                       </div>
                     </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Titre du plan
+                    </label>
+                    <input
+                      value={exportPlanTitle}
+                      onChange={(e) => setExportPlanTitle(e.target.value)}
+                      className="block w-full rounded-xl border border-slate-300 bg-white py-2.5 px-4 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
+                      placeholder="PLAN D'ÉVACUATION"
+                    />
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Titre affiché dans le bandeau. Vide, il reprend « PLAN D&apos;ÉVACUATION ».
+                    </p>
                   </div>
 
                   <div>
@@ -3446,6 +4710,88 @@ export default function PlanEditorPage() {
                     </div>
                   </div>
 
+                  {/* Logos: client (left of the header) and studio (right) */}
+                  <div className="rounded-xl border border-slate-200 bg-white p-3">
+                    <h3 className="mb-1 text-sm font-bold text-slate-950">Logos</h3>
+                    <p className="mb-3 text-[11px] leading-4 text-slate-500">
+                      Affichés dans la bande d'en-tête. Client à gauche, studio à droite.
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      {([
+                        { key: "client", label: "Logo client", value: exportClientLogo, setter: setExportClientLogo },
+                        { key: "studio", label: "Logo studio", value: exportStudioLogo, setter: setExportStudioLogo }
+                      ] as const).map(({ key, label, value, setter }) => (
+                        <div key={key}>
+                          <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</span>
+                          <div className="flex items-center gap-2">
+                            <label
+                              className={`flex h-12 flex-1 cursor-pointer items-center justify-center overflow-hidden rounded-lg border border-slate-300 bg-slate-50 text-[11px] font-medium text-slate-500 transition-colors hover:bg-slate-100 ${
+                                value ? "border-safety-green/40 bg-white" : ""
+                              }`}
+                            >
+                              {value ? (
+                                <img src={value} alt={label} className="max-h-10 max-w-full object-contain" />
+                              ) : (
+                                <span>Choisir…</span>
+                              )}
+                              <input
+                                type="file"
+                                accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                                className="hidden"
+                                onChange={(event) => {
+                                  const file = event.target.files?.[0];
+                                  event.target.value = "";
+                                  if (!file) return;
+                                  const reader = new FileReader();
+                                  reader.onload = () => setter(typeof reader.result === "string" ? reader.result : "");
+                                  reader.readAsDataURL(file);
+                                }}
+                              />
+                            </label>
+                            {value && (
+                              <button
+                                type="button"
+                                onClick={() => setter("")}
+                                title="Retirer le logo"
+                                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-300 text-slate-500 transition-colors hover:bg-red-50 hover:text-red-600"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Section visibility: hide any block, the plan reclaims the space */}
+                  <div className="rounded-xl border border-slate-200 bg-white p-3">
+                    <h3 className="mb-1 text-sm font-bold text-slate-950">Sections affichées</h3>
+                    <p className="mb-3 text-[11px] leading-4 text-slate-500">
+                      Masquez les blocs inutiles. Le plan s'agrandit pour occuper l'espace libéré.
+                    </p>
+                    <div className="space-y-2">
+                      {([
+                        { key: "safety", label: "Consignes de sécurité", checked: exportShowSafety, setter: setExportShowSafety },
+                        { key: "intervention", label: "Équipe d'intervention", checked: exportShowIntervention, setter: setExportShowIntervention },
+                        { key: "legend", label: "Légende", checked: exportShowLegend, setter: setExportShowLegend }
+                      ] as const).map(({ key, label, checked, setter }) => (
+                        <label
+                          key={key}
+                          className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => setter(e.target.checked)}
+                            className="h-4 w-4 accent-safety-green"
+                          />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center justify-end gap-3 border-t border-slate-200 bg-white/95 px-1 pt-3 pb-1 backdrop-blur">
                     <div className="mr-auto flex items-center gap-3">
                       <div className="flex items-center gap-2">
@@ -3536,6 +4882,57 @@ export default function PlanEditorPage() {
                 title="Prévisualisation PDF"
                 className="h-full w-full bg-white"
               />
+            </div>
+          </div>
+        )}
+
+        {/* Unsaved-changes confirmation when leaving the editor */}
+        {pendingNav && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
+            <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#252527] p-5 shadow-2xl">
+              <div className="flex items-start gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-amber-400">
+                  <AlertTriangle className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold text-neutral-100">
+                    Enregistrer les modifications ?
+                  </h2>
+                  <p className="mt-1 text-[11px] leading-relaxed text-neutral-400">
+                    Vous avez des modifications non enregistrées. Voulez-vous les
+                    sauvegarder avant de quitter ?
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-5 space-y-2">
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void handleSaveAndLeave()}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2.5 text-[12px] font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+                >
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Sauvegarder et quitter
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendingNav(false);
+                    router.push("/dashboard");
+                  }}
+                  className="w-full rounded-lg border border-white/10 bg-white/[0.04] py-2.5 text-[12px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  Quitter sans enregistrer
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingNav(false)}
+                  className="w-full rounded-lg py-2 text-[12px] font-medium text-neutral-500 transition-colors hover:text-neutral-200"
+                >
+                  Annuler
+                </button>
+              </div>
             </div>
           </div>
         )}

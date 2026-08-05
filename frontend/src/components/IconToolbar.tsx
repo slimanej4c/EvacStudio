@@ -2,20 +2,29 @@
 
 import React, { useState } from "react";
 import { SAFETY_ICONS, IconType, SafetyIconDefinition } from "@/utils/safetyIcons";
-import { Search, X } from "lucide-react";
+import { Search, X, Type } from "lucide-react";
 
 interface IconToolbarProps {
   onAddIcon: (type: IconType) => void;
   activeIconType?: IconType | null;
   onCancelPlacement?: () => void;
   iconDefinitions?: Record<string, SafetyIconDefinition>;
+  /** Requested when the user clicks the "Text" tool. */
+  onAddText?: () => void;
+  /** True while the text placement mode is armed. */
+  placementTextActive?: boolean;
+  /** Cancel an armed text placement. */
+  onCancelTextPlacement?: () => void;
 }
 
 export default function IconToolbar({
   onAddIcon,
   activeIconType = null,
   onCancelPlacement,
-  iconDefinitions = SAFETY_ICONS
+  iconDefinitions = SAFETY_ICONS,
+  onAddText,
+  placementTextActive = false,
+  onCancelTextPlacement,
 }: IconToolbarProps) {
   const [search, setSearch] = useState("");
 
@@ -60,17 +69,52 @@ export default function IconToolbar({
       </div>
 
       {/* Placement hint */}
-      {activeIconType && (
+      {(activeIconType || placementTextActive) && (
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-black/40 bg-emerald-500/10 px-3 py-2">
           <span className="text-[11px] leading-tight text-emerald-300">
             Cliquez sur le plan pour placer
           </span>
           <button
             type="button"
-            onClick={onCancelPlacement}
+            onClick={() => {
+              if (placementTextActive) onCancelTextPlacement?.();
+              else onCancelPlacement?.();
+            }}
             className="cursor-pointer rounded border border-emerald-500/30 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/20"
           >
             Annuler
+          </button>
+        </div>
+      )}
+
+      {/* Text tool — sits above the equipment grid */}
+      {onAddText && (
+        <div className="shrink-0 border-b border-black/40 p-2">
+          <button
+            onClick={() => {
+              if (placementTextActive && onCancelTextPlacement) {
+                onCancelTextPlacement();
+                return;
+              }
+              onAddText();
+            }}
+            title="Insérer un texte sur le plan"
+            className={`group flex w-full cursor-pointer items-center gap-2 rounded border p-2 transition-colors ${
+              placementTextActive
+                ? "border-emerald-500 bg-emerald-500/15"
+                : "border-transparent bg-white/[0.04] hover:border-white/15 hover:bg-white/10"
+            }`}
+          >
+            <span
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded ${
+                placementTextActive ? "text-emerald-300" : "text-neutral-300"
+              }`}
+            >
+              <Type className="h-4 w-4" />
+            </span>
+            <span className="text-[11px] font-medium text-neutral-200 group-hover:text-white">
+              Texte
+            </span>
           </button>
         </div>
       )}

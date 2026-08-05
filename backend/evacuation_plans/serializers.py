@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import EvacuationPlan, PlanCleaningHistory, PlanIcon, UserOpenAISettings
+from .models import EvacuationPlan, PlanCleaningHistory, PlanIcon, PlanShape, PlanText, UserOpenAISettings
 
 MAX_OPENAI_IMAGE_DATA_LENGTH = 20 * 1024 * 1024
 
@@ -31,16 +31,35 @@ class UserSerializer(serializers.ModelSerializer):
 class PlanIconSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanIcon
-        fields = ['id', 'plan', 'icon_type', 'x', 'y', 'width', 'height', 'rotation', 'label', 'created_at', 'updated_at']
+        fields = ['id', 'plan', 'icon_type', 'x', 'y', 'width', 'height', 'rotation', 'label',
+                  'anchor_x', 'anchor_y', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+class PlanShapeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlanShape
+        fields = ['id', 'plan', 'shape_type', 'x', 'y', 'width', 'height', 'rotation',
+                  'stroke_width', 'color', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'plan', 'created_at', 'updated_at']
+
+
+class PlanTextSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlanText
+        fields = ['id', 'plan', 'text', 'x', 'y', 'font_size', 'font_family', 'color',
+                  'bold', 'italic', 'background_color', 'rotation', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'plan', 'created_at', 'updated_at']
+
 
 class EvacuationPlanSerializer(serializers.ModelSerializer):
     icons = PlanIconSerializer(many=True, read_only=True)
+    shapes = PlanShapeSerializer(many=True, read_only=True)
+    texts = PlanTextSerializer(many=True, read_only=True)
     user = serializers.PrimaryKeyRelatedField(read_only=True)
 
     class Meta:
         model = EvacuationPlan
-        fields = ['id', 'user', 'title', 'building_name', 'floor_name', 'background_file', 'background_type', 'cleaned_background_file', 'use_cleaned_background', 'icons', 'created_at', 'updated_at']
+        fields = ['id', 'user', 'title', 'building_name', 'floor_name', 'background_file', 'background_type', 'cleaned_background_file', 'use_cleaned_background', 'icons', 'shapes', 'texts', 'created_at', 'updated_at']
         read_only_fields = ['id', 'user', 'cleaned_background_file', 'created_at', 'updated_at']
 
 
@@ -103,9 +122,9 @@ class OpenAICleanPlanSerializer(serializers.Serializer):
         'high': 'high',
     }
     CLEANUP_LEVEL_CHOICES = {
-        'leger': 'leger',
-        'moyen': 'moyen',
-        'fort': 'fort',
+        'leger': 'leger', 'light': 'light',
+        'moyen': 'moyen', 'medium': 'medium',
+        'fort': 'fort', 'strong': 'strong',
     }
 
     cleaning_mode = serializers.ChoiceField(
@@ -125,6 +144,21 @@ class OpenAICleanPlanSerializer(serializers.Serializer):
     conserver_ouvertures = serializers.BooleanField(required=False, default=True)
     epaisseur_murs = serializers.IntegerField(required=False, min_value=1, max_value=5, default=3)
     instructions_supplementaires = serializers.CharField(required=False, allow_blank=True, default="")
+    plan_type = serializers.CharField(required=False, allow_blank=True, default="")
+    cleaning_profile = serializers.CharField(required=False, allow_blank=True, default="")
+    detected_plan_type = serializers.CharField(required=False, allow_blank=True, default="")
+    detection_confidence = serializers.FloatField(required=False, allow_null=True, default=None)
+    detected_elements = serializers.DictField(required=False, default=dict)
+    supprimer_pictogrammes = serializers.BooleanField(required=False, default=True)
+    supprimer_itineraires = serializers.BooleanField(required=False, default=True)
+    supprimer_vous_etes_ici = serializers.BooleanField(required=False, default=True)
+    supprimer_legende = serializers.BooleanField(required=False, default=True)
+    supprimer_logos = serializers.BooleanField(required=False, default=True)
+    supprimer_ombres_papier = serializers.BooleanField(required=False, default=False)
+    redresser_lignes = serializers.BooleanField(required=False, default=False)
+    reduire_bruit = serializers.BooleanField(required=False, default=True)
+    conserver_noms_locaux = serializers.BooleanField(required=False, default=True)
+    conserver_fenetres = serializers.BooleanField(required=False, default=True)
     supprimer_annotations = serializers.BooleanField(required=False, default=True)
     supprimer_cartouche = serializers.BooleanField(required=False, default=True)
     supprimer_hachures = serializers.BooleanField(required=False, default=True)

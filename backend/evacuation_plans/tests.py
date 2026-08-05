@@ -1128,7 +1128,8 @@ class EvacuationPlansAPITests(APITestCase):
         self.assertTrue(existing_options['remove_dimensions'])
         self.assertTrue(existing_options['remove_annotations'])
         self.assertTrue(existing_options['remove_hatching'])
-        self.assertEqual(existing_options['cleanup_level'], 'fort')
+        # Levels are normalised to the light/medium/strong vocabulary the profiles use.
+        self.assertEqual(existing_options['cleanup_level'], 'strong')
         self.assertEqual(mock_generate.call_args.kwargs['quality'], 'high')
         self.assertIn('existing architectural floor plan', result.generation_prompt)
 
@@ -1444,7 +1445,10 @@ class EvacuationPlansAPITests(APITestCase):
         self.assertIn('"remove_dimensions": true', request_text)
         self.assertIn('"remove_annotations": true', request_text)
         self.assertIn('"remove_hatching": true', request_text)
-        self.assertIn('"cleanup_level": "fort"', request_text)
+        # 'fort' is normalised to the light/medium/strong vocabulary, and the level
+        # must reach the model as a sentence, not only as a JSON value.
+        self.assertIn('"cleanup_level": "strong"', request_text)
+        self.assertIn('Cleanup level is strong', request_text)
         self.assertEqual(result.analysis['geometry_to_preserve'], payload['geometry_to_preserve'])
         self.assertIn('Do not redesign or reinterpret', result.generation_prompt)
 
@@ -1849,6 +1853,16 @@ class EvacuationPlansAPITests(APITestCase):
 
         with self.assertRaises(OpenAIRequestTimeoutError):
             generate_cleaned_plan(self.make_png_bytes(), 'Prompt final', 'sk-test')
+
+    @patch('evacuation_plans.image_generator.OpenAI')
+    def test_image_generator_uses_long_default_timeout(self, mock_openai):
+        mock_client = mock_openai.return_value
+        mock_client.images.edit.return_value = self.make_openai_image_response()
+
+        generate_cleaned_plan(self.make_png_bytes(), 'Prompt final', 'sk-test')
+
+        mock_openai.assert_called_with(api_key='sk-test', timeout=300)
+        self.assertEqual(mock_client.images.edit.call_args.kwargs['timeout'], 300)
 
     @patch('evacuation_plans.image_generator.OpenAI')
     def test_image_generator_rate_limit(self, mock_openai):

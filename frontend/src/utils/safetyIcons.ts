@@ -9,6 +9,47 @@ export interface SafetyIconDefinition {
   fileName?: string;
 }
 
+/**
+ * Pictograms whose meaning *is* a direction in the building. When the plan is
+ * turned to match the reader's viewing direction, these must turn with it —
+ * an escape arrow that no longer points at the real exit would be dangerous.
+ * Every other pictogram marks a piece of equipment at a spot and must stay
+ * upright and readable, so it gets the rotation compensated away.
+ *
+ * Matching is on the pictogram name, accents and case ignored.
+ */
+export const DIRECTIONAL_ICON_KEYWORDS = [
+  "cheminement",
+  "itineraire",
+  "fleche",
+  "acces pompiers",
+  "vous etes ici",
+];
+
+const stripAccents = (value: string) =>
+  value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+/** True when the pictogram carries a direction and must follow the plan. */
+export function isDirectionalIcon(
+  type: IconType,
+  definitions: Record<IconType, SafetyIconDefinition> = SAFETY_ICONS
+): boolean {
+  const definition = definitions[type];
+  const haystack = stripAccents(`${type} ${definition?.label ?? ""}`);
+  return DIRECTIONAL_ICON_KEYWORDS.some((keyword) => haystack.includes(keyword));
+}
+
+/** The pictogram whose rotation defines the plan's reading direction. */
+export const YOU_ARE_HERE_KEYWORD = "vous etes ici";
+
+export function isYouAreHereIcon(
+  type: IconType,
+  definitions: Record<IconType, SafetyIconDefinition> = SAFETY_ICONS
+): boolean {
+  const definition = definitions[type];
+  return stripAccents(`${type} ${definition?.label ?? ""}`).includes(YOU_ARE_HERE_KEYWORD);
+}
+
 export const SAFETY_ICONS: Record<IconType, SafetyIconDefinition> = {
   extincteur: {
     type: "extincteur",
