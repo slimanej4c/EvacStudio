@@ -9,4 +9,4 @@ dj-database-url
 psycopg2-binary
 gunicorn
 PyMuPDF
-openai
+xai-sdk

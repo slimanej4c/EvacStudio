@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback, useImperativeHandle } from "react";
-import { Stage, Layer, Image as KonvaImage, Transformer, Group, Rect, Text, Line, Ellipse, Circle } from "react-konva";
-import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource, isDirectionalIcon, isYouAreHereIcon } from "@/utils/safetyIcons";
+import { Stage, Layer, Image as KonvaImage, Transformer, Group, Rect, Text, Line, Ellipse, Circle, Path } from "react-konva";
+import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource, getIconLeaderColor, isDirectionalIcon, isYouAreHereIcon } from "@/utils/safetyIcons";
 
 export interface CanvasIcon {
   id?: number;
@@ -17,11 +17,52 @@ export interface CanvasIcon {
   /** True position of the equipment when the pictogram was moved aside. */
   anchor_x?: number | null;
   anchor_y?: number | null;
+  /** Leader-line stroke width (editable per icon). */
+  leader_width?: number;
+  /** When true, the pictogram is drawn inside a square frame. */
+  framed?: boolean;
+  /** When true, the pictogram artwork is mirrored horizontally. */
+  flip_x?: boolean;
+  /** When true, the pictogram artwork is mirrored vertically. */
+  flip_y?: boolean;
 }
 
 export type EraserShape = "square" | "circle";
 
-export type ShapeKind = "line" | "rect" | "circle";
+export type ShapeKind = "line" | "rect" | "circle" | "zone" | "polygon_zone" | "free_polygon_zone" | "curve_polygon_zone";
+
+export type ShapePoint = { x: number; y: number };
+
+const POINT_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+export function pointLabel(index: number): string {
+  if (index < POINT_LABELS.length) return POINT_LABELS[index];
+  return `${POINT_LABELS[index % POINT_LABELS.length]}${Math.floor(index / POINT_LABELS.length)}`;
+}
+
+export function boundsFromPoints(points: ShapePoint[]) {
+  if (points.length === 0) return { x: 0, y: 0, width: 0, height: 0 };
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+
+export function isPolygonShape(kind?: string | null): boolean {
+  return kind === "polygon_zone" || kind === "free_polygon_zone" || kind === "curve_polygon_zone";
+}
+
+export function isPolygonTool(tool?: string | null): boolean {
+  return tool === "polygon_zone" || tool === "free_polygon_zone" || tool === "curve_polygon_zone";
+}
+
+export function pointsToFlat(points: ShapePoint[]) {
+  return points.flatMap((point) => [point.x, point.y]);
+}
 
 export interface CanvasShape {
   id?: number;
@@ -35,6 +76,16 @@ export interface CanvasShape {
   rotation: number;
   stroke_width: number;
   color: string;
+  /** Optional background/fill color for shapes & zones. */
+  fill_color?: string | null;
+  /** Optional background opacity (0 to 1). */
+  fill_opacity?: number;
+  /** Optional global curve tension (0 to 1). */
+  tension?: number;
+  /** Optional control points for curved segments: segmentIndex -> controlPoint */
+  control_points?: Record<number, ShapePoint>;
+  /** Absolute plan coordinates for polygon_zone shapes. */
+  points?: ShapePoint[];
 }
 
 /** Web-safe fonts offered for plan text annotations. */
@@ -97,6 +148,7 @@ interface PlanCanvasProps {
   onSelectShape?: (id: string | null) => void;
   /** When set, dragging on the plan draws a new shape of this kind. */
   shapeTool?: ShapeKind | null;
+  onFinishShapeTool?: () => void;
   shapeStrokeWidth?: number;
   shapeColor?: string;
   /**
@@ -118,6 +170,8 @@ interface PlanCanvasProps {
 export interface PlanCanvasHandle {
   /** The background with the eraser strokes baked in, for saving or exporting. */
   getEditedBackground: () => HTMLCanvasElement | null;
+  /** Get the current background image width and height in pixels. */
+  getBackgroundDimensions: () => { width: number; height: number };
 }
 
 // Share of the workspace the plan occupies when fitted, leaving a margin around it.
@@ -224,6 +278,7 @@ function PlanCanvas({
   selectedShapeId = null,
   onSelectShape,
   shapeTool = null,
+  onFinishShapeTool,
   shapeStrokeWidth = 3,
   shapeColor = "#000000",
   planRotation = 0,
@@ -263,8 +318,14 @@ function PlanCanvas({
 
   useImperativeHandle(
     canvasRef,
-    () => ({ getEditedBackground: () => editedBackground }),
-    [editedBackground]
+    () => ({
+      getEditedBackground: () => editedBackground,
+      getBackgroundDimensions: () => ({
+        width: bgImage?.naturalWidth || bgImage?.width || 0,
+        height: bgImage?.naturalHeight || bgImage?.height || 0,
+      }),
+    }),
+    [editedBackground, bgImage]
   );
 
   // A fresh working copy whenever the source background changes.
@@ -295,6 +356,8 @@ function PlanCanvas({
   const [draftShape, setDraftShape] = useState<CanvasShape | null>(null);
   const draftShapeRef = useRef<CanvasShape | null>(null);
   const draftOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const [draftPolygonPoints, setDraftPolygonPoints] = useState<ShapePoint[]>([]);
+  const [polygonCursor, setPolygonCursor] = useState<ShapePoint | null>(null);
 
   const setDraft = (shape: CanvasShape | null) => {
     draftShapeRef.current = shape;
@@ -305,7 +368,7 @@ function PlanCanvas({
     `shape-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
   const beginShape = (stage: any) => {
-    if (!shapeTool) return;
+    if (!shapeTool || isPolygonTool(shapeTool)) return;
     const point = stage.getAbsoluteTransform().copy().invert().point(stage.getPointerPosition());
     if (!point) return;
 
@@ -353,15 +416,410 @@ function PlanCanvas({
     if (!origin || !draft) return;
 
     const isLine = draft.shape_type === "line";
-    const meaningful = isLine
-      ? Math.hypot(draft.width, draft.height) >= 4
-      : draft.width >= 4 && draft.height >= 4;
-
-    if (meaningful) {
-      onShapesChange?.([...shapes, draft]);
-      onSelectShape?.(draft.tempId);
+    const minSize = isLine ? 2 : 4;
+    if (Math.abs(draft.width) < minSize && Math.abs(draft.height) < minSize) {
+      setDraft(null);
+      return;
     }
+
+    onShapesChange?.([...shapes, draft]);
+    onSelectShape?.(draft.tempId);
     setDraft(null);
+    onFinishShapeTool?.();
+  };
+
+  const resetPolygonDraft = () => {
+    setDraftPolygonPoints([]);
+    setPolygonCursor(null);
+  };
+
+  const finishPolygonDraft = () => {
+    if (draftPolygonPoints.length < 3) return;
+
+    const bounds = boundsFromPoints(draftPolygonPoints);
+    const draft: CanvasShape = {
+      tempId: makeShapeTempId(),
+      shape_type: (shapeTool || "polygon_zone") as ShapeKind,
+      points: draftPolygonPoints.map((point) => ({ ...point })),
+      ...bounds,
+      rotation: 0,
+      stroke_width: shapeStrokeWidth,
+      color: shapeColor
+    };
+
+    onShapesChange?.([...shapes, draft]);
+    onSelectShape?.(draft.tempId);
+    resetPolygonDraft();
+    onFinishShapeTool?.();
+  };
+
+  const addPolygonPoint = (stage: any) => {
+    const point = pointerInPlanCoords(stage);
+    if (!point) return;
+
+    if (draftPolygonPoints.length >= 3) {
+      const first = draftPolygonPoints[0];
+      const distance = Math.hypot(point.x - first.x, point.y - first.y);
+      if (distance < 15 / zoom) {
+        finishPolygonDraft();
+        return;
+      }
+    }
+
+    setDraftPolygonPoints((current) => [...current, { x: point.x, y: point.y }]);
+  };
+
+  const updatePolygonCursor = (stage: any) => {
+    const point = pointerInPlanCoords(stage);
+    if (!point) return;
+    setPolygonCursor(point);
+  };
+
+  const movePolygonPoints = (tempId: string, deltaX: number, deltaY: number) => {
+    const shape = shapes.find((item) => item.tempId === tempId);
+    if (!shape?.points?.length) return;
+
+    const movedPoints = shape.points.map((point) => ({
+      x: point.x + deltaX,
+      y: point.y + deltaY
+    }));
+
+    let movedControlPoints: Record<number, ShapePoint> | undefined = undefined;
+    if (shape.control_points) {
+      movedControlPoints = {};
+      Object.entries(shape.control_points).forEach(([key, cp]) => {
+        movedControlPoints![Number(key)] = {
+          x: cp.x + deltaX,
+          y: cp.y + deltaY
+        };
+      });
+    }
+
+    updateShape(tempId, {
+      points: movedPoints,
+      control_points: movedControlPoints,
+      ...boundsFromPoints(movedPoints)
+    });
+  };
+
+  const updatePolygonVertex = (tempId: string, index: number, x: number, y: number) => {
+    const shape = shapes.find((item) => item.tempId === tempId);
+    if (!shape?.points?.length) return;
+
+    const nextPoints = shape.points.map((point, pointIndex) =>
+      pointIndex === index ? { x, y } : point
+    );
+
+    updateShape(tempId, {
+      points: nextPoints,
+      ...boundsFromPoints(nextPoints)
+    });
+  };
+
+  const updatePolygonControlPoint = (tempId: string, segmentIndex: number, x: number | null, y: number | null) => {
+    const shape = shapes.find((item) => item.tempId === tempId);
+    if (!shape) return;
+
+    const nextControlPoints = { ...(shape.control_points || {}) };
+    if (x === null || y === null) {
+      delete nextControlPoints[segmentIndex];
+    } else {
+      nextControlPoints[segmentIndex] = { x, y };
+    }
+
+    updateShape(tempId, {
+      control_points: nextControlPoints
+    });
+  };
+
+  const renderPolygonCurveHandles = (shape: CanvasShape, isSelected: boolean) => {
+    if (!isSelected || !shape.points?.length || shape.points.length < 2 || shape.shape_type !== "curve_polygon_zone") return null;
+
+    const handleRadius = Math.max(4.5, 5.5 / Math.max(zoom, 0.2));
+    const hitPadding = Math.max(16, 24 / Math.max(zoom, 0.2));
+    const points = shape.points;
+    const count = points.length;
+
+    return points.map((p1, index) => {
+      const p2 = points[(index + 1) % count];
+      const cp = shape.control_points?.[index];
+
+      const hx = cp ? cp.x : (p1.x + p2.x) / 2;
+      const hy = cp ? cp.y : (p1.y + p2.y) / 2;
+
+      return (
+        <Group key={`${shape.tempId}-curve-handle-${index}`}>
+          {cp && (
+            <Line
+              points={[p1.x, p1.y, cp.x, cp.y, p2.x, p2.y]}
+              stroke="#f59e0b"
+              strokeWidth={1}
+              dash={[3, 3]}
+              listening={false}
+            />
+          )}
+          <Circle
+            x={hx}
+            y={hy}
+            radius={handleRadius}
+            fill={cp ? "#f59e0b" : "#38bdf8"}
+            stroke="#ffffff"
+            strokeWidth={1.5}
+            hitStrokeWidth={hitPadding}
+            shadowColor="#000000"
+            shadowBlur={3}
+            shadowOpacity={0.3}
+            draggable={mode === "select" && !shapeTool}
+            onMouseEnter={(e: any) => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "pointer";
+            }}
+            onMouseLeave={(e: any) => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "default";
+            }}
+            onMouseDown={(e: any) => {
+              e.cancelBubble = true;
+            }}
+            onTouchStart={(e: any) => {
+              e.cancelBubble = true;
+            }}
+            onDblClick={(e: any) => {
+              e.cancelBubble = true;
+              updatePolygonControlPoint(shape.tempId, index, null, null);
+            }}
+            onDragStart={(e: any) => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "grabbing";
+            }}
+            onDragMove={(e: any) => {
+              updatePolygonControlPoint(shape.tempId, index, e.target.x(), e.target.y());
+            }}
+            onDragEnd={(e: any) => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "pointer";
+              updatePolygonControlPoint(shape.tempId, index, e.target.x(), e.target.y());
+            }}
+          />
+        </Group>
+      );
+    });
+  };
+
+  const renderPolygonVertexHandles = (shape: CanvasShape, isSelected: boolean) => {
+    if (!isSelected || !shape.points?.length || (shape.shape_type !== "free_polygon_zone" && shape.shape_type !== "curve_polygon_zone")) return null;
+
+    const handleRadius = Math.max(5, 6.5 / Math.max(zoom, 0.2));
+    const hitPadding = Math.max(20, 30 / Math.max(zoom, 0.2));
+
+    return shape.points.map((point, index) => (
+      <Group key={`${shape.tempId}-vertex-${index}`}>
+        <Circle
+          x={point.x}
+          y={point.y}
+          radius={handleRadius}
+          fill="#ffffff"
+          stroke={shape.color}
+          strokeWidth={2}
+          hitStrokeWidth={hitPadding}
+          shadowColor="#000000"
+          shadowBlur={4}
+          shadowOpacity={0.3}
+          draggable={mode === "select" && !shapeTool}
+          onMouseEnter={(e: any) => {
+            const stage = e.target.getStage();
+            if (stage) stage.container().style.cursor = "grab";
+          }}
+          onMouseLeave={(e: any) => {
+            const stage = e.target.getStage();
+            if (stage) stage.container().style.cursor = "default";
+          }}
+          onMouseDown={(e: any) => {
+            e.cancelBubble = true;
+          }}
+          onTouchStart={(e: any) => {
+            e.cancelBubble = true;
+          }}
+          onDragStart={(e: any) => {
+            const stage = e.target.getStage();
+            if (stage) stage.container().style.cursor = "grabbing";
+          }}
+          onDragMove={(e: any) => {
+            updatePolygonVertex(shape.tempId, index, e.target.x(), e.target.y());
+          }}
+          onDragEnd={(e: any) => {
+            const stage = e.target.getStage();
+            if (stage) stage.container().style.cursor = "grab";
+            updatePolygonVertex(shape.tempId, index, e.target.x(), e.target.y());
+          }}
+        />
+      </Group>
+    ));
+  };
+
+  const buildPolygonSvgPath = (
+    points: ShapePoint[],
+    controlPoints?: Record<number, ShapePoint>,
+    closed: boolean = true,
+    previewPoint?: ShapePoint | null
+  ): string => {
+  if (points.length === 0) return "";
+  let d = `M ${points[0].x} ${points[0].y}`;
+  const count = points.length;
+
+  for (let i = 0; i < count - 1; i++) {
+    const pNext = points[i + 1];
+    const cp = controlPoints?.[i];
+    if (cp) {
+      d += ` Q ${cp.x} ${cp.y} ${pNext.x} ${pNext.y}`;
+    } else {
+      d += ` L ${pNext.x} ${pNext.y}`;
+    }
+  }
+
+  if (previewPoint) {
+    d += ` L ${previewPoint.x} ${previewPoint.y}`;
+  } else if (closed && count >= 3) {
+    const lastIndex = count - 1;
+    const pNext = points[0];
+    const cp = controlPoints?.[lastIndex];
+    if (cp) {
+      d += ` Q ${cp.x} ${cp.y} ${pNext.x} ${pNext.y}`;
+    } else {
+      d += ` Z`;
+    }
+  }
+
+  return d;
+}
+
+  const renderPolygonZone = (
+    shape: CanvasShape,
+    options: {
+      isDraft?: boolean;
+      isSelected?: boolean;
+      previewPoint?: ShapePoint | null;
+    } = {}
+  ) => {
+    const points = options.isDraft
+      ? draftPolygonPoints
+      : shape.points || [];
+
+    if (points.length === 0) return null;
+
+    const flatPoints = pointsToFlat(points);
+    const previewPoints =
+      options.isDraft && options.previewPoint
+        ? [...flatPoints, options.previewPoint.x, options.previewPoint.y]
+        : flatPoints;
+
+    const closed = !options.isDraft && points.length >= 3;
+    const canFill = options.isDraft ? points.length >= 3 : closed;
+    const fillColor = shape.fill_color || undefined;
+    const baseOpacity = shape.fill_opacity !== undefined ? shape.fill_opacity : 0.35;
+    const fillOpacity = (shape.fill_color === null || shape.fill_color === undefined) ? 0 : baseOpacity;
+    const hasStroke = shape.stroke_width > 0;
+
+    const hasControlPoints = !options.isDraft && shape.control_points && Object.keys(shape.control_points).length > 0;
+    const svgPathData = hasControlPoints
+      ? buildPolygonSvgPath(points, shape.control_points, closed, options.previewPoint)
+      : "";
+
+    return (
+      <Group key={options.isDraft ? "draft-polygon-zone" : shape.tempId}>
+        {canFill && fillColor && fillOpacity > 0 && (
+          hasControlPoints ? (
+            <Path
+              data={svgPathData}
+              fill={fillColor}
+              opacity={fillOpacity}
+              globalCompositeOperation="multiply"
+              listening={false}
+            />
+          ) : (
+            <Line
+              points={flatPoints}
+              closed
+              tension={shape.tension || 0}
+              fill={fillColor}
+              opacity={fillOpacity}
+              globalCompositeOperation="multiply"
+              listening={false}
+            />
+          )
+        )}
+        {hasControlPoints ? (
+          <Path
+            id={options.isDraft ? undefined : shape.tempId}
+            name={options.isDraft ? "draft-polygon-zone" : shape.tempId}
+            data={svgPathData}
+            stroke={hasStroke ? shape.color : undefined}
+            strokeWidth={shape.stroke_width}
+            lineJoin="round"
+            lineCap="round"
+            hitStrokeWidth={Math.max(16, shape.stroke_width + 10)}
+            draggable={!options.isDraft && mode === "select" && !shapeTool && options.isSelected}
+            onClick={() => !options.isDraft && onSelectShape?.(shape.tempId)}
+            onTap={() => !options.isDraft && onSelectShape?.(shape.tempId)}
+            onDragEnd={(e: any) => {
+              if (options.isDraft) return;
+              const node = e.target;
+              movePolygonPoints(shape.tempId, node.x(), node.y());
+              node.position({ x: 0, y: 0 });
+            }}
+          />
+        ) : (
+          <Line
+            id={options.isDraft ? undefined : shape.tempId}
+            name={options.isDraft ? "draft-polygon-zone" : shape.tempId}
+            points={previewPoints}
+            closed={closed}
+            tension={shape.tension || 0}
+            stroke={hasStroke ? shape.color : undefined}
+            strokeWidth={shape.stroke_width}
+            dash={options.isDraft ? [6, 4] : undefined}
+            lineJoin="round"
+            lineCap="round"
+            hitStrokeWidth={Math.max(16, shape.stroke_width + 10)}
+            draggable={!options.isDraft && mode === "select" && !shapeTool && options.isSelected}
+            onClick={() => !options.isDraft && onSelectShape?.(shape.tempId)}
+            onTap={() => !options.isDraft && onSelectShape?.(shape.tempId)}
+            onDragEnd={(e: any) => {
+              if (options.isDraft) return;
+              const node = e.target;
+              movePolygonPoints(shape.tempId, node.x(), node.y());
+              node.position({ x: 0, y: 0 });
+            }}
+          />
+        )}
+        {(options.isDraft || options.isSelected) && points.map((point, index) => (
+          <Group key={`${shape.tempId}-vertex-label-${index}`}>
+            {options.isDraft && (
+              <Circle
+                x={point.x}
+                y={point.y}
+                radius={6}
+                fill="#ffffff"
+                stroke={shape.color}
+                strokeWidth={2}
+                listening={false}
+              />
+            )}
+            <Text
+              x={point.x + 10}
+              y={point.y - 18}
+              text={pointLabel(index)}
+              fontSize={12}
+              fontStyle="bold"
+              fill={shape.color}
+              listening={false}
+            />
+          </Group>
+        ))}
+        {!options.isDraft && renderPolygonVertexHandles(shape, Boolean(options.isSelected))}
+        {!options.isDraft && renderPolygonCurveHandles(shape, Boolean(options.isSelected))}
+      </Group>
+    );
   };
 
   const updateShape = (tempId: string, patch: Partial<CanvasShape>) => {
@@ -396,12 +854,23 @@ function PlanCanvas({
     });
 
     shapes.forEach((shape) => {
+      const pad = SHEET_MARGIN + shape.stroke_width;
+
+      if (isPolygonShape(shape.shape_type) && shape.points?.length) {
+        shape.points.forEach((point) => {
+          minX = Math.min(minX, point.x - pad);
+          minY = Math.min(minY, point.y - pad);
+          maxX = Math.max(maxX, point.x + pad);
+          maxY = Math.max(maxY, point.y + pad);
+        });
+        return;
+      }
+
       // A line's width/height are signed offsets, so normalise before comparing.
       const left = Math.min(shape.x, shape.x + shape.width);
       const top = Math.min(shape.y, shape.y + shape.height);
       const right = Math.max(shape.x, shape.x + shape.width);
       const bottom = Math.max(shape.y, shape.y + shape.height);
-      const pad = SHEET_MARGIN + shape.stroke_width;
 
       minX = Math.min(minX, left - pad);
       minY = Math.min(minY, top - pad);
@@ -742,6 +1211,13 @@ function PlanCanvas({
     });
   }, [iconDefinitions]);
 
+  useEffect(() => {
+    if (!isPolygonTool(shapeTool)) {
+      setDraftPolygonPoints([]);
+      setPolygonCursor(null);
+    }
+  }, [shapeTool]);
+
   // Update Transformer nodes when selection changes
   useEffect(() => {
     if (transformerRef.current) {
@@ -749,7 +1225,13 @@ function PlanCanvas({
       if (!stage) return;
 
       // Icons, shapes and texts share the Transformer: whichever is selected gets it.
-      const activeId = selectedIconId || selectedShapeId || selectedTextId;
+      const selectedShape = selectedShapeId
+        ? shapes.find((shape) => shape.tempId === selectedShapeId)
+        : null;
+      const activeId =
+        selectedIconId ||
+        selectedTextId ||
+        (isPolygonShape(selectedShape?.shape_type) ? null : selectedShapeId);
       if (activeId) {
         const selectedNode = stage.findOne("." + activeId);
         if (selectedNode) {
@@ -766,11 +1248,29 @@ function PlanCanvas({
   // Keyboard shortcut to delete the selected icon or shape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Delete" && e.key !== "Backspace") return;
-      // Prevent deleting if typing in label input
       if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") {
         return;
       }
+
+      if (isPolygonTool(shapeTool)) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          finishPolygonDraft();
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          resetPolygonDraft();
+          return;
+        }
+        if (e.key === "Backspace") {
+          e.preventDefault();
+          setDraftPolygonPoints((current) => current.slice(0, -1));
+          return;
+        }
+      }
+
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
 
       if (selectedIconId) {
         onIconsChange(icons.filter((icon) => icon.tempId !== selectedIconId));
@@ -787,11 +1287,16 @@ function PlanCanvas({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [selectedIconId, selectedShapeId, selectedTextId, icons, shapes, texts, onIconsChange, onSelectIcon, onShapesChange, onSelectShape, onTextsChange, onSelectText]);
+  }, [selectedIconId, selectedShapeId, selectedTextId, icons, shapes, texts, onIconsChange, onSelectIcon, onShapesChange, onSelectShape, onTextsChange, onSelectText, shapeTool, draftPolygonPoints]);
 
   const handleStageMouseDown = (e: any) => {
     if (mode === "erase") {
       beginEraseStroke(e.target.getStage());
+      return;
+    }
+
+    if (isPolygonTool(shapeTool)) {
+      addPolygonPoint(e.target.getStage());
       return;
     }
 
@@ -919,25 +1424,31 @@ function PlanCanvas({
         draggable={mode === "pan"}
         onMouseDown={handleStageMouseDown}
         onTouchStart={handleStageMouseDown}
+        onDblClick={() => {
+          if (isPolygonTool(shapeTool)) finishPolygonDraft();
+        }}
         onMouseMove={(e: any) => {
           if (mode === "erase") extendEraseStroke(e.target.getStage());
+          else if (isPolygonTool(shapeTool)) updatePolygonCursor(e.target.getStage());
           else if (shapeTool) extendShape(e.target.getStage());
         }}
         onTouchMove={(e: any) => {
           if (mode === "erase") extendEraseStroke(e.target.getStage());
+          else if (isPolygonTool(shapeTool)) updatePolygonCursor(e.target.getStage());
           else if (shapeTool) extendShape(e.target.getStage());
         }}
         onMouseUp={() => {
           finishEraseStroke();
-          finishShape();
+          if (!isPolygonTool(shapeTool)) finishShape();
         }}
         onTouchEnd={() => {
           finishEraseStroke();
-          finishShape();
+          if (!isPolygonTool(shapeTool)) finishShape();
         }}
         onMouseLeave={() => {
           finishEraseStroke();
-          finishShape();
+          if (!isPolygonTool(shapeTool)) finishShape();
+          if (isPolygonTool(shapeTool)) setPolygonCursor(null);
         }}
         onDragEnd={handleStageDrag}
         onWheel={handleWheel}
@@ -945,7 +1456,7 @@ function PlanCanvas({
           cursor:
             mode === "erase"
               ? "cell"
-              : placementIconType || placementText
+              : isPolygonTool(shapeTool) || placementIconType || placementText
                 ? "crosshair"
                 : mode === "pan"
                   ? "grab"
@@ -993,15 +1504,20 @@ function PlanCanvas({
           )}
 
           {/* Drawn shapes — under the pictograms so icons stay readable */}
-          {[...shapes, ...(draftShape ? [draftShape] : [])].map((shape) => {
-            const isDraft = draftShape?.tempId === shape.tempId;
+          {shapes.map((shape) => {
+            if (isPolygonShape(shape.shape_type)) {
+              return renderPolygonZone(shape, {
+                isSelected: selectedShapeId === shape.tempId
+              });
+            }
+
             const common = {
               id: shape.tempId,
               name: shape.tempId,
               stroke: shape.color,
               strokeWidth: shape.stroke_width,
               rotation: shape.rotation,
-              draggable: mode === "select" && !shapeTool && !isDraft,
+              draggable: mode === "select" && !shapeTool,
               onClick: () => onSelectShape?.(shape.tempId),
               onTap: () => onSelectShape?.(shape.tempId),
               // A thin line is hard to grab, so widen its hit area.
@@ -1010,8 +1526,8 @@ function PlanCanvas({
                 updateShape(shape.tempId, { x: e.target.x(), y: e.target.y() }),
               onTransformEnd: (e: any) => {
                 const node = e.target;
-                const scaleX = node.scaleX();
-                const scaleY = node.scaleY();
+                const scaleX = Math.abs(node.scaleX());
+                const scaleY = Math.abs(node.scaleY());
                 node.scaleX(1);
                 node.scaleY(1);
                 updateShape(shape.tempId, {
@@ -1058,6 +1574,96 @@ function PlanCanvas({
               );
             }
 
+            // A zone is a filled, semi-transparent rectangle used to highlight
+            // an area on the plan (e.g. a sector, a room). Same geometry as the
+            // plain rect, but with a tinted fill and a dashed border.
+            if (shape.shape_type === "zone") {
+              return (
+                <Rect
+                  key={shape.tempId}
+                  {...common}
+                  x={shape.x}
+                  y={shape.y}
+                  width={Math.max(1, shape.width)}
+                  height={Math.max(1, shape.height)}
+                  fill={shape.fill_color || shape.color}
+                  opacity={shape.fill_opacity !== undefined ? shape.fill_opacity : 0.28}
+                  globalCompositeOperation="multiply"
+                  dash={[10, 6]}
+                  cornerRadius={2}
+                />
+              );
+            }
+
+            return (
+              <Rect
+                key={shape.tempId}
+                {...common}
+                x={shape.x}
+                y={shape.y}
+                width={Math.max(1, shape.width)}
+                height={Math.max(1, shape.height)}
+                fill={shape.fill_color || undefined}
+                globalCompositeOperation={shape.fill_color ? "multiply" : undefined}
+              />
+            );
+          })}
+
+          {[...(draftShape ? [draftShape] : [])].map((shape) => {
+            const isDraft = true;
+            const common = {
+              id: shape.tempId,
+              name: shape.tempId,
+              stroke: shape.color,
+              strokeWidth: shape.stroke_width,
+              rotation: shape.rotation,
+              draggable: false,
+              listening: false,
+            };
+
+            if (shape.shape_type === "line") {
+              return (
+                <Line
+                  key={shape.tempId}
+                  {...common}
+                  x={shape.x}
+                  y={shape.y}
+                  points={[0, 0, shape.width, shape.height]}
+                  lineCap="round"
+                />
+              );
+            }
+
+            if (shape.shape_type === "circle") {
+              return (
+                <Ellipse
+                  key={shape.tempId}
+                  {...common}
+                  x={shape.x + shape.width / 2}
+                  y={shape.y + shape.height / 2}
+                  radiusX={Math.max(1, shape.width / 2)}
+                  radiusY={Math.max(1, shape.height / 2)}
+                />
+              );
+            }
+
+            if (shape.shape_type === "zone") {
+              return (
+                <Rect
+                  key={shape.tempId}
+                  {...common}
+                  x={shape.x}
+                  y={shape.y}
+                  width={Math.max(1, shape.width)}
+                  height={Math.max(1, shape.height)}
+                  fill={shape.color}
+                  opacity={0.28}
+                  dash={[10, 6]}
+                  cornerRadius={2}
+                />
+              );
+            }
+
             return (
               <Rect
                 key={shape.tempId}
@@ -1070,6 +1676,22 @@ function PlanCanvas({
             );
           })}
 
+          {isPolygonTool(shapeTool) && draftPolygonPoints.length > 0 &&
+            renderPolygonZone(
+              {
+                tempId: "draft-polygon-zone",
+                shape_type: "polygon_zone",
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+                rotation: 0,
+                stroke_width: shapeStrokeWidth,
+                color: shapeColor
+              },
+              { isDraft: true, previewPoint: polygonCursor }
+            )}
+
           {/* Leader lines. Pure geometry linking two real positions, so unlike the
               pictograms these turn with the plan — they sit outside the
               ".iconUpright" groups that hold the artwork straight. */}
@@ -1077,22 +1699,28 @@ function PlanCanvas({
             if (icon.anchor_x == null || icon.anchor_y == null) return null;
 
             const end = leaderEndpoint(icon, icon.anchor_x, icon.anchor_y);
-            const dotRadius = Math.max(3, Math.min(7, icon.width * 0.1));
+            // Centralised leader colour: exact pictogram → colour lookup, so the
+            // line and anchor dot use the pictogram's functional colour (red for
+            // fire-fighting, green for escape, …) rather than a flat tint.
+            const leaderColor = getIconLeaderColor(icon.icon_type, {
+              label: iconDefinitions[icon.icon_type]?.label,
+              definitions: iconDefinitions,
+            });
 
             return (
               <Group key={`leader-${icon.tempId}`}>
                 <Line
                   points={[icon.anchor_x, icon.anchor_y, end.x, end.y]}
-                  stroke="#111827"
-                  strokeWidth={1.5}
+                  stroke={leaderColor}
+                  strokeWidth={2}
                   listening={false}
                 />
                 <Circle
                   x={icon.anchor_x}
                   y={icon.anchor_y}
-                  radius={dotRadius}
-                  fill="#111827"
-                  stroke="#ffffff"
+                  radius={4}
+                  fill={leaderColor}
+                  stroke={leaderColor}
                   strokeWidth={1}
                   hitStrokeWidth={14}
                   draggable={mode === "select" && !shapeTool}
@@ -1144,8 +1772,8 @@ function PlanCanvas({
                 onTransformEnd={(e) => {
                   // transformer changes scale properties. We update width, height and rotation.
                   const node = e.target;
-                  const scaleX = node.scaleX();
-                  const scaleY = node.scaleY();
+                  const scaleX = Math.abs(node.scaleX());
+                  const scaleY = Math.abs(node.scaleY());
 
                   // Reset scale to avoid accumulating multiplier issues
                   node.scaleX(1);
@@ -1157,8 +1785,8 @@ function PlanCanvas({
                         ...item,
                         x: node.x(),
                         y: node.y(),
-                        width: Math.max(15, node.width() * scaleX),
-                        height: Math.max(15, node.height() * scaleY),
+                        width: Math.max(15, Math.round(node.width() * scaleX)),
+                        height: Math.max(15, Math.round(node.height() * scaleY)),
                         rotation: node.rotation()
                       };
                     }
@@ -1179,6 +1807,8 @@ function PlanCanvas({
                   offsetX={icon.width / 2}
                   offsetY={icon.height / 2}
                   rotation={iconArtworkRotation(icon, iconDefinitions, planRotation)}
+                  scaleX={icon.flip_x ? -1 : 1}
+                  scaleY={icon.flip_y ? -1 : 1}
                 >
                   {/* SVG Render */}
                   {iconImage ? (
@@ -1208,6 +1838,8 @@ function PlanCanvas({
                       fontStyle="bold"
                       shadowColor="#000000"
                       shadowBlur={4}
+                      scaleX={icon.flip_x ? -1 : 1}
+                      scaleY={icon.flip_y ? -1 : 1}
                     />
                   )}
                 </Group>
@@ -1246,7 +1878,7 @@ function PlanCanvas({
                 }}
                 onTransformEnd={(e) => {
                   const node = e.target;
-                  const scaleX = node.scaleX();
+                  const scaleX = Math.abs(node.scaleX());
                   node.scaleX(1);
                   node.scaleY(1);
                   const updated = texts.map((item) =>
@@ -1303,6 +1935,8 @@ function PlanCanvas({
           {mode === "select" && (
             <Transformer
               ref={transformerRef}
+              flipEnabled={false}
+              keepRatio={false}
               boundBoxFunc={(oldBox, newBox) => {
                 // limit minimum size
                 if (Math.abs(newBox.width) < 15 || Math.abs(newBox.height) < 15) {
@@ -1310,7 +1944,16 @@ function PlanCanvas({
                 }
                 return newBox;
               }}
-              enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right"]}
+              enabledAnchors={[
+                "top-left",
+                "top-center",
+                "top-right",
+                "middle-right",
+                "bottom-right",
+                "bottom-center",
+                "bottom-left",
+                "middle-left",
+              ]}
               rotateAnchorOffset={20}
               borderStroke="#3b82f6"
               anchorStroke="#3b82f6"

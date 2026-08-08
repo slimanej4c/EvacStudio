@@ -6,11 +6,10 @@ from .views import (
     CurrentUserView,
     EvacuationPlanViewSet,
     PlanIconViewSet,
-    UserOpenAISettingsView,
-    SaveUserOpenAISettingsView,
-    DeleteUserOpenAISettingsView,
-    TestOpenAIKeyView,
-    AnalyzePlanImageView,
+    UserXaiSettingsView,
+    SaveUserXaiSettingsView,
+    DeleteUserXaiSettingsView,
+    TestXaiKeyView,
 )
 
 router = DefaultRouter()
@@ -23,10 +22,9 @@ urlpatterns = [
     path('auth/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/me/', CurrentUserView.as_view(), name='auth_me'),
-    path('openai-settings/', UserOpenAISettingsView.as_view(), name='openai_settings'),
-    path('openai-settings/save/', SaveUserOpenAISettingsView.as_view(), name='openai_settings_save'),
-    path('openai-settings/delete/', DeleteUserOpenAISettingsView.as_view(), name='openai_settings_delete'),
-    path('openai/test-key/', TestOpenAIKeyView.as_view(), name='openai_test_key'),
-    path('openai/analyze-plan/', AnalyzePlanImageView.as_view(), name='openai_analyze_plan'),
+    path('xai-settings/', UserXaiSettingsView.as_view(), name='xai_settings'),
+    path('xai-settings/save/', SaveUserXaiSettingsView.as_view(), name='xai_settings_save'),
+    path('xai-settings/delete/', DeleteUserXaiSettingsView.as_view(), name='xai_settings_delete'),
+    path('xai/test-key/', TestXaiKeyView.as_view(), name='xai_test_key'),
     path('', include(router.urls)),
 ]

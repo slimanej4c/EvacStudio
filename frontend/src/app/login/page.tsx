@@ -5,7 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import Link from "next/link";
 import { AlertTriangle, Lock, User as UserIcon } from "lucide-react";
 
-const SHOW_REGISTER_ENTRY_POINTS = false;
+const SHOW_REGISTER_ENTRY_POINTS = true;
 
 export default function LoginPage() {
   const { login } = useAuth();

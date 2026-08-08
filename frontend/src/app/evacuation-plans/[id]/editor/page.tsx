@@ -5,8 +5,9 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter, useParams } from "next/navigation";
 import dynamic from "next/dynamic";
-import { ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, FileDown, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Type, AlertTriangle } from "lucide-react";
-import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource, isYouAreHereIcon } from "@/utils/safetyIcons";
+import { ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, FileDown, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw } from "lucide-react";
+import { CropModal } from "@/components/CropModal";
+import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource, isYouAreHereIcon, inferPictogramColor } from "@/utils/safetyIcons";
 import { CanvasIcon, CanvasShape, CanvasText, ShapeKind, EraserShape, PlanCanvasHandle, FONT_OPTIONS } from "@/components/PlanCanvas";
 import { buildApiUrl } from "@/lib/api";
 import jsPDF from "jspdf";
@@ -37,6 +38,18 @@ const EXPORT_PAPER_SIZES = {
 } as const;
 type ExportPaperFormat = keyof typeof EXPORT_PAPER_SIZES;
 const EXPORT_THEMES = {
+  nfx08070: {
+    label: "NF X08-070 Incendie",
+    description: "Norme française officielle (bannière rouge, numéros 18/112, 15/118, 114 et légende)."
+  },
+  intervention: {
+    label: "Plan d'intervention",
+    description: "Planche technique pompiers : plan pleine largeur, colonne d'identification et grande légende à droite."
+  },
+  evacuation: {
+    label: "Plan d'évacuation",
+    description: "Bandeau vert, consignes à gauche, point de rassemblement, légende à droite et étiquette de niveau."
+  },
   modern: {
     label: "Moderne",
     description: "Bandeau vert, cartes sobres et légende latérale."
@@ -61,6 +74,54 @@ const EXPORT_THEMES = {
 type ExportTheme = keyof typeof EXPORT_THEMES;
 
 const EXPORT_THEME_PALETTES = {
+  nfx08070: {
+    sheet: "#ffffff",
+    headerStart: "#e10600",
+    headerEnd: "#e10600",
+    accent: "#ffd500",
+    safety: "#e10600",
+    intervention: "#00a651",
+    // The normative legend is a plain black-ruled table, not a coloured card.
+    legend: "#1a1a1a",
+    panelTint: "#ffffff",
+    chipFill: "#f8fafc",
+    text: "#1a1a1a",
+    muted: "#555555",
+    border: "rgba(0, 0, 0, 0.25)",
+    shadow: "rgba(0, 0, 0, 0.12)"
+  },
+  evacuation: {
+    sheet: "#ffffff",
+    headerStart: "#3aa935",
+    headerEnd: "#3aa935",
+    // The PREVENTION pill rather than a signage accent rule.
+    accent: "#f5a623",
+    safety: "#e10600",
+    intervention: "#3aa935",
+    legend: "#1a1a1a",
+    panelTint: "#ffffff",
+    chipFill: "#f1f5f9",
+    text: "#1a1a1a",
+    muted: "#8b9199",
+    border: "rgba(0, 0, 0, 0.25)",
+    shadow: "rgba(0, 0, 0, 0.12)"
+  },
+  intervention: {
+    sheet: "#ffffff",
+    headerStart: "#e10600",
+    headerEnd: "#e10600",
+    // The level tag ("REZ-DE-CHAUSSEE") rather than a signage accent rule.
+    accent: "#8b9199",
+    safety: "#e10600",
+    intervention: "#00a651",
+    legend: "#1a1a1a",
+    panelTint: "#ffffff",
+    chipFill: "#f1f5f9",
+    text: "#1a1a1a",
+    muted: "#555555",
+    border: "rgba(0, 0, 0, 0.25)",
+    shadow: "rgba(0, 0, 0, 0.12)"
+  },
   modern: {
     sheet: "#eef3f0",
     headerStart: "#0d6b41",
@@ -162,6 +223,134 @@ const DEFAULT_EXPORT_CUSTOM_COLORS: Record<ExportCustomColorKey, string> = {
   text: "#1f2d27"
 };
 
+// Banner title each theme starts from. The normative sheet is a fire-safety
+// plan, not an evacuation plan, and says so in its own banner.
+const EXPORT_THEME_DEFAULT_TITLES: Record<ExportTheme, string> = {
+  nfx08070: "PLAN DE SECURITE INCENDIE",
+  intervention: "PLAN D'INTERVENTION",
+  evacuation: "PLAN D'EVACUATION",
+  modern: "PLAN D'ÉVACUATION",
+  consignes: "PLAN D'ÉVACUATION",
+  ocean: "PLAN D'ÉVACUATION",
+  graphite: "PLAN D'ÉVACUATION",
+  coral: "PLAN D'ÉVACUATION"
+};
+
+/**
+ * True when the title is still one theme's untouched default — switching theme
+ * may then replace it. A title the user typed is never overwritten.
+ */
+const isUntouchedExportTitle = (title: string) => {
+  const trimmed = title.trim();
+  if (!trimmed) return true;
+  return Object.values(EXPORT_THEME_DEFAULT_TITLES).some(
+    (preset) => preset.toLowerCase() === trimmed.toLowerCase()
+  );
+};
+
+// Colour fields actually used by each theme, with the wording of that theme.
+// The generic list above describes the "modern" sheet; the normative one has no
+// gradient band and names its colours after the regulatory blocks instead.
+const EXPORT_THEME_COLOR_FIELDS: Partial<Record<ExportTheme, ReadonlyArray<{ key: ExportCustomColorKey; label: string }>>> = {
+  nfx08070: [
+    { key: "headerStart", label: "Bandeau titre" },
+    { key: "safety", label: "Rouge incendie" },
+    { key: "intervention", label: "Vert évacuation" },
+    { key: "accent", label: "Jaune prévention" },
+    { key: "legend", label: "Cadre légende" },
+    { key: "sheet", label: "Fond page" },
+    { key: "text", label: "Texte" }
+  ],
+  intervention: [
+    { key: "headerStart", label: "Bandeau titre" },
+    { key: "accent", label: "Étiquette niveau" },
+    { key: "legend", label: "Cadre légende" },
+    { key: "sheet", label: "Fond page" },
+    { key: "text", label: "Texte" }
+  ],
+  evacuation: [
+    { key: "headerStart", label: "Bandeau vert" },
+    { key: "safety", label: "Rouge incendie" },
+    { key: "intervention", label: "Vert évacuation" },
+    { key: "accent", label: "Orange prévention" },
+    { key: "legend", label: "Cadre légende" },
+    { key: "sheet", label: "Fond page" },
+    { key: "text", label: "Texte" }
+  ]
+};
+
+// ── NF X08-070: editable copy ───────────────────────────────────────────────
+// The normative sheet carries blocks no other theme has (emergency numbers,
+// numbered evacuation steps, prevention notice), so they get their own defaults
+// rather than being squeezed into the generic "consignes / intervention" pair.
+const NF_DEFAULT_EVACUATION_TEXT = [
+  "1 - SI L'INCENDIE SE DECLARE CHEZ VOUS ET VOUS NE POUVEZ PAS L'ETEINDRE IMMEDIATEMENT :",
+  "- EVACUEZ LES LIEUX ;",
+  "- FERMEZ LA PORTE DE VOTRE APPARTEMENT ;",
+  "- PRENDRE LA SORTIE LA PLUS PROCHE.",
+  "",
+  "2 - SI L'INCENDIE EST AU DESSOUS DE VOTRE PALIER :",
+  "- RESTEZ CHEZ VOUS ;",
+  "- FERMEZ LA PORTE DE VOTRE APPARTEMENT ET MOUILLEZ-LA ;",
+  "- MANIFESTEZ-VOUS A VOTRE FENETRE.",
+  "",
+  "3 - SI L'INCENDIE EST AU DESSUS DE VOTRE PALIER :",
+  "- PRENDRE LA SORTIE LA PLUS PROCHE.",
+  "",
+  "NE PAS UTILISER LES ASCENSEURS."
+].join("\n");
+
+const NF_DEFAULT_PREVENTION_TEXT = [
+  "EN CAS DE FUMEES, BAISSEZ-VOUS. L'AIR FRAIS EST PRES DU SOL.",
+  "N'ENTREZ JAMAIS DANS LA FUMEE.",
+  "N'ENCOMBREZ PAS LES PALIERS ET LES CIRCULATIONS.",
+  "EN CAS D'INCENDIE, VEILLEZ A FERMER LES PORTES ET FENETRES DERRIERE VOUS, POUR LIMITER LA PROPAGATION DES FLAMMES."
+].join("\n\n");
+
+const NF_DEFAULTS = {
+  conformity: "CONFORME A LA NF X08-070 ET ARRETE DU 19/06/2015",
+  fireTitle: "INCENDIE",
+  fireIntro: "VEUILLEZ APPELER LES SERVICES DE SECOURS EN COMPOSANT LE :",
+  fireNumbers: "18 / 112",
+  emergencyNote: "EN PRECISANT LE LIEU EXACT DE L'ACCIDENT.",
+  evacuationTitle: "EVACUATION",
+  evacuationText: NF_DEFAULT_EVACUATION_TEXT,
+  medicalTitle: "ACCIDENT OU MALAISE",
+  medicalNumbers: "15 / 118",
+  deafText: "Numéro d'urgence pour les personnes ayant des soucis à entendre ou à parler.",
+  preventionTitle: "PREVENTION",
+  preventionText: NF_DEFAULT_PREVENTION_TEXT,
+  legendTitle: "LEGENDE"
+} as const;
+
+// ── "Plan d'évacuation": editable copy ──────────────────────────────────────
+// Its instruction column is prose, not the numbered NF steps, so it carries its
+// own defaults rather than sharing the normative sheet's wording.
+const EVAC_DEFAULTS = {
+  conformity: "CONFORME A LA NORME NF X08-070",
+  fireTitle: "INCENDIE",
+  fireText: [
+    "EN CAS D'INCENDIE, GARDEZ VOTRE CALME ET DECLENCHEZ LE BOITIER LE PLUS PROCHE.",
+    "ATTAQUEZ LE FOYER PAR LA BASE AU MOYEN DES EXTINCTEURS SANS PRENDRE DE RISQUES.",
+    "DANS LA CHALEUR ET LA FUMEE, BAISSEZ-VOUS, L'AIR FRAIS EST PRES DU SOL."
+  ].join("\n\n"),
+  callText: "Appel d'urgence : 18 ou 112\nou le service de sécurité :",
+  evacuationTitle: "EVACUATION",
+  evacuationText: [
+    "A L'AUDITION DU SIGNAL OU SUR ORDRE D'UN RESPONSABLE, FERMEZ LES PORTES ET LES FENETRES.",
+    "SUIVEZ LES INDICATIONS DU GUIDE OU DIRIGEZ-VOUS VERS LES SORTIES LES PLUS PROCHES.",
+    "N'UTILISEZ PAS LES ASCENSEURS OU MONTE-CHARGES S'ILS EXISTENT.",
+    "NE REVENEZ PAS EN ARRIERE SANS Y AVOIR ETE INVITE."
+  ].join("\n\n"),
+  preventionTitle: "PREVENTION",
+  preventionText: [
+    "FERMEZ FENETRES ET PORTES EN QUITTANT LES LIEUX.",
+    "N'ENCOMBREZ PAS LE MATERIEL INCENDIE, LES ISSUES ET LES CIRCULATIONS.",
+    "IL EST FORMELLEMENT INTERDIT DE FUMER ET DE VAPOTER."
+  ].join("\n\n"),
+  assemblyLabel: "POINT DE RASSEMBLEMENT :"
+} as const;
+
 const EXPORT_CANVAS_HEIGHT = 1131; // 1600 / √2, rounded
 const ICON_CLIPBOARD_KEY = "securplan:icon-clipboard";
 const EXPORT_FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
@@ -179,6 +368,21 @@ const EXPORT_SLATE = "#33475b";
 const EXPORT_OUTPUT_SCALE = 4;
 const EXPORT_STAGE_PIXEL_RATIO = 6;
 const EXPORT_PREVIEW_STAGE_PIXEL_RATIO = 2;
+
+const PRESET_COLORS = [
+  { name: "Vert foncé", hex: "#15803d" },
+  { name: "Vert clair", hex: "#22c55e" },
+  { name: "Vert sécurité", hex: "#16a34a" },
+  { name: "Jaune", hex: "#eab308" },
+  { name: "Orange", hex: "#f97316" },
+  { name: "Rouge", hex: "#ef4444" },
+  { name: "Bleu", hex: "#0284c7" },
+  { name: "Cyan", hex: "#06b6d4" },
+  { name: "Gris foncé", hex: "#475569" },
+  { name: "Gris clair", hex: "#94a3b8" },
+  { name: "Noir", hex: "#000000" },
+  { name: "Blanc", hex: "#ffffff" },
+];
 
 interface EvacuationPlanBackend {
   id: number;
@@ -200,6 +404,10 @@ interface EvacuationPlanBackend {
     label: string;
     anchor_x: number | null;
     anchor_y: number | null;
+    leader_width?: number;
+    framed?: boolean;
+    flip_x?: boolean;
+    flip_y?: boolean;
   }>;
   shapes?: Array<{
     id: number;
@@ -211,6 +419,11 @@ interface EvacuationPlanBackend {
     rotation: number;
     stroke_width: number;
     color: string;
+    fill_color?: string | null;
+    fill_opacity?: number | null;
+    tension?: number | null;
+    control_points?: Record<number, { x: number; y: number }> | null;
+    points?: Array<{ x: number; y: number }> | null;
   }>;
   texts?: Array<{
     id: number;
@@ -234,63 +447,29 @@ interface PlanPictogramBackend {
   url: string;
 }
 
-interface OpenAICleanResult {
-  before_image: string;
-  after_image: string;
-  quality?: "low" | "medium" | "high";
-  generation_prompt?: string;
-  analysis?: Record<string, unknown>;
-  models?: {
-    analysis?: string;
-    image?: string;
-  };
-  warnings?: string[];
-  verification?: {
-    murs_oublies: Array<Record<string, unknown>>;
-    murs_inventes: Array<Record<string, unknown>>;
-    ouvertures_deplacees: number;
-    score: number;
-    recommandations: string[];
-  };
-}
+type CleanMethod = "local_plan" | "local_walls" | "grok";
 
-type OpenAICleaningStatus =
+type GrokJobStatus =
   | "pending"
-  | "loading_source"
   | "analyzing"
-  | "prompt_ready"
   | "generating"
-  | "saving_result"
   | "completed"
   | "failed";
 
-type CleanMethod = "local" | "sketch_to_plan" | "existing_plan_cleanup";
-
-interface OpenAICostEstimate {
-  currency: string;
-  estimated_min: number;
-  estimated_max: number;
-  is_estimate: boolean;
-  details: {
-    analysis: boolean;
-    generation_count_max: number;
-    verification: boolean;
-    quality: string;
-    output_size: string;
-    cleaning_mode: string;
-    max_automatic_corrections: number;
-  };
-}
-
-interface OpenAICleanJobStatus extends Partial<OpenAICleanResult> {
+interface GrokJob {
   job_id: number;
-  status: OpenAICleaningStatus;
+  status: GrokJobStatus;
   error?: string;
   error_code?: string;
   diagnostic?: string;
+  before_image?: string;
+  after_image?: string;
+  analysis?: Record<string, unknown>;
+  generation_prompt?: string;
+  model?: string;
 }
 
-interface OpenAICleanHistoryItem {
+interface CleaningHistoryItem {
   id: number;
   plan: number;
   created_at: string;
@@ -312,6 +491,7 @@ export default function PlanEditorPage() {
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
   const [shapeTool, setShapeTool] = useState<ShapeKind | null>(null);
   const [shapeStrokeWidth, setShapeStrokeWidth] = useState(3);
+  const [shapeColor, setShapeColor] = useState("#3b82f6");
   const [selectedIconId, setSelectedIconId] = useState<string | null>(null);
   const [placementIconType, setPlacementIconType] = useState<IconType | null>(null);
   const [defaultIconSize, setDefaultIconSize] = useState({ width: 40, height: 40 });
@@ -323,6 +503,7 @@ export default function PlanEditorPage() {
   
   const [zoom, setZoom] = useState(1.0);
   const [fitSignal, setFitSignal] = useState(0);
+  const [canvasRotation, setCanvasRotation] = useState(0);
   const [mode, setMode] = useState<"select" | "pan" | "erase">("select");
   const spaceHeldRef = useRef(false);
   const modeBeforeSpaceRef = useRef<"select" | "pan" | "erase">("select");
@@ -358,53 +539,276 @@ export default function PlanEditorPage() {
     };
   }, []);
   const [loading, setLoading] = useState(true);
+
+  // ── Undo / Redo History Stack (up to 50 steps) ───────────────────────────
+  const MAX_HISTORY_STEPS = 50;
+  const [history, setHistory] = useState<
+    Array<{ icons: CanvasIcon[]; shapes: CanvasShape[]; texts: CanvasText[] }>
+  >([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const isHistoryActionRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (loading) return;
+    if (isHistoryActionRef.current) {
+      isHistoryActionRef.current = false;
+      return;
+    }
+
+    const currentSnapshot = {
+      icons: JSON.parse(JSON.stringify(icons)),
+      shapes: JSON.parse(JSON.stringify(shapes)),
+      texts: JSON.parse(JSON.stringify(texts)),
+    };
+
+    setHistory((prev) => {
+      if (historyIndex >= 0 && prev[historyIndex]) {
+        const last = prev[historyIndex];
+        if (
+          JSON.stringify(last.icons) === JSON.stringify(icons) &&
+          JSON.stringify(last.shapes) === JSON.stringify(shapes) &&
+          JSON.stringify(last.texts) === JSON.stringify(texts)
+        ) {
+          return prev;
+        }
+      }
+
+      const validHistory = prev.slice(0, historyIndex + 1);
+      const newHistory = [...validHistory, currentSnapshot];
+      if (newHistory.length > MAX_HISTORY_STEPS) {
+        newHistory.shift();
+        setHistoryIndex(newHistory.length - 1);
+      } else {
+        setHistoryIndex(newHistory.length - 1);
+      }
+      return newHistory;
+    });
+  }, [icons, shapes, texts, loading]);
+
+  const handleUndo = () => {
+    if (historyIndex <= 0 || !history[historyIndex - 1]) return;
+    const target = history[historyIndex - 1];
+    isHistoryActionRef.current = true;
+    setIcons(JSON.parse(JSON.stringify(target.icons)));
+    setShapes(JSON.parse(JSON.stringify(target.shapes)));
+    setTexts(JSON.parse(JSON.stringify(target.texts)));
+    setHistoryIndex(historyIndex - 1);
+  };
+
+  const handleRedo = () => {
+    if (historyIndex < 0 || historyIndex >= history.length - 1 || !history[historyIndex + 1]) return;
+    const target = history[historyIndex + 1];
+    isHistoryActionRef.current = true;
+    setIcons(JSON.parse(JSON.stringify(target.icons)));
+    setShapes(JSON.parse(JSON.stringify(target.shapes)));
+    setTexts(JSON.parse(JSON.stringify(target.texts)));
+    setHistoryIndex(historyIndex + 1);
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isInput =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        if (!isInput) {
+          e.preventDefault();
+          if (e.shiftKey) {
+            handleRedo();
+          } else {
+            handleUndo();
+          }
+        }
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "y") {
+        if (!isInput) {
+          e.preventDefault();
+          handleRedo();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [history, historyIndex]);
   const [saving, setSaving] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [cleaningText, setCleaningText] = useState("Traitement OpenCV en cours...");
   const [cleanModalOpen, setCleanModalOpen] = useState(false);
   const [revertConfirmOpen, setRevertConfirmOpen] = useState(false);
-  const [cleanMethod, setCleanMethod] = useState<CleanMethod>("local");
-  const [openaiApiKey, setOpenaiApiKey] = useState("");
-  const [openaiHasSavedKey, setOpenaiHasSavedKey] = useState(false);
-  const [openaiSettingsUpdatedAt, setOpenaiSettingsUpdatedAt] = useState<string | null>(null);
-  const [openaiSettingsLoading, setOpenaiSettingsLoading] = useState(false);
-  const [openaiKeySaving, setOpenaiKeySaving] = useState(false);
-  const [openaiKeyDeleting, setOpenaiKeyDeleting] = useState(false);
-  const [openaiKeyStatus, setOpenaiKeyStatus] = useState("");
-  const [openaiQuality, setOpenaiQuality] = useState<"low" | "medium" | "high">("medium");
-  const [openaiOutputSize, setOpenaiOutputSize] = useState("auto");
-  const [openaiVerificationEnabled, setOpenaiVerificationEnabled] = useState(false);
-  const [openaiMaxAutomaticCorrections, setOpenaiMaxAutomaticCorrections] = useState(0);
-  const [openaiCostEstimate, setOpenaiCostEstimate] = useState<OpenAICostEstimate | null>(null);
-  const [openaiCostLoading, setOpenaiCostLoading] = useState(false);
-  const [openaiKeepMachines, setOpenaiKeepMachines] = useState(true);
-  const [openaiKeepDoorsOpenings, setOpenaiKeepDoorsOpenings] = useState(true);
-  const [openaiRemoveText, setOpenaiRemoveText] = useState(false);
-  const [openaiRemoveDimensions, setOpenaiRemoveDimensions] = useState(false);
-  const [openaiCorrectPerspective, setOpenaiCorrectPerspective] = useState(false);
-  const [openaiWallThickness, setOpenaiWallThickness] = useState(3);
-  const [openaiAdditionalInstructions, setOpenaiAdditionalInstructions] = useState("");
-  const [existingRemoveDimensions, setExistingRemoveDimensions] = useState(true);
-  const [existingRemovePictograms, setExistingRemovePictograms] = useState(true);
-  const [existingRemoveText, setExistingRemoveText] = useState(false);
-  const [existingRemoveAnnotations, setExistingRemoveAnnotations] = useState(true);
-  const [existingRemoveTitleBlock, setExistingRemoveTitleBlock] = useState(true);
-  const [existingRemoveHatching, setExistingRemoveHatching] = useState(true);
-  const [existingRemoveFurniture, setExistingRemoveFurniture] = useState(true);
-  const [existingPreserveDoors, setExistingPreserveDoors] = useState(true);
-  const [existingPreserveStairs, setExistingPreserveStairs] = useState(true);
-  const [existingPreserveOpenings, setExistingPreserveOpenings] = useState(true);
-  const [existingSimplifyRendering, setExistingSimplifyRendering] = useState(true);
-  const [existingCleanupLevel, setExistingCleanupLevel] = useState<"leger" | "moyen" | "fort">("moyen");
-  const [openaiCleaningStep, setOpenaiCleaningStep] = useState<OpenAICleaningStatus>("pending");
-  const [openaiKeyConfigOpen, setOpenaiKeyConfigOpen] = useState(false);
-  const [openaiCleaning, setOpenaiCleaning] = useState(false);
-  const [openaiApplying, setOpenaiApplying] = useState(false);
-  const [openaiResult, setOpenaiResult] = useState<OpenAICleanResult | null>(null);
-  const [openaiError, setOpenaiError] = useState("");
-  const [openaiHistory, setOpenaiHistory] = useState<OpenAICleanHistoryItem[]>([]);
-  const [openaiHistoryLoading, setOpenaiHistoryLoading] = useState(false);
-  const [openaiHistoryApplyingId, setOpenaiHistoryApplyingId] = useState<number | null>(null);
+  const [cleanMethod, setCleanMethod] = useState<CleanMethod>("local_plan");
+  // xAI API key (Grok) — stored per user on the backend, edited from the modal.
+  const [xaiApiKey, setXaiApiKey] = useState("");
+  const [xaiHasSavedKey, setXaiHasSavedKey] = useState(false);
+  const [xaiSettingsUpdatedAt, setXaiSettingsUpdatedAt] = useState<string | null>(null);
+  const [xaiSettingsLoading, setXaiSettingsLoading] = useState(false);
+  const [xaiKeySaving, setXaiKeySaving] = useState(false);
+  const [xaiKeyDeleting, setXaiKeyDeleting] = useState(false);
+  const [xaiKeyTesting, setXaiKeyTesting] = useState(false);
+  const [xaiKeyStatus, setXaiKeyStatus] = useState("");
+  const [xaiKeyConfigOpen, setXaiKeyConfigOpen] = useState(false);
+  // Grok cleaning job (analysis + image generation), polled while running.
+  const [grokCleaning, setGrokCleaning] = useState(false);
+  const [grokJob, setGrokJob] = useState<GrokJob | null>(null);
+  const [grokError, setGrokError] = useState("");
+  const [grokBackgroundColor, setGrokBackgroundColor] = useState("#FFFFFF");
+  const [grokPreset, setGrokPreset] = useState<"evacuation" | "autocad">("evacuation");
+  const [changingBackground, setChangingBackground] = useState(false);
+  const [cropModalOpen, setCropModalOpen] = useState(false);
+  const [cropping, setCropping] = useState(false);
+  const changePlanInputRef = useRef<HTMLInputElement>(null);
+
+  const handleApplyCrop = async (crop: { x: number; y: number; width: number; height: number }) => {
+    setCropping(true);
+    setSaveStatus("Rognage et repositionnement des éléments...");
+
+    const bgDims = planCanvasRef.current?.getBackgroundDimensions() || { width: 0, height: 0 };
+    const shiftX = crop.x * bgDims.width;
+    const shiftY = crop.y * bgDims.height;
+
+    // Shift icons, shapes, and texts so they maintain their exact building positions relative to cropped origin
+    const shiftedIcons = icons.map((icon) => ({
+      ...icon,
+      x: Math.round(icon.x - shiftX),
+      y: Math.round(icon.y - shiftY),
+      anchor_x: icon.anchor_x != null ? Math.round(icon.anchor_x - shiftX) : icon.anchor_x,
+      anchor_y: icon.anchor_y != null ? Math.round(icon.anchor_y - shiftY) : icon.anchor_y,
+    }));
+
+    const shiftedShapes = shapes.map((shape) => ({
+      ...shape,
+      x: Math.round(shape.x - shiftX),
+      y: Math.round(shape.y - shiftY),
+      points: shape.points
+        ? shape.points.map((pt) => ({ x: Math.round(pt.x - shiftX), y: Math.round(pt.y - shiftY) }))
+        : shape.points,
+    }));
+
+    const shiftedTexts = texts.map((text) => ({
+      ...text,
+      x: Math.round(text.x - shiftX),
+      y: Math.round(text.y - shiftY),
+    }));
+
+    try {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/crop/`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
+        body: JSON.stringify({ ...crop, normalized: true }),
+      });
+
+      if (res.ok) {
+        const updatedPlan = await res.json();
+        setPlan(updatedPlan);
+        setIcons(shiftedIcons);
+        setShapes(shiftedShapes);
+        setTexts(shiftedTexts);
+        setCropModalOpen(false);
+        setSaveStatus("Plan rogné et éléments conservés avec succès !");
+        window.setTimeout(() => setSaveStatus(""), 3500);
+
+        // Sync shifted element positions to DB
+        void fetch(buildApiUrl(`/api/plans/${id}/sync-icons/`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
+          body: JSON.stringify(shiftedIcons),
+        });
+
+        void fetch(buildApiUrl(`/api/plans/${id}/sync-shapes/`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
+          body: JSON.stringify(
+            shiftedShapes.map((shape) => ({
+              shape_type: shape.shape_type,
+              x: shape.x,
+              y: shape.y,
+              width: shape.width,
+              height: shape.height,
+              rotation: shape.rotation,
+              stroke_width: shape.stroke_width,
+              color: shape.color,
+              fill_color: shape.fill_color ?? null,
+              fill_opacity: shape.fill_opacity ?? null,
+              tension: shape.tension ?? null,
+              control_points: shape.control_points ?? {},
+              points: shape.points || null,
+            }))
+          ),
+        });
+
+        void fetch(buildApiUrl(`/api/plans/${id}/sync-texts/`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
+          body: JSON.stringify(
+            shiftedTexts.map((t) => ({
+              text: t.text,
+              x: t.x,
+              y: t.y,
+              font_size: t.font_size,
+              font_family: t.font_family,
+              color: t.color,
+              bold: t.bold,
+              italic: t.italic,
+              background_color: t.background_color,
+              rotation: t.rotation,
+            }))
+          ),
+        });
+
+        void fetchCleaningHistory();
+      } else {
+        const data = await res.json();
+        alert(data.error || "Erreur lors du rognage du plan.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Impossible de joindre le serveur pour le rognage.");
+    } finally {
+      setCropping(false);
+    }
+  };
+
+  const handleChangePlanFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setChangingBackground(true);
+    setSaveStatus("Changement du plan d'arrière-plan...");
+    try {
+      const formData = new FormData();
+      formData.append("background_file", file);
+
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/change-background/`), {
+        method: "POST",
+        headers: getPlanAuthHeaders(),
+        body: formData,
+      });
+
+      if (res.ok) {
+        const updatedPlan = await res.json();
+        setPlan(updatedPlan);
+        setSaveStatus("Plan remplacé avec succès !");
+        window.setTimeout(() => setSaveStatus(""), 3500);
+        void fetchCleaningHistory();
+      } else {
+        alert("Erreur lors du remplacement du plan d'arrière-plan.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Erreur lors de la communication avec le serveur.");
+    } finally {
+      setChangingBackground(false);
+      if (changePlanInputRef.current) changePlanInputRef.current.value = "";
+    }
+  };
+
+  // Cleaning history (local + Grok), shared across all methods.
+  const [cleaningHistory, setCleaningHistory] = useState<CleaningHistoryItem[]>([]);
+  const [cleaningHistoryLoading, setCleaningHistoryLoading] = useState(false);
+  const [cleaningHistoryApplyingId, setCleaningHistoryApplyingId] = useState<number | null>(null);
   const [saveStatus, setSaveStatus] = useState("");
   // Unsaved-changes guard: a JSON snapshot of icons/shapes/texts captured at the
   // last successful save (and at initial load). Comparing the current state to it
@@ -412,6 +816,8 @@ export default function PlanEditorPage() {
   const [savedSnapshot, setSavedSnapshot] = useState("");
   const [pendingNav, setPendingNav] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportSaveConfirmOpen, setExportSaveConfirmOpen] = useState(false);
+  const [pendingExportAction, setPendingExportAction] = useState<(() => Promise<void>) | null>(null);
   const [exportFormat, setExportFormat] = useState<"png" | "pdf">("pdf");
   const [exportTheme, setExportTheme] = useState<ExportTheme>("modern");
   const [exportUseCustomColors, setExportUseCustomColors] = useState(false);
@@ -437,19 +843,61 @@ export default function PlanEditorPage() {
   const [exportLegendPanelHeight, setExportLegendPanelHeight] = useState(943);
   const [exportLegendFontSize, setExportLegendFontSize] = useState(16);
   const [exportPlanScale, setExportPlanScale] = useState(100);
+  const [exportPlanAreaScale, setExportPlanAreaScale] = useState(100);
   const [exportPlanRotation, setExportPlanRotation] = useState(0);
   const [exportPlanOffsetX, setExportPlanOffsetX] = useState(0);
   const [exportPlanOffsetY, setExportPlanOffsetY] = useState(0);
+  const [exportDisablePlanClipping, setExportDisablePlanClipping] = useState(false);
   // Logos overlaid on the export sheet: the client's brand (left of the header)
   // and our studio's brand (right of the header). Stored as data URLs so the
   // export works fully offline once loaded.
   const [exportClientLogo, setExportClientLogo] = useState("");
   const [exportStudioLogo, setExportStudioLogo] = useState("");
+  // Size and position of each logo, relative to the slot the theme gives it:
+  // 100% and (0, 0) is the automatic placement, so a sheet that already looks
+  // right is unaffected until one of these is touched.
+  const [exportClientLogoScale, setExportClientLogoScale] = useState(100);
+  const [exportClientLogoOffsetX, setExportClientLogoOffsetX] = useState(0);
+  const [exportClientLogoOffsetY, setExportClientLogoOffsetY] = useState(0);
+  const [exportStudioLogoScale, setExportStudioLogoScale] = useState(100);
+  const [exportStudioLogoOffsetX, setExportStudioLogoOffsetX] = useState(0);
+  const [exportStudioLogoOffsetY, setExportStudioLogoOffsetY] = useState(0);
   // Section visibility: each block can be hidden independently. When a whole
   // column is empty the plan widens to reclaim the space.
   const [exportShowSafety, setExportShowSafety] = useState(true);
   const [exportShowIntervention, setExportShowIntervention] = useState(true);
   const [exportShowLegend, setExportShowLegend] = useState(true);
+  // NF X08-070 copy. Every string printed on the normative sheet is editable —
+  // the block titles included, since the same layout is used for variants that
+  // rename them (« SECOURS », « CONDUITE A TENIR »…).
+  const [exportNfConformity, setExportNfConformity] = useState<string>(NF_DEFAULTS.conformity);
+  const [exportNfFireTitle, setExportNfFireTitle] = useState<string>(NF_DEFAULTS.fireTitle);
+  const [exportNfFireIntro, setExportNfFireIntro] = useState<string>(NF_DEFAULTS.fireIntro);
+  const [exportNfFireNumbers, setExportNfFireNumbers] = useState<string>(NF_DEFAULTS.fireNumbers);
+  const [exportNfEmergencyNote, setExportNfEmergencyNote] = useState<string>(NF_DEFAULTS.emergencyNote);
+  const [exportNfEvacuationTitle, setExportNfEvacuationTitle] = useState<string>(NF_DEFAULTS.evacuationTitle);
+  const [exportNfEvacuationText, setExportNfEvacuationText] = useState<string>(NF_DEFAULTS.evacuationText);
+  const [exportNfMedicalTitle, setExportNfMedicalTitle] = useState<string>(NF_DEFAULTS.medicalTitle);
+  const [exportNfMedicalNumbers, setExportNfMedicalNumbers] = useState<string>(NF_DEFAULTS.medicalNumbers);
+  const [exportNfDeafText, setExportNfDeafText] = useState<string>(NF_DEFAULTS.deafText);
+  const [exportNfPreventionTitle, setExportNfPreventionTitle] = useState<string>(NF_DEFAULTS.preventionTitle);
+  const [exportNfPreventionText, setExportNfPreventionText] = useState<string>(NF_DEFAULTS.preventionText);
+  const [exportNfLegendTitle, setExportNfLegendTitle] = useState<string>(NF_DEFAULTS.legendTitle);
+  const [exportNfBodyFontSize, setExportNfBodyFontSize] = useState(10);
+  // Level tag ("REZ-DE-CHAUSSEE", "NIVEAU -1"…) used by the intervention and
+  // evacuation sheets. Empty falls back to the plan's own floor name.
+  const [exportLevelLabel, setExportLevelLabel] = useState("");
+  // "Plan d'évacuation" copy.
+  const [exportEvacConformity, setExportEvacConformity] = useState<string>(EVAC_DEFAULTS.conformity);
+  const [exportEvacFireTitle, setExportEvacFireTitle] = useState<string>(EVAC_DEFAULTS.fireTitle);
+  const [exportEvacFireText, setExportEvacFireText] = useState<string>(EVAC_DEFAULTS.fireText);
+  const [exportEvacCallText, setExportEvacCallText] = useState<string>(EVAC_DEFAULTS.callText);
+  const [exportEvacTitle, setExportEvacTitle] = useState<string>(EVAC_DEFAULTS.evacuationTitle);
+  const [exportEvacText, setExportEvacText] = useState<string>(EVAC_DEFAULTS.evacuationText);
+  const [exportEvacPreventionTitle, setExportEvacPreventionTitle] = useState<string>(EVAC_DEFAULTS.preventionTitle);
+  const [exportEvacPreventionText, setExportEvacPreventionText] = useState<string>(EVAC_DEFAULTS.preventionText);
+  const [exportEvacAssemblyLabel, setExportEvacAssemblyLabel] = useState<string>(EVAC_DEFAULTS.assemblyLabel);
+  const [exportEvacBodyFontSize, setExportEvacBodyFontSize] = useState(9);
   const iconDefinitions = useMemo(
     () => ({ ...SAFETY_ICONS, ...availableIconDefinitions }),
     [availableIconDefinitions]
@@ -525,6 +973,46 @@ export default function PlanEditorPage() {
     }, { ...DEFAULT_EXPORT_CUSTOM_COLORS });
   };
 
+  /** Colour swatches to offer for the active theme, named the way it uses them. */
+  const exportColorFields = EXPORT_THEME_COLOR_FIELDS[exportTheme] ?? EXPORT_CUSTOM_COLOR_FIELDS;
+  // The two sheets that lay their own blocks out rather than using the generic
+  // consignes/intervention/legend panels.
+  const isNfTheme = exportTheme === "nfx08070";
+  const isInterventionTheme = exportTheme === "intervention";
+  const isEvacuationTheme = exportTheme === "evacuation";
+  const usesAddressBlock = isNfTheme || isInterventionTheme || isEvacuationTheme;
+  const usesLevelTag = isInterventionTheme || isEvacuationTheme;
+
+  const resetEvacTexts = () => {
+    setExportEvacConformity(EVAC_DEFAULTS.conformity);
+    setExportEvacFireTitle(EVAC_DEFAULTS.fireTitle);
+    setExportEvacFireText(EVAC_DEFAULTS.fireText);
+    setExportEvacCallText(EVAC_DEFAULTS.callText);
+    setExportEvacTitle(EVAC_DEFAULTS.evacuationTitle);
+    setExportEvacText(EVAC_DEFAULTS.evacuationText);
+    setExportEvacPreventionTitle(EVAC_DEFAULTS.preventionTitle);
+    setExportEvacPreventionText(EVAC_DEFAULTS.preventionText);
+    setExportEvacAssemblyLabel(EVAC_DEFAULTS.assemblyLabel);
+    setExportEvacBodyFontSize(9);
+  };
+
+  const resetNfTexts = () => {
+    setExportNfConformity(NF_DEFAULTS.conformity);
+    setExportNfFireTitle(NF_DEFAULTS.fireTitle);
+    setExportNfFireIntro(NF_DEFAULTS.fireIntro);
+    setExportNfFireNumbers(NF_DEFAULTS.fireNumbers);
+    setExportNfEmergencyNote(NF_DEFAULTS.emergencyNote);
+    setExportNfEvacuationTitle(NF_DEFAULTS.evacuationTitle);
+    setExportNfEvacuationText(NF_DEFAULTS.evacuationText);
+    setExportNfMedicalTitle(NF_DEFAULTS.medicalTitle);
+    setExportNfMedicalNumbers(NF_DEFAULTS.medicalNumbers);
+    setExportNfDeafText(NF_DEFAULTS.deafText);
+    setExportNfPreventionTitle(NF_DEFAULTS.preventionTitle);
+    setExportNfPreventionText(NF_DEFAULTS.preventionText);
+    setExportNfLegendTitle(NF_DEFAULTS.legendTitle);
+    setExportNfBodyFontSize(10);
+  };
+
   useEffect(() => {
     const fetchPlan = async () => {
       const headers = getPlanAuthHeaders();
@@ -553,7 +1041,11 @@ export default function PlanEditorPage() {
             rotation: icon.rotation,
             label: icon.label || "",
             anchor_x: icon.anchor_x ?? null,
-            anchor_y: icon.anchor_y ?? null
+            anchor_y: icon.anchor_y ?? null,
+            leader_width: icon.leader_width ?? 2,
+            framed: icon.framed ?? false,
+            flip_x: icon.flip_x ?? false,
+            flip_y: icon.flip_y ?? false,
           }));
           setIcons(canvasIcons);
 
@@ -567,7 +1059,12 @@ export default function PlanEditorPage() {
             height: shape.height,
             rotation: shape.rotation,
             stroke_width: shape.stroke_width,
-            color: shape.color
+            color: shape.color,
+            fill_color: shape.fill_color ?? null,
+            fill_opacity: shape.fill_opacity ?? undefined,
+            tension: shape.tension ?? undefined,
+            control_points: shape.control_points ?? undefined,
+            points: shape.points || undefined,
           }));
           setShapes(canvasShapes);
 
@@ -602,7 +1099,7 @@ export default function PlanEditorPage() {
         } else if (res.status === 401 || res.status === 403) {
           router.push("/login");
         } else {
-          router.push("/dashboard");
+          router.push("/evacuation-plans");
         }
       } catch (err) {
         console.error("Failed to fetch plan:", err);
@@ -634,7 +1131,10 @@ export default function PlanEditorPage() {
             label: pictogram.label,
             fileName: pictogram.file_name,
             imageUrl: pictogram.url,
-            color: "#168f5a",
+            // Infer the safety-sign colour from the pictogram name so the leader
+            // line and anchor dot match the equipment's category (red for fire
+            // fighting, green for escape, …) instead of a single flat colour.
+            color: inferPictogramColor(pictogram.type, pictogram.label),
           };
           return acc;
         }, {});
@@ -661,17 +1161,7 @@ export default function PlanEditorPage() {
   // inside the handler so the listener never goes stale.
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      const current = JSON.stringify({
-        icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y }) => ({
-          icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y,
-        })),
-        shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color }) => ({
-          shape_type, x, y, width, height, rotation, stroke_width, color,
-        })),
-        texts: texts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation }) => ({
-          text, x, y, font_size, font_family, color, bold, italic, background_color, rotation,
-        })),
-      });
+      const current = buildEditableSnapshot();
       if (current !== savedSnapshot) {
         e.preventDefault();
         e.returnValue = "";
@@ -779,15 +1269,14 @@ export default function PlanEditorPage() {
   useEffect(() => {
     if (!cleanModalOpen) return;
 
-    void fetchOpenAIHistory();
-    void fetchOpenAICostEstimate();
-    if (cleanMethod === "local") return;
+    void fetchCleaningHistory();
+    if (cleanMethod !== "grok") return;
 
     let cancelled = false;
-    const fetchOpenAISettings = async () => {
-      setOpenaiSettingsLoading(true);
+    const fetchXaiSettings = async () => {
+      setXaiSettingsLoading(true);
       try {
-        const res = await fetch(buildApiUrl(`/api/openai-settings/`), {
+        const res = await fetch(buildApiUrl(`/api/xai-settings/`), {
           headers: getPlanAuthHeaders(),
           cache: "no-store",
         });
@@ -795,33 +1284,20 @@ export default function PlanEditorPage() {
 
         const data: { has_api_key: boolean; updated_at: string | null } = await res.json();
         if (cancelled) return;
-        setOpenaiHasSavedKey(Boolean(data.has_api_key));
-        setOpenaiSettingsUpdatedAt(data.updated_at);
+        setXaiHasSavedKey(Boolean(data.has_api_key));
+        setXaiSettingsUpdatedAt(data.updated_at);
       } catch (err) {
-        console.error("Failed to fetch OpenAI settings:", err);
+        console.error("Failed to fetch xAI settings:", err);
       } finally {
-        if (!cancelled) setOpenaiSettingsLoading(false);
+        if (!cancelled) setXaiSettingsLoading(false);
       }
     };
 
-    void fetchOpenAISettings();
+    void fetchXaiSettings();
     return () => {
       cancelled = true;
     };
   }, [cleanModalOpen, cleanMethod, token]);
-
-  useEffect(() => {
-    if (!cleanModalOpen) return;
-    void fetchOpenAICostEstimate();
-  }, [
-    cleanModalOpen,
-    cleanMethod,
-    openaiQuality,
-    openaiOutputSize,
-    openaiVerificationEnabled,
-    openaiMaxAutomaticCorrections,
-    token,
-  ]);
 
   const handleAddIcon = (type: IconType) => {
     setPlacementIconType(type);
@@ -912,8 +1388,8 @@ export default function PlanEditorPage() {
   // tempId/id) so a deep-equality check detects any real change.
   const buildEditableSnapshot = () =>
     JSON.stringify({
-      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y }) => ({
-        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y,
+      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y }) => ({
+        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y,
       })),
       shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color }) => ({
         shape_type, x, y, width, height, rotation, stroke_width, color,
@@ -954,7 +1430,12 @@ export default function PlanEditorPage() {
             height: shape.height,
             rotation: shape.rotation,
             stroke_width: shape.stroke_width,
-            color: shape.color
+            color: shape.color,
+            fill_color: shape.fill_color ?? null,
+            fill_opacity: shape.fill_opacity ?? null,
+            tension: shape.tension ?? null,
+            control_points: shape.control_points ?? {},
+            points: shape.points || null,
           }))
         ),
       });
@@ -1009,7 +1490,7 @@ export default function PlanEditorPage() {
         const data = await res.json();
         setPlan(data);
         setRevertConfirmOpen(false);
-        void fetchOpenAIHistory();
+        void fetchCleaningHistory();
       } else {
         alert("Erreur lors du nettoyage du plan.");
       }
@@ -1032,7 +1513,7 @@ export default function PlanEditorPage() {
       if (res.ok) {
         const data = await res.json();
         setPlan(data);
-        void fetchOpenAIHistory();
+        void fetchCleaningHistory();
       } else {
         alert("Erreur lors du nettoyage des murs.");
       }
@@ -1099,194 +1580,205 @@ export default function PlanEditorPage() {
     }
   };
 
-  const handleTestOpenAIKey = async () => {
-    if (!openaiApiKey.trim() && !openaiHasSavedKey) {
-      setOpenaiKeyStatus("Entrez une clé ou sauvegardez-en une.");
+  // ── xAI key management ────────────────────────────────────────────────
+  const handleTestXaiKey = async () => {
+    if (!xaiApiKey.trim() && !xaiHasSavedKey) {
+      setXaiKeyStatus("Entrez une clé ou sauvegardez-en une.");
       return;
     }
 
-    setOpenaiKeyStatus(openaiApiKey.trim() ? "Test de la clé saisie..." : "Test de la clé sauvegardée...");
+    setXaiKeyTesting(true);
+    setXaiKeyStatus(xaiApiKey.trim() ? "Test de la clé saisie..." : "Test de la clé sauvegardée...");
     try {
-      const res = await fetch(buildApiUrl(`/api/openai/test-key/`), {
+      const res = await fetch(buildApiUrl(`/api/xai/test-key/`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...getPlanAuthHeaders(),
         },
-        body: JSON.stringify(openaiApiKey.trim() ? { api_key: openaiApiKey.trim() } : {}),
+        body: JSON.stringify(xaiApiKey.trim() ? { api_key: xaiApiKey.trim() } : {}),
       });
       const data = await res.json();
-      setOpenaiKeyStatus(data.result === "valide" ? "Clé valide." : "Clé invalide.");
+      setXaiKeyStatus(data.result === "valide" ? "Clé valide." : "Clé invalide.");
     } catch (err) {
       console.error(err);
-      setOpenaiKeyStatus("Test impossible.");
+      setXaiKeyStatus("Test impossible.");
+    } finally {
+      setXaiKeyTesting(false);
     }
   };
 
-  const handleSaveOpenAIKey = async () => {
-    if (!openaiApiKey.trim()) {
-      setOpenaiKeyStatus("Entrez une clé à sauvegarder.");
-      return false;
+  const handleSaveXaiKey = async () => {
+    if (!xaiApiKey.trim()) {
+      setXaiKeyStatus("Entrez une clé à sauvegarder.");
+      return;
     }
 
-    setOpenaiKeySaving(true);
-    setOpenaiKeyStatus(openaiHasSavedKey ? "Remplacement en cours..." : "Sauvegarde en cours...");
+    setXaiKeySaving(true);
+    setXaiKeyStatus(xaiHasSavedKey ? "Remplacement en cours..." : "Sauvegarde en cours...");
     try {
-      const res = await fetch(buildApiUrl(`/api/openai-settings/save/`), {
+      const res = await fetch(buildApiUrl(`/api/xai-settings/save/`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...getPlanAuthHeaders(),
         },
-        body: JSON.stringify({ api_key: openaiApiKey.trim() }),
+        body: JSON.stringify({ api_key: xaiApiKey.trim() }),
       });
 
       if (!res.ok) {
-        setOpenaiKeyStatus("Impossible de sauvegarder la clé.");
-        return false;
+        setXaiKeyStatus("Impossible de sauvegarder la clé.");
+        return;
       }
 
       const data: { has_api_key: boolean; updated_at: string | null } = await res.json();
-      setOpenaiApiKey("");
-      setOpenaiHasSavedKey(Boolean(data.has_api_key));
-      setOpenaiSettingsUpdatedAt(data.updated_at);
-      setOpenaiKeyStatus(openaiHasSavedKey ? "Clé remplacée." : "Clé sauvegardée.");
-      return true;
+      setXaiApiKey("");
+      setXaiHasSavedKey(Boolean(data.has_api_key));
+      setXaiSettingsUpdatedAt(data.updated_at);
+      setXaiKeyStatus("Clé sauvegardée.");
     } catch (err) {
       console.error(err);
-      setOpenaiKeyStatus("Erreur lors de la sauvegarde.");
-      return false;
+      setXaiKeyStatus("Erreur lors de la sauvegarde.");
     } finally {
-      setOpenaiKeySaving(false);
+      setXaiKeySaving(false);
     }
   };
 
-  const handleDeleteOpenAIKey = async () => {
-    setOpenaiKeyDeleting(true);
-    setOpenaiKeyStatus("Suppression en cours...");
+  const handleDeleteXaiKey = async () => {
+    setXaiKeyDeleting(true);
+    setXaiKeyStatus("Suppression en cours...");
     try {
-      const res = await fetch(buildApiUrl(`/api/openai-settings/delete/`), {
+      const res = await fetch(buildApiUrl(`/api/xai-settings/delete/`), {
         method: "DELETE",
         headers: getPlanAuthHeaders(),
       });
 
       if (!res.ok && res.status !== 204) {
-        setOpenaiKeyStatus("Impossible de supprimer la clé.");
+        setXaiKeyStatus("Impossible de supprimer la clé.");
         return;
       }
 
-      setOpenaiApiKey("");
-      setOpenaiHasSavedKey(false);
-      setOpenaiSettingsUpdatedAt(null);
-      setOpenaiResult(null);
-      setOpenaiKeyStatus("Clé supprimée définitivement.");
+      setXaiApiKey("");
+      setXaiHasSavedKey(false);
+      setXaiSettingsUpdatedAt(null);
+      setXaiKeyStatus("Clé supprimée définitivement.");
     } catch (err) {
       console.error(err);
-      setOpenaiKeyStatus("Erreur lors de la suppression.");
+      setXaiKeyStatus("Erreur lors de la suppression.");
     } finally {
-      setOpenaiKeyDeleting(false);
+      setXaiKeyDeleting(false);
     }
   };
 
-  const formatOpenAISettingsDate = () => {
-    if (!openaiSettingsUpdatedAt) return "";
+  const formatXaiSettingsDate = () => {
+    if (!xaiSettingsUpdatedAt) return "";
     return new Intl.DateTimeFormat("fr-FR", {
       dateStyle: "short",
       timeStyle: "short",
-    }).format(new Date(openaiSettingsUpdatedAt));
+    }).format(new Date(xaiSettingsUpdatedAt));
   };
 
-  const hasUsableOpenAIKey = openaiHasSavedKey || Boolean(openaiApiKey.trim());
+  // ── Grok cleaning job ─────────────────────────────────────────────────
+  // The job runs asynchronously on the backend (analyse + image generation
+  // take ~1-3 min). We poll its status every 2s until it completes.
+  const grokPollRef = useRef<number | null>(null);
 
-  const openaiStepLabels: Record<Exclude<OpenAICleaningStatus, "pending" | "completed" | "failed">, string> = {
-    loading_source: "Préparation du plan",
-    analyzing: cleanMethod === "existing_plan_cleanup" ? "Analyse du plan existant" : "Analyse du croquis",
-    prompt_ready: "Création des instructions",
-    generating: cleanMethod === "existing_plan_cleanup" ? "Nettoyage du plan" : "Génération du plan",
-    saving_result: "Enregistrement du résultat",
+  useEffect(() => {
+    return () => {
+      if (grokPollRef.current) window.clearTimeout(grokPollRef.current);
+    };
+  }, []);
+
+  const launchGrokCleaning = async () => {
+    if (!xaiHasSavedKey) return;
+    setGrokCleaning(true);
+    setGrokError("");
+    setGrokJob(null);
+
+    try {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/grok-clean/`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
+        body: JSON.stringify({ background_color: grokBackgroundColor, preset: grokPreset }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setGrokError(`${data.error_code || ""} ${data.error || "Lancement impossible."}`.trim());
+        setGrokCleaning(false);
+        return;
+      }
+      pollGrokJob(data.job_id);
+    } catch {
+      setGrokError("Impossible de joindre le serveur pour lancer le nettoyage.");
+      setGrokCleaning(false);
+    }
   };
 
-  const openaiStepOrder: Array<Exclude<OpenAICleaningStatus, "pending" | "completed" | "failed">> = [
-    "loading_source",
-    "analyzing",
-    "prompt_ready",
-    "generating",
-    "saving_result",
-  ];
+  const pollGrokJob = (jobId: number) => {
+    const tick = async () => {
+      try {
+        const res = await fetch(
+          buildApiUrl(`/api/plans/${id}/grok-clean-status/?job_id=${jobId}`),
+          { headers: getPlanAuthHeaders() }
+        );
+        const data: GrokJob = await res.json();
+        setGrokJob(data);
 
-  const getOpenAIStepState = (step: Exclude<OpenAICleaningStatus, "pending" | "completed" | "failed">) => {
-    if (openaiCleaningStep === "completed") return "done";
-    if (openaiCleaningStep === "failed") return "pending";
-    const currentIndex = openaiStepOrder.indexOf(openaiCleaningStep as Exclude<OpenAICleaningStatus, "pending" | "completed" | "failed">);
-    const stepIndex = openaiStepOrder.indexOf(step);
-    if (currentIndex === -1) return "pending";
-    if (stepIndex < currentIndex) return "done";
-    if (stepIndex === currentIndex) return "current";
+        if (data.status === "failed") {
+          setGrokError(
+            `${data.error_code || ""} ${data.error || "Nettoyage échoué."}`.trim() +
+              (data.diagnostic ? `\n\nDétail technique : ${data.diagnostic}` : "")
+          );
+          setGrokCleaning(false);
+          return;
+        }
+        if (data.status === "completed") {
+          // The backend already applied the cleaned image; refresh the plan + history.
+          setGrokCleaning(false);
+          void fetchCleaningHistory();
+          void refreshPlan();
+          return;
+        }
+        grokPollRef.current = window.setTimeout(tick, 2000);
+      } catch {
+        setGrokError("Perte de contact avec le serveur pendant le nettoyage.");
+        setGrokCleaning(false);
+      }
+    };
+    void tick();
+  };
+
+  const refreshPlan = async () => {
+    try {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/`), {
+        headers: getPlanAuthHeaders(),
+        cache: "no-store",
+      });
+      if (res.ok) setPlan(await res.json());
+    } catch {
+      /* informational; the history list already reflects the new state */
+    }
+  };
+
+  const grokStepLabels: Record<"analyzing" | "generating", string> = {
+    analyzing: "Analyse du plan par Grok",
+    generating: "Génération de la base architecturale",
+  };
+  const grokStepOrder: Array<"analyzing" | "generating"> = ["analyzing", "generating"];
+
+  const getGrokStepState = (step: "analyzing" | "generating") => {
+    const current = grokJob?.status;
+    if (current === "completed") return "done";
+    if (current === "failed" || !current) return "pending";
+    const idx = grokStepOrder.indexOf(current as "analyzing" | "generating");
+    const stepIdx = grokStepOrder.indexOf(step);
+    if (idx === -1) return "pending";
+    if (stepIdx < idx) return "done";
+    if (stepIdx === idx) return "current";
     return "pending";
   };
 
-  const formatOpenAIBackendError = (data: Partial<OpenAICleanJobStatus>) => {
-    const errorCode = data.error_code ? `${data.error_code} - ` : "";
-    const message = `${errorCode}${data.error || "Erreur pendant le nettoyage OpenAI."}`;
-    // The diagnostic names the exact check that failed. Without it an intermittent
-    // PROMPT_INVALID is impossible to tell apart from any other.
-    return data.diagnostic ? `${message}\n\nDétail technique : ${data.diagnostic}` : message;
-  };
-
-  const formatEstimatedCost = (estimate: OpenAICostEstimate) => {
-    const currencySuffix = estimate.currency === "USD" ? "US" : estimate.currency;
-    return `${estimate.estimated_min.toFixed(3)} $ – ${estimate.estimated_max.toFixed(3)} $ ${currencySuffix}`;
-  };
-
-  const getCostPayload = (method: CleanMethod = cleanMethod) => ({
-    cleaning_mode: method,
-    quality: openaiQuality,
-    output_size: openaiOutputSize,
-    verification_enabled: openaiVerificationEnabled,
-    max_automatic_corrections: openaiMaxAutomaticCorrections,
-  });
-
-  const fetchOpenAICostEstimate = async () => {
-    if (!id) return;
-    if (cleanMethod === "local") {
-      setOpenaiCostEstimate({
-        currency: "USD",
-        estimated_min: 0,
-        estimated_max: 0,
-        is_estimate: true,
-        details: {
-          analysis: false,
-          generation_count_max: 0,
-          verification: false,
-          quality: openaiQuality,
-          output_size: openaiOutputSize,
-          cleaning_mode: "local",
-          max_automatic_corrections: 0,
-        },
-      });
-      return;
-    }
-
-    setOpenaiCostLoading(true);
-    try {
-      const res = await fetch(buildApiUrl(`/api/plans/${id}/openai-clean-cost-estimate/`), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getPlanAuthHeaders(),
-        },
-        body: JSON.stringify(getCostPayload()),
-      });
-      if (!res.ok) return;
-      const data: OpenAICostEstimate = await res.json();
-      setOpenaiCostEstimate(data);
-    } catch (err) {
-      console.error("Failed to fetch OpenAI cost estimate:", err);
-    } finally {
-      setOpenaiCostLoading(false);
-    }
-  };
-
+  // ── Cleaning history (local + Grok) ───────────────────────────────────
   const formatHistoryDate = (value: string) => {
     if (!value) return "Date non disponible";
     return new Intl.DateTimeFormat("fr-FR", {
@@ -1295,169 +1787,28 @@ export default function PlanEditorPage() {
     }).format(new Date(value));
   };
 
-  const fetchOpenAIHistory = async () => {
+  const fetchCleaningHistory = async () => {
     if (!id) return;
-    setOpenaiHistoryLoading(true);
+    setCleaningHistoryLoading(true);
     try {
-      const res = await fetch(buildApiUrl(`/api/plans/${id}/openai-clean-history/`), {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/cleaning-history/`), {
         headers: getPlanAuthHeaders(),
         cache: "no-store",
       });
       if (!res.ok) return;
-      const data: OpenAICleanHistoryItem[] = await res.json();
-      setOpenaiHistory(data);
+      const data: CleaningHistoryItem[] = await res.json();
+      setCleaningHistory(data);
     } catch (err) {
-      console.error("Failed to fetch OpenAI cleaning history:", err);
+      console.error("Failed to fetch cleaning history:", err);
     } finally {
-      setOpenaiHistoryLoading(false);
+      setCleaningHistoryLoading(false);
     }
   };
 
-  const saveOpenAIKeyForCleaning = async () => {
-    if (!openaiApiKey.trim()) return true;
-    const saved = await handleSaveOpenAIKey();
-    if (!saved) setOpenaiError("Impossible de sauvegarder la clé API.");
-    return saved;
-  };
-
-  const clearOpenAIKeyInput = () => {
-    setOpenaiApiKey("");
-    setOpenaiKeyStatus("");
-  };
-
-  const handleOpenAIClean = async () => {
-    setOpenaiCleaning(true);
-    setOpenaiError("");
-    setOpenaiResult(null);
-    setOpenaiCleaningStep("pending");
-
+  const handleUseHistory = async (historyItem: CleaningHistoryItem) => {
+    setCleaningHistoryApplyingId(historyItem.id);
     try {
-      const keySaved = await saveOpenAIKeyForCleaning();
-      if (!keySaved) return;
-
-      const openAIPayload = cleanMethod === "existing_plan_cleanup"
-        ? {
-            cleaning_mode: "existing_plan_cleanup",
-            quality: openaiQuality,
-            output_size: openaiOutputSize,
-            verification_enabled: openaiVerificationEnabled,
-            max_automatic_corrections: openaiMaxAutomaticCorrections,
-            supprimer_pictogrammes: existingRemovePictograms,
-            supprimer_texte: existingRemoveText,
-            supprimer_dimensions: existingRemoveDimensions,
-            supprimer_annotations: existingRemoveAnnotations,
-            supprimer_cartouche: existingRemoveTitleBlock,
-            supprimer_hachures: existingRemoveHatching,
-            supprimer_mobilier: existingRemoveFurniture,
-            conserver_portes: existingPreserveDoors,
-            conserver_escaliers: existingPreserveStairs,
-            conserver_ouvertures: existingPreserveOpenings,
-            simplifier_rendu: existingSimplifyRendering,
-            niveau_nettoyage: existingCleanupLevel,
-            instructions_supplementaires: openaiAdditionalInstructions,
-          }
-        : {
-            cleaning_mode: "sketch_to_plan",
-            quality: openaiQuality,
-            output_size: openaiOutputSize,
-            verification_enabled: openaiVerificationEnabled,
-            max_automatic_corrections: openaiMaxAutomaticCorrections,
-            conserver_machines: openaiKeepMachines,
-            supprimer_texte: openaiRemoveText,
-            supprimer_dimensions: openaiRemoveDimensions,
-            corriger_perspective: openaiCorrectPerspective,
-            conserver_ouvertures: openaiKeepDoorsOpenings,
-            epaisseur_murs: openaiWallThickness,
-            instructions_supplementaires: openaiAdditionalInstructions,
-          };
-
-      const res = await fetch(buildApiUrl(`/api/plans/${id}/openai-clean/`), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getPlanAuthHeaders(),
-        },
-        body: JSON.stringify(openAIPayload),
-      });
-
-      const data: OpenAICleanJobStatus = await res.json();
-      if (!res.ok) {
-        setOpenaiError(formatOpenAIBackendError(data));
-        setOpenaiCleaningStep("failed");
-        return;
-      }
-
-      setOpenaiCleaningStep(data.status);
-      let latestStatus = data;
-      while (latestStatus.status !== "completed" && latestStatus.status !== "failed") {
-        await new Promise((resolve) => window.setTimeout(resolve, 1000));
-        const statusRes = await fetch(buildApiUrl(`/api/plans/${id}/openai-clean-status/?job_id=${data.job_id}`), {
-          headers: getPlanAuthHeaders(),
-          cache: "no-store",
-        });
-        latestStatus = await statusRes.json();
-        setOpenaiCleaningStep(latestStatus.status);
-        if (!statusRes.ok) {
-          setOpenaiError(formatOpenAIBackendError(latestStatus));
-          setOpenaiCleaningStep("failed");
-          return;
-        }
-      }
-
-      if (latestStatus.status === "failed") {
-        setOpenaiError(formatOpenAIBackendError(latestStatus));
-        return;
-      }
-
-      setOpenaiResult(latestStatus as OpenAICleanResult);
-      void fetchOpenAIHistory();
-    } catch (err) {
-      console.error(err);
-      setOpenaiError("Erreur lors de la communication avec le serveur.");
-      setOpenaiCleaningStep("failed");
-    } finally {
-      setOpenaiCleaning(false);
-    }
-  };
-
-  const handleUseOpenAIPlan = async () => {
-    if (!openaiResult) return;
-
-    setOpenaiApplying(true);
-    setOpenaiError("");
-    try {
-      const res = await fetch(buildApiUrl(`/api/plans/${id}/use-openai-cleaned/`), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getPlanAuthHeaders(),
-        },
-        body: JSON.stringify({ image_data: openaiResult.after_image }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        setOpenaiError(data.error || "Impossible d'utiliser ce plan.");
-        return;
-      }
-
-      setPlan(data);
-      setOpenaiResult(null);
-      setCleanModalOpen(false);
-      void fetchOpenAIHistory();
-    } catch (err) {
-      console.error(err);
-      setOpenaiError("Erreur lors de la communication avec le serveur.");
-    } finally {
-      setOpenaiApplying(false);
-    }
-  };
-
-  const handleUseOpenAIHistory = async (historyItem: OpenAICleanHistoryItem) => {
-    setOpenaiHistoryApplyingId(historyItem.id);
-    setOpenaiError("");
-    try {
-      const res = await fetch(buildApiUrl(`/api/plans/${id}/use-openai-clean-history/`), {
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/use-cleaning-history/`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1468,23 +1819,39 @@ export default function PlanEditorPage() {
 
       const data = await res.json();
       if (!res.ok) {
-        setOpenaiError(data.error || "Impossible d'utiliser cet historique.");
+        alert(data.error || "Impossible d'utiliser cette version de l'historique.");
         return;
       }
 
       setPlan(data);
-      setOpenaiResult(null);
       setCleanModalOpen(false);
+      setSaveStatus("Version nettoyée de l'historique appliquée !");
+      window.setTimeout(() => setSaveStatus(""), 3500);
+      void fetchCleaningHistory();
     } catch (err) {
       console.error(err);
-      setOpenaiError("Erreur lors de la communication avec le serveur.");
+      alert("Erreur lors de la communication avec le serveur.");
     } finally {
-      setOpenaiHistoryApplyingId(null);
+      setCleaningHistoryApplyingId(null);
     }
   };
 
   const selectedIcon = icons.find((i) => i.tempId === selectedIconId);
   const selectedText = texts.find((t) => t.tempId === selectedTextId);
+  const selectedShape = shapes.find((s) => s.tempId === selectedShapeId);
+
+  const handleUpdateSelectedShape = (key: keyof CanvasShape, value: any) => {
+    if (!selectedShapeId) return;
+    setShapes((prev) =>
+      prev.map((s) => (s.tempId === selectedShapeId ? { ...s, [key]: value } : s))
+    );
+  };
+
+  const handleDeleteSelectedShape = () => {
+    if (!selectedShapeId) return;
+    setShapes((prev) => prev.filter((s) => s.tempId !== selectedShapeId));
+    setSelectedShapeId(null);
+  };
 
   // The "Vous êtes ici" marker defines the reading direction: the plan is turned
   // so that what the reader faces points up. Rotating the marker in the editor is
@@ -1697,7 +2064,17 @@ export default function PlanEditorPage() {
   const openExportTemplate = (format: "png" | "pdf") => {
     setExportFormat(format);
     setExportSiteName((current) => current || plan?.building_name || "");
-    setExportModalOpen(true);
+
+    const action = async () => {
+      setExportModalOpen(true);
+    };
+
+    if (hasUnsavedChanges()) {
+      setPendingExportAction(() => action);
+      setExportSaveConfirmOpen(true);
+    } else {
+      void action();
+    }
   };
 
   const drawWrappedText = (
@@ -2089,7 +2466,8 @@ export default function PlanEditorPage() {
    * given, the logo hugs the sheet's left/right margin.
    *
    * The logo is fit by height first, then clamped by width so wide wordmarks do
-   * not overflow their plate.
+   * not overflow their plate. `scale` and the offsets then adjust that automatic
+   * result — the plate grows with the logo so the two stay one block.
    */
   const drawHeaderLogo = (
     context: CanvasRenderingContext2D,
@@ -2097,28 +2475,37 @@ export default function PlanEditorPage() {
     side: "left" | "right",
     headerHeight: number,
     explicitLeftX?: number,
-    explicitRightX?: number
+    explicitRightX?: number,
+    scale = 1,
+    offsetX = 0,
+    offsetY = 0
   ) => {
     if (!image || !image.width || !image.height) return;
 
     const platePad = 6;
-    const plateH = headerHeight - 22;
+    const basePlateH = headerHeight - 22;
     // A logo plate is at most ~120px wide so the title stays the focal point.
     const maxPlateW = 120;
     const aspect = image.width / image.height;
 
-    let drawH = plateH - platePad * 2;
+    let drawH = basePlateH - platePad * 2;
     let drawW = drawH * aspect;
     if (drawW > maxPlateW - platePad * 2) {
       drawW = maxPlateW - platePad * 2;
       drawH = drawW / aspect;
     }
 
+    drawW *= scale;
+    drawH *= scale;
+
+    const plateH = drawH + platePad * 2;
     const plateW = drawW + platePad * 2;
+    // The anchor edge stays put as the plate grows: a left logo keeps its left
+    // margin, a right one keeps its right margin.
     const leftX = explicitLeftX ?? (side === "left" ? EXPORT_MARGIN : EXPORT_CANVAS_WIDTH - EXPORT_MARGIN - plateW);
     const rightX = explicitRightX ?? (side === "left" ? leftX + plateW : EXPORT_CANVAS_WIDTH - EXPORT_MARGIN);
-    const plateX = side === "left" ? leftX : rightX - plateW;
-    const plateY = (headerHeight - plateH) / 2;
+    const plateX = (side === "left" ? leftX : rightX - plateW) + offsetX;
+    const plateY = (headerHeight - plateH) / 2 + offsetY;
 
     context.save();
     context.shadowColor = "rgba(0,0,0,0.18)";
@@ -2167,6 +2554,8 @@ export default function PlanEditorPage() {
     ]);
     const clientLogoImage = logoResults[0].status === "fulfilled" ? logoResults[0].value : null;
     const studioLogoImage = logoResults[1].status === "fulfilled" ? logoResults[1].value : null;
+    const clientLogoScale = exportClientLogoScale / 100;
+    const studioLogoScale = exportStudioLogoScale / 100;
 
     const canvas = document.createElement("canvas");
     canvas.width = EXPORT_CANVAS_WIDTH * outputScale;
@@ -2177,6 +2566,1250 @@ export default function PlanEditorPage() {
     context.scale(outputScale, outputScale);
     context.textBaseline = "alphabetic";
     const palette = getExportPalette();
+
+    if (exportTheme === "nfx08070") {
+      context.fillStyle = palette.sheet;
+      context.fillRect(0, 0, EXPORT_CANVAS_WIDTH, EXPORT_CANVAS_HEIGHT);
+
+      const headerH = 75;
+      const sideW = 340;
+      // Every colour comes from the palette, so the theme reacts to the custom
+      // colour pickers exactly like the others do.
+      const bannerColor = palette.headerStart;
+      const redColor = palette.safety;
+      const greenColor = palette.intervention;
+      const yellowColor = palette.accent;
+      const textColor = palette.text;
+      const bodySize = exportNfBodyFontSize;
+
+      // 1. Header banner
+      context.fillStyle = bannerColor;
+      context.fillRect(0, 0, EXPORT_CANVAS_WIDTH, headerH);
+
+      // Conformity mention, top-left of the banner
+      if (exportNfConformity.trim()) {
+        context.fillStyle = "#ffffff";
+        context.font = `700 11px ${EXPORT_FONT}`;
+        context.textAlign = "left";
+        context.fillText(exportNfConformity.trim().toUpperCase(), 16, 22);
+      }
+
+      // Main banner title (centered)
+      const bannerTitle = exportPlanTitle.trim() || EXPORT_THEME_DEFAULT_TITLES.nfx08070;
+      context.fillStyle = "#ffffff";
+      context.font = `900 ${fitTitleFontSize(context, bannerTitle.toUpperCase(), EXPORT_CANVAS_WIDTH - 460, 34)}px ${EXPORT_FONT}`;
+      context.textAlign = "center";
+      drawTrackedText(context, bannerTitle.toUpperCase(), EXPORT_CANVAS_WIDTH / 2, 52, "0.12em");
+      context.textAlign = "left";
+
+      // 2. Right column: the client's identity at the top, the legend at the
+      // bottom. The plan keeps the whole height of the space left of it — on the
+      // normative sheet the plan is the tall block, not a letterboxed strip.
+      const siteNameText = exportSiteName.trim() || plan?.building_name || "";
+      const hasClientBlock = Boolean(clientLogoImage) || Boolean(siteNameText);
+      const hasLegend = exportShowLegend && loadedLegendImages.length > 0;
+      const rightColW = 320;
+      const rightColX = EXPORT_CANVAS_WIDTH - 24 - rightColW;
+      const rightColCenter = rightColX + rightColW / 2;
+
+      // Client logo above the address, both centred on the column axis. No white
+      // plate here — unlike the other themes this area is already the sheet
+      // background, so a plate would only add a floating shadow.
+      let clientCursorY = headerH + 22;
+
+      if (clientLogoImage && clientLogoImage.width && clientLogoImage.height) {
+        const maxLogoW = rightColW - 40;
+        const maxLogoH = 78;
+        const aspect = clientLogoImage.width / clientLogoImage.height;
+        let logoH = maxLogoH;
+        let logoW = logoH * aspect;
+        if (logoW > maxLogoW) {
+          logoW = maxLogoW;
+          logoH = logoW / aspect;
+        }
+        logoW *= clientLogoScale;
+        logoH *= clientLogoScale;
+        context.drawImage(
+          clientLogoImage,
+          rightColCenter - logoW / 2 + exportClientLogoOffsetX,
+          clientCursorY + exportClientLogoOffsetY,
+          logoW,
+          logoH
+        );
+        // The address follows the logo down as it grows, but not sideways —
+        // nudging the logo left or right must not drag the address with it.
+        clientCursorY += logoH + exportClientLogoOffsetY + 34;
+      } else {
+        clientCursorY += 26;
+      }
+
+      // Site address: honours line breaks so "13 RUE HENRI TUROT" and the
+      // postcode can sit on two lines as on a printed sheet.
+      if (siteNameText) {
+        context.fillStyle = textColor;
+        context.font = `800 18px ${EXPORT_FONT}`;
+        context.textAlign = "center";
+        siteNameText.split("\n").forEach((line, index) => {
+          context.fillText(line.trim(), rightColCenter, clientCursorY + index * 24);
+        });
+        context.textAlign = "left";
+      }
+
+      // Helper to draw pill badges (rounded rectangle with text & optional pictogram icon)
+      const drawPillBadge = (
+        x: number,
+        y: number,
+        width: number,
+        label: string,
+        color: string,
+        badgeIconType: "incendie" | "evacuation" | "prevention" | null = null,
+        textColorOverride = "#ffffff"
+      ) => {
+        context.save();
+        context.fillStyle = color;
+        tracePath(context, x, y, width, 32, 16);
+        context.fill();
+
+        // Labels are centred on the pill itself, so the three badges line up
+        // whether or not they carry a pictogram. A long label only slides left,
+        // and just far enough to clear the icon.
+        const badgeText = label.toUpperCase();
+        context.fillStyle = textColorOverride;
+        context.font = `900 15px ${EXPORT_FONT}`;
+
+        const spaced = context as CanvasRenderingContext2D & { letterSpacing?: string };
+        const previousSpacing = spaced.letterSpacing;
+        if (previousSpacing !== undefined) spaced.letterSpacing = "0.12em";
+        const textWidth = context.measureText(badgeText).width;
+        if (previousSpacing !== undefined) spaced.letterSpacing = previousSpacing;
+
+        const iconZone = badgeIconType === "incendie" || badgeIconType === "evacuation" ? 36 : 0;
+        const rightLimit = x + width - iconZone - 8;
+        let textX = x + (width - textWidth) / 2;
+        if (textX + textWidth > rightLimit) textX = Math.max(x + 12, rightLimit - textWidth);
+
+        context.textAlign = "left";
+        drawTrackedText(context, badgeText, textX, y + 21, "0.12em");
+
+        // Draw pictogram on the right inside pill badge
+        if (badgeIconType === "incendie") {
+          const iconX = x + width - 32;
+          const iconY = y + 6;
+          context.fillStyle = textColorOverride;
+          context.strokeStyle = textColorOverride;
+          context.lineWidth = 1.5;
+          // Extinguisher body
+          tracePath(context, iconX + 6, iconY + 5, 8, 14, 2);
+          context.fill();
+          // Extinguisher handle & hose
+          context.beginPath();
+          context.moveTo(iconX + 10, iconY + 2);
+          context.lineTo(iconX + 10, iconY + 5);
+          context.moveTo(iconX + 8, iconY + 3);
+          context.lineTo(iconX + 14, iconY + 2);
+          context.stroke();
+        } else if (badgeIconType === "evacuation") {
+          const iconX = x + width - 32;
+          const iconY = y + 6;
+          context.fillStyle = textColorOverride;
+          context.strokeStyle = textColorOverride;
+          context.lineWidth = 1.5;
+          // Door
+          context.strokeRect(iconX + 4, iconY + 3, 11, 15);
+          // Running person
+          context.beginPath();
+          context.arc(iconX + 10, iconY + 7, 2, 0, Math.PI * 2);
+          context.fill();
+          context.beginPath();
+          context.moveTo(iconX + 10, iconY + 9);
+          context.lineTo(iconX + 8, iconY + 14);
+          context.lineTo(iconX + 11, iconY + 17);
+          context.stroke();
+        }
+
+        context.textAlign = "left";
+        context.restore();
+      };
+
+      // Helper to draw phone handset receiver
+      const drawPhoneHandset = (x: number, y: number, size: number, color: string) => {
+        context.save();
+        context.fillStyle = color;
+        context.strokeStyle = color;
+        context.lineWidth = size * 0.16;
+        context.lineCap = "round";
+        context.lineJoin = "round";
+
+        context.beginPath();
+        context.arc(x + size * 0.35, y + size * 0.35, size * 0.35, Math.PI * 0.75, Math.PI * 1.75);
+        context.stroke();
+
+        context.beginPath();
+        context.arc(x + size * 0.15, y + size * 0.15, size * 0.18, 0, Math.PI * 2);
+        context.fill();
+
+        context.beginPath();
+        context.arc(x + size * 0.75, y + size * 0.75, size * 0.18, 0, Math.PI * 2);
+        context.fill();
+
+        context.restore();
+      };
+
+      const marginX = 20;
+      const boxW = 310;
+
+      // Column geometry, following the printed sheet: the coloured pill spans
+      // the whole column, the framed boxes are inset — and everything shares one
+      // vertical axis, so the block reads as centred rather than left-hung.
+      const columnCenter = marginX + boxW / 2;
+      const pillW = boxW;
+      const phoneBoxW = 232;
+      const phoneBoxX = columnCenter - phoneBoxW / 2;
+      const deafBoxW = 288;
+      const deafBoxX = columnCenter - deafBoxW / 2;
+
+      /**
+       * Emergency-number box: "18 ou 112" beside a handset, with the caption
+       * underneath. The numbers come from a free-text field written "18 / 112",
+       * so a site can print a single number or its own internal one.
+       *
+       * The handset and the numbers are measured as one group and centred
+       * together, so "15 ou 118" and a lone internal number both sit on the
+       * box's axis instead of hugging its left edge.
+       */
+      const drawEmergencyBox = (
+        y: number,
+        numbers: string,
+        note: string,
+        color: string,
+        height: number
+      ) => {
+        context.fillStyle = "#ffffff";
+        context.strokeStyle = color;
+        context.lineWidth = 2;
+        context.fillRect(phoneBoxX, y, phoneBoxW, height);
+        context.strokeRect(phoneBoxX, y, phoneBoxW, height);
+
+        const parts = numbers
+          .split(/[\/|]|\bou\b/i)
+          .map((part) => part.trim())
+          .filter(Boolean);
+
+        const handsetSize = 30;
+        const handsetGap = 12;
+        const ouGap = 9;
+
+        context.font = `700 20px ${EXPORT_FONT}`;
+        const ouWidth = context.measureText("ou").width;
+        context.font = `900 32px ${EXPORT_FONT}`;
+        const partWidths = parts.map((part) => context.measureText(part).width);
+        const numbersWidth =
+          partWidths.reduce((total, width) => total + width, 0) +
+          Math.max(0, parts.length - 1) * (ouWidth + ouGap * 2);
+
+        const groupWidth = handsetSize + handsetGap + numbersWidth;
+        let cursorX = phoneBoxX + (phoneBoxW - groupWidth) / 2;
+        const numbersY = y + height * 0.5;
+        drawPhoneHandset(cursorX, numbersY - handsetSize * 0.82, handsetSize, color);
+        cursorX += handsetSize + handsetGap;
+
+        context.fillStyle = color;
+        context.textAlign = "left";
+        parts.forEach((part, index) => {
+          if (index > 0) {
+            context.font = `700 20px ${EXPORT_FONT}`;
+            context.fillText("ou", cursorX + ouGap, numbersY);
+            cursorX += ouGap * 2 + ouWidth;
+          }
+          context.font = `900 32px ${EXPORT_FONT}`;
+          context.fillText(part, cursorX, numbersY);
+          cursorX += partWidths[index];
+        });
+
+        if (note.trim()) {
+          context.fillStyle = textColor;
+          context.font = `800 9.5px ${EXPORT_FONT}`;
+          const noteLines = getCanvasWrappedLines(context, note.trim(), phoneBoxW - 20);
+          // Anchored to the bottom of the box, so a two-line caption grows
+          // upward instead of spilling out under the frame.
+          const firstLineY = y + height - 10 - (noteLines.length - 1) * 11;
+          context.textAlign = "center";
+          noteLines.forEach((line, index) => {
+            context.fillText(line, phoneBoxX + phoneBoxW / 2, firstLineY + index * 11);
+          });
+          context.textAlign = "left";
+        }
+      };
+
+      // 3. Left instructions column. Hidden with the "Consignes" switch, in
+      // which case the plan reclaims the whole width.
+      const leftColumnVisible = exportShowSafety;
+
+      // ── Plan area: computed first and drawn underneath side panels ─────
+      const mainX = leftColumnVisible ? sideW + 20 : marginX;
+      const planX = mainX;
+      const planY = headerH + 20;
+      const planRight = hasClientBlock || hasLegend ? rightColX - 20 : EXPORT_CANVAS_WIDTH - 24;
+      const basePlanW = Math.max(120, planRight - planX);
+      const basePlanH = Math.max(120, EXPORT_CANVAS_HEIGHT - 24 - planY);
+      const planW = basePlanW * (exportPlanAreaScale / 100);
+      const planH = basePlanH * (exportPlanAreaScale / 100);
+
+      const baseScale = Math.min(planW / trimmedPlan.width, planH / trimmedPlan.height);
+      const scale = baseScale * (exportPlanScale / 100);
+      const drawW = trimmedPlan.width * scale;
+      const drawH = trimmedPlan.height * scale;
+      const drawX = planX + planW / 2 + exportPlanOffsetX;
+      const drawY = planY + planH / 2 + exportPlanOffsetY;
+
+      // 1. Draw plan artwork under all header & side panels
+      context.save();
+      context.beginPath();
+      context.rect(0, 0, EXPORT_CANVAS_WIDTH, EXPORT_CANVAS_HEIGHT);
+      context.clip();
+      context.translate(drawX, drawY);
+      context.drawImage(trimmedPlan, -drawW / 2, -drawH / 2, drawW, drawH);
+      context.restore();
+
+      // 2. Red top header banner (drawn on top of top plan edge)
+      context.fillStyle = redColor;
+      context.fillRect(0, 0, EXPORT_CANVAS_WIDTH, headerH);
+      context.fillStyle = "#ffffff";
+      context.font = `800 13px ${EXPORT_FONT}`;
+      context.textAlign = "left";
+      drawTrackedText(context, (exportNfConformity.trim() || NF_DEFAULTS.conformity).toUpperCase(), marginX, 26, "0.08em");
+
+      context.textAlign = "center";
+      context.font = `900 30px ${EXPORT_FONT}`;
+      drawTrackedText(context, (exportPlanTitle.trim() || EXPORT_THEME_DEFAULT_TITLES.nfx08070).toUpperCase(), EXPORT_CANVAS_WIDTH / 2, 46, "0.08em");
+      context.textAlign = "left";
+
+      // 3. Left instructions column with solid white background card
+      if (leftColumnVisible) {
+        context.save();
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, headerH, sideW + 10, EXPORT_CANVAS_HEIGHT - headerH);
+        context.restore();
+
+        let cursorY = 95;
+
+        // --- INCENDIE ---
+        if (exportNfFireTitle.trim()) {
+          drawPillBadge(marginX, cursorY, pillW, exportNfFireTitle, redColor, "incendie");
+          cursorY += 47;
+        }
+
+        if (exportNfFireIntro.trim()) {
+          context.fillStyle = textColor;
+          context.font = `700 9.5px ${EXPORT_FONT}`;
+          context.textAlign = "center";
+          const introLines = getCanvasWrappedLines(context, exportNfFireIntro.trim(), boxW - 12);
+          introLines.forEach((line, index) => {
+            context.fillText(line, marginX + boxW / 2, cursorY + index * 12);
+          });
+          context.textAlign = "left";
+          cursorY += introLines.length * 12 + 8;
+        }
+
+        drawEmergencyBox(cursorY, exportNfFireNumbers, exportNfEmergencyNote, redColor, 78);
+        cursorY += 93;
+
+        // --- EVACUATION ---
+        if (exportNfEvacuationTitle.trim()) {
+          drawPillBadge(marginX, cursorY, pillW, exportNfEvacuationTitle, greenColor, "evacuation");
+          cursorY += 46;
+        }
+
+        // Centred like the printed sheet, and each step keeps its emphasis:
+        // "1 -" headings bold, the lift warning red. Both are recognised from
+        // the text itself, so a reworded notice keeps its hierarchy.
+        const evacuationLines = exportNfEvacuationText.split("\n");
+        const evacLineHeight = Math.round(bodySize * 1.44);
+        context.textAlign = "center";
+        evacuationLines.forEach((line) => {
+          if (!line.trim()) {
+            cursorY += Math.round(evacLineHeight * 0.6);
+            return;
+          }
+          if (/ASCENSEUR/i.test(line)) {
+            context.font = `900 ${bodySize + 0.5}px ${EXPORT_FONT}`;
+            context.fillStyle = redColor;
+          } else if (/^\s*\d+\s*-/.test(line)) {
+            context.font = `800 ${bodySize}px ${EXPORT_FONT}`;
+            context.fillStyle = textColor;
+          } else {
+            context.font = `500 ${bodySize - 0.5}px ${EXPORT_FONT}`;
+            context.fillStyle = textColor;
+          }
+          getCanvasWrappedLines(context, line, boxW).forEach((wrappedLine) => {
+            context.fillText(wrappedLine, marginX + boxW / 2, cursorY);
+            cursorY += evacLineHeight;
+          });
+        });
+        context.textAlign = "left";
+        cursorY += 8;
+
+        // --- ACCIDENT OU MALAISE ---
+        if (exportNfMedicalTitle.trim()) {
+          context.fillStyle = textColor;
+          context.font = `800 9.5px ${EXPORT_FONT}`;
+          context.textAlign = "center";
+          context.fillText(exportNfMedicalTitle.trim().toUpperCase(), marginX + boxW / 2, cursorY + 12);
+          context.textAlign = "left";
+          cursorY += 16;
+        }
+        drawEmergencyBox(cursorY, exportNfMedicalNumbers, exportNfEmergencyNote, greenColor, 70);
+        cursorY += 80;
+
+        // --- 114 ---
+        if (exportNfDeafText.trim()) {
+          const deafBoxH = 48;
+          context.fillStyle = "#ffffff";
+          context.strokeStyle = redColor;
+          context.lineWidth = 1.5;
+          context.fillRect(deafBoxX, cursorY, deafBoxW, deafBoxH);
+          context.strokeRect(deafBoxX, cursorY, deafBoxW, deafBoxH);
+
+          context.fillStyle = redColor;
+          tracePath(context, deafBoxX + 8, cursorY + 6, 42, 36, 4);
+          context.fill();
+
+          context.fillStyle = "#ffffff";
+          context.font = `900 7px ${EXPORT_FONT}`;
+          context.textAlign = "center";
+          context.fillText("URGENCE", deafBoxX + 29, cursorY + 16);
+          context.font = `900 11px ${EXPORT_FONT}`;
+          context.fillText("114", deafBoxX + 29, cursorY + 34);
+          context.textAlign = "left";
+
+          const deafTextX = deafBoxX + 58;
+          const deafTextW = deafBoxX + deafBoxW - 10 - deafTextX;
+          context.save();
+          context.beginPath();
+          context.rect(deafBoxX + 54, cursorY, deafBoxW - 62, deafBoxH);
+          context.clip();
+          context.fillStyle = redColor;
+          context.font = `700 8.5px ${EXPORT_FONT}`;
+          const deafLines = getCanvasWrappedLines(context, exportNfDeafText.trim(), deafTextW);
+          const deafFirstY = cursorY + deafBoxH / 2 - ((deafLines.length - 1) * 12) / 2 + 3;
+          deafLines.forEach((line, index) => {
+            context.fillText(line, deafTextX, deafFirstY + index * 12);
+          });
+          context.restore();
+          cursorY += deafBoxH + 10;
+        }
+
+        // --- PREVENTION ---
+        if (exportNfPreventionTitle.trim()) {
+          drawPillBadge(marginX, cursorY, pillW, exportNfPreventionTitle, yellowColor, "prevention", "#111111");
+          cursorY += 46;
+        }
+
+        // The column ends above the studio logo; clip so an over-long notice
+        // is cut rather than printed across the logo.
+        const preventionBottom = EXPORT_CANVAS_HEIGHT - 80;
+        context.save();
+        context.beginPath();
+        context.rect(marginX, cursorY - bodySize - 4, boxW, Math.max(0, preventionBottom - cursorY + bodySize));
+        context.clip();
+        context.fillStyle = textColor;
+        context.font = `700 ${bodySize - 0.5}px ${EXPORT_FONT}`;
+        context.textAlign = "center";
+        drawWrappedText(context, exportNfPreventionText, marginX + boxW / 2, cursorY, boxW, Math.round(bodySize * 1.5));
+        context.textAlign = "left";
+        context.restore();
+      }
+
+      // 4. Studio logo, bottom-left: the sheet's author. Aspect ratio kept.
+      if (studioLogoImage && studioLogoImage.width && studioLogoImage.height) {
+        const maxStudioW = 150;
+        const maxStudioH = 58;
+        const aspect = studioLogoImage.width / studioLogoImage.height;
+        let studioH = maxStudioH;
+        let studioW = studioH * aspect;
+        if (studioW > maxStudioW) {
+          studioW = maxStudioW;
+          studioH = studioW / aspect;
+        }
+        studioW *= studioLogoScale;
+        studioH *= studioLogoScale;
+        // Anchored bottom-left: enlarging it grows upward and to the right,
+        // so it never slides off the corner of the sheet.
+        context.drawImage(
+          studioLogoImage,
+          marginX + exportStudioLogoOffsetX,
+          EXPORT_CANVAS_HEIGHT - 20 - studioH + exportStudioLogoOffsetY,
+          studioW,
+          studioH
+        );
+      }
+
+      // 5. Legend, at the foot of the right column. Its height follows the
+      // number of equipment types instead of dropping the extras, so the sheet
+      // never claims conformity over a truncated legend.
+      const legendW = rightColW;
+      const legendBottom = EXPORT_CANVAS_HEIGHT - 24;
+      const legendRowH = 22;
+      const legendHeaderH = 30;
+
+      if (hasLegend) {
+        // Rows shrink before anything is dropped; the floor keeps a 12px row
+        // readable in print.
+        const maxLegendH = EXPORT_CANVAS_HEIGHT * 0.42;
+        const naturalH = legendHeaderH + loadedLegendImages.length * legendRowH;
+        const rowH = naturalH > maxLegendH
+          ? Math.max(12, Math.floor((maxLegendH - legendHeaderH) / loadedLegendImages.length))
+          : legendRowH;
+        const legendH = legendHeaderH + loadedLegendImages.length * rowH;
+        const legendX = rightColX;
+        const legendY = legendBottom - legendH;
+
+        context.fillStyle = "#ffffff";
+        context.strokeStyle = palette.legend;
+        context.lineWidth = 1.5;
+        context.fillRect(legendX, legendY, legendW, legendH);
+        context.strokeRect(legendX, legendY, legendW, legendH);
+
+        // Header cell
+        context.beginPath();
+        context.moveTo(legendX, legendY + legendHeaderH);
+        context.lineTo(legendX + legendW, legendY + legendHeaderH);
+        context.stroke();
+
+        context.fillStyle = textColor;
+        context.font = `900 13px ${EXPORT_FONT}`;
+        context.textAlign = "center";
+        drawTrackedText(context, (exportNfLegendTitle.trim() || NF_DEFAULTS.legendTitle).toUpperCase(), legendX + legendW / 2, legendY + 20, "0.14em");
+        context.textAlign = "left";
+
+        const legendLabelSize = Math.max(7, Math.min(9.5, rowH * 0.43));
+        const legendIconSize = Math.max(10, Math.min(18, rowH - 4));
+
+        loadedLegendImages.forEach(({ type, image }, index) => {
+          const rowY = legendY + legendHeaderH + index * rowH;
+
+          if (index > 0) {
+            context.beginPath();
+            context.moveTo(legendX, rowY);
+            context.lineTo(legendX + legendW, rowY);
+            context.stroke();
+          }
+
+          // Vertical divider between the pictogram and its label
+          context.beginPath();
+          context.moveTo(legendX + 44, rowY);
+          context.lineTo(legendX + 44, rowY + rowH);
+          context.stroke();
+
+          context.drawImage(
+            image,
+            legendX + 22 - legendIconSize / 2,
+            rowY + (rowH - legendIconSize) / 2,
+            legendIconSize,
+            legendIconSize
+          );
+
+          context.fillStyle = textColor;
+          context.font = `700 ${legendLabelSize}px ${EXPORT_FONT}`;
+          const label = iconDefinitions[type]?.label || type;
+          const maxLabelW = legendW - 60;
+          let printed = label;
+          while (printed.length > 4 && context.measureText(printed).width > maxLabelW) {
+            printed = printed.slice(0, -2);
+          }
+          context.fillText(
+            printed === label ? label : `${printed}…`,
+            legendX + 52,
+            rowY + rowH / 2 + legendLabelSize * 0.36
+          );
+        });
+      }
+
+      return canvas.toDataURL("image/png", 1);
+    }
+
+    // ── Plan d'intervention ─────────────────────────────────────────────
+    // The firefighters' sheet: no resident instructions, so the plan itself
+    // takes the whole width and the right column carries the identification
+    // (client, address, level) plus a large equipment legend.
+    if (exportTheme === "intervention") {
+      context.fillStyle = palette.sheet;
+      context.fillRect(0, 0, EXPORT_CANVAS_WIDTH, EXPORT_CANVAS_HEIGHT);
+
+      const headerH = 64;
+      const textColor = palette.text;
+
+      context.fillStyle = palette.headerStart;
+      context.fillRect(0, 0, EXPORT_CANVAS_WIDTH, headerH);
+
+      if (exportNfConformity.trim()) {
+        context.fillStyle = "#ffffff";
+        context.font = `700 11px ${EXPORT_FONT}`;
+        context.textAlign = "left";
+        context.fillText(exportNfConformity.trim().toUpperCase(), 16, headerH - 11);
+      }
+
+      const bannerTitle = exportPlanTitle.trim() || EXPORT_THEME_DEFAULT_TITLES.intervention;
+      context.fillStyle = "#ffffff";
+      context.font = `900 ${fitTitleFontSize(context, bannerTitle.toUpperCase(), EXPORT_CANVAS_WIDTH - 460, 34)}px ${EXPORT_FONT}`;
+      context.textAlign = "center";
+      drawTrackedText(context, bannerTitle.toUpperCase(), EXPORT_CANVAS_WIDTH / 2, headerH / 2 + 12, "0.1em");
+      context.textAlign = "left";
+
+      // ── Right column ────────────────────────────────────────────────
+      const rightColW = 268;
+      const rightColX = EXPORT_CANVAS_WIDTH - 24 - rightColW;
+      const rightColCenter = rightColX + rightColW / 2;
+      let columnY = headerH + 26;
+
+      if (clientLogoImage && clientLogoImage.width && clientLogoImage.height) {
+        const maxLogoW = rightColW - 40;
+        const maxLogoH = 74;
+        const aspect = clientLogoImage.width / clientLogoImage.height;
+        let logoH = maxLogoH;
+        let logoW = logoH * aspect;
+        if (logoW > maxLogoW) {
+          logoW = maxLogoW;
+          logoH = logoW / aspect;
+        }
+        logoW *= clientLogoScale;
+        logoH *= clientLogoScale;
+        context.drawImage(
+          clientLogoImage,
+          rightColCenter - logoW / 2 + exportClientLogoOffsetX,
+          columnY + exportClientLogoOffsetY,
+          logoW,
+          logoH
+        );
+        columnY += logoH + exportClientLogoOffsetY + 26;
+      }
+
+      const siteNameText = exportSiteName.trim() || plan?.building_name || "";
+      if (siteNameText) {
+        context.fillStyle = textColor;
+        context.font = `800 15px ${EXPORT_FONT}`;
+        context.textAlign = "center";
+        const addressLines = siteNameText.split("\n");
+        addressLines.forEach((line, index) => {
+          context.fillText(line.trim(), rightColCenter, columnY + index * 20);
+        });
+        context.textAlign = "left";
+        columnY += addressLines.length * 20 + 14;
+      }
+
+      // Level tag — a grey pill, the way the printed sheet marks each storey.
+      const levelText = (exportLevelLabel.trim() || plan?.floor_name || "").toUpperCase();
+      if (levelText) {
+        context.font = `800 14px ${EXPORT_FONT}`;
+        const tagW = Math.min(rightColW, context.measureText(levelText).width + 40);
+        const tagH = 26;
+        const tagX = rightColCenter - tagW / 2;
+        context.fillStyle = palette.accent;
+        tracePath(context, tagX, columnY, tagW, tagH, 4);
+        context.fill();
+        context.fillStyle = "#ffffff";
+        context.textAlign = "center";
+        drawTrackedText(context, levelText, rightColCenter, columnY + 18, "0.06em");
+        context.textAlign = "left";
+        columnY += tagH + 18;
+      }
+
+      // Studio logo, bottom-right under the legend. Reserved first so the
+      // legend knows how much room it really has.
+      let studioBlockTop = EXPORT_CANVAS_HEIGHT - 20;
+      let studioDraw: { x: number; y: number; w: number; h: number } | null = null;
+      if (studioLogoImage && studioLogoImage.width && studioLogoImage.height) {
+        const maxStudioW = rightColW - 20;
+        const maxStudioH = 66;
+        const aspect = studioLogoImage.width / studioLogoImage.height;
+        let studioH = maxStudioH;
+        let studioW = studioH * aspect;
+        if (studioW > maxStudioW) {
+          studioW = maxStudioW;
+          studioH = studioW / aspect;
+        }
+        studioW *= studioLogoScale;
+        studioH *= studioLogoScale;
+        const studioY = EXPORT_CANVAS_HEIGHT - 20 - studioH + exportStudioLogoOffsetY;
+        studioDraw = {
+          x: rightColCenter - studioW / 2 + exportStudioLogoOffsetX,
+          y: studioY,
+          w: studioW,
+          h: studioH
+        };
+        studioBlockTop = Math.min(studioBlockTop, studioY - 14);
+      }
+
+      // ── Legend table ────────────────────────────────────────────────
+      const hasLegend = exportShowLegend && loadedLegendImages.length > 0;
+      if (hasLegend) {
+        const legendX = rightColX;
+        const legendW = rightColW;
+        const legendTop = columnY;
+        const legendAvailable = Math.max(60, studioBlockTop - legendTop);
+        const headerRowH = 28;
+        const iconColW = 46;
+
+        // Shrink the rows until the whole table fits above the studio logo —
+        // an intervention legend must show every symbol used on the plan.
+        let labelSize = 9.5;
+        let rows: { image: HTMLImageElement; lines: string[]; height: number }[] = [];
+        let tableH = 0;
+
+        for (let attempt = 0; attempt < 14; attempt++) {
+          const lineHeight = Math.round(labelSize * 1.25);
+          const iconSize = Math.max(11, Math.round(labelSize * 1.9));
+          context.font = `700 ${labelSize}px ${EXPORT_FONT}`;
+          rows = loadedLegendImages.map(({ type, image }) => {
+            const lines = getCanvasWrappedLines(
+              context,
+              iconDefinitions[type]?.label || type,
+              legendW - iconColW - 16
+            );
+            return { image, lines, height: Math.max(iconSize + 7, lines.length * lineHeight + 8) };
+          });
+          tableH = headerRowH + rows.reduce((total, row) => total + row.height, 0);
+          if (tableH <= legendAvailable || labelSize <= 6) break;
+          labelSize -= 0.25;
+        }
+
+        const lineHeight = Math.round(labelSize * 1.25);
+        const iconSize = Math.max(11, Math.round(labelSize * 1.9));
+
+        context.fillStyle = "#ffffff";
+        context.strokeStyle = palette.legend;
+        context.lineWidth = 1.5;
+        context.fillRect(legendX, legendTop, legendW, tableH);
+        context.strokeRect(legendX, legendTop, legendW, tableH);
+
+        context.beginPath();
+        context.moveTo(legendX, legendTop + headerRowH);
+        context.lineTo(legendX + legendW, legendTop + headerRowH);
+        context.stroke();
+
+        context.fillStyle = textColor;
+        context.font = `900 13px ${EXPORT_FONT}`;
+        context.textAlign = "center";
+        drawTrackedText(
+          context,
+          (exportNfLegendTitle.trim() || NF_DEFAULTS.legendTitle).toUpperCase(),
+          legendX + legendW / 2,
+          legendTop + 19,
+          "0.14em"
+        );
+        context.textAlign = "left";
+
+        let rowY = legendTop + headerRowH;
+        rows.forEach(({ image, lines, height }, index) => {
+          if (index > 0) {
+            context.beginPath();
+            context.moveTo(legendX, rowY);
+            context.lineTo(legendX + legendW, rowY);
+            context.stroke();
+          }
+
+          context.beginPath();
+          context.moveTo(legendX + iconColW, rowY);
+          context.lineTo(legendX + iconColW, rowY + height);
+          context.stroke();
+
+          context.drawImage(
+            image,
+            legendX + iconColW / 2 - iconSize / 2,
+            rowY + (height - iconSize) / 2,
+            iconSize,
+            iconSize
+          );
+
+          context.fillStyle = textColor;
+          context.font = `700 ${labelSize}px ${EXPORT_FONT}`;
+          context.textAlign = "center";
+          const textTop = rowY + (height - lines.length * lineHeight) / 2 + lineHeight * 0.76;
+          lines.forEach((line, lineIndex) => {
+            context.fillText(line, legendX + iconColW + (legendW - iconColW) / 2, textTop + lineIndex * lineHeight);
+          });
+          context.textAlign = "left";
+
+          rowY += height;
+        });
+      }
+
+      if (studioDraw) {
+        context.drawImage(studioLogoImage!, studioDraw.x, studioDraw.y, studioDraw.w, studioDraw.h);
+      }
+
+      // ── The plan: everything left of the identification column ──────
+      const columnUsed = hasLegend || Boolean(clientLogoImage) || Boolean(siteNameText) || Boolean(levelText) || Boolean(studioDraw);
+      const planX = 26;
+      const planY = headerH + 16;
+      const planRight = columnUsed ? rightColX - 20 : EXPORT_CANVAS_WIDTH - 26;
+      const basePlanW = Math.max(120, planRight - planX);
+      const basePlanH = Math.max(120, EXPORT_CANVAS_HEIGHT - 22 - planY);
+      const planW = basePlanW * (exportPlanAreaScale / 100);
+      const planH = basePlanH * (exportPlanAreaScale / 100);
+
+      const baseScale = Math.min(planW / trimmedPlan.width, planH / trimmedPlan.height);
+      const scale = baseScale * (exportPlanScale / 100);
+      const drawW = trimmedPlan.width * scale;
+      const drawH = trimmedPlan.height * scale;
+      const drawX = planX + planW / 2 + exportPlanOffsetX;
+      const drawY = planY + planH / 2 + exportPlanOffsetY;
+
+      context.save();
+      if (!exportDisablePlanClipping) {
+        const clipX1 = 0;
+        const clipX2 = columnUsed ? rightColX - 4 : EXPORT_CANVAS_WIDTH;
+        const clipY1 = headerH;
+        const clipY2 = EXPORT_CANVAS_HEIGHT;
+        context.beginPath();
+        context.rect(clipX1, clipY1, Math.max(0, clipX2 - clipX1), Math.max(0, clipY2 - clipY1));
+        context.clip();
+      } else {
+        context.beginPath();
+        context.rect(0, 0, EXPORT_CANVAS_WIDTH, EXPORT_CANVAS_HEIGHT);
+        context.clip();
+      }
+      context.translate(drawX, drawY);
+      context.drawImage(trimmedPlan, -drawW / 2, -drawH / 2, drawW, drawH);
+      context.restore();
+
+      return canvas.toDataURL("image/png", 1);
+    }
+
+    // ── Plan d'évacuation ───────────────────────────────────────────────
+    // Green banner, a prose instruction column on the left ending with the
+    // assembly point, the plan in the middle under its level tag, and the
+    // client identity plus legend on the right.
+    if (exportTheme === "evacuation") {
+      context.fillStyle = palette.sheet;
+      context.fillRect(0, 0, EXPORT_CANVAS_WIDTH, EXPORT_CANVAS_HEIGHT);
+
+      const textColor = palette.text;
+      const redColor = palette.safety;
+      const greenColor = palette.intervention;
+      const amberColor = palette.accent;
+      const bodySize = exportEvacBodyFontSize;
+
+      // Pictograms borrowed from the icon library: the exit sign in the banner
+      // and the assembly point in its box.
+      const [exitPictogram, assemblyPictogram] = await Promise.all(
+        (["issue_de_secours", "point_rassemblement"] as IconType[]).map(async (type) => {
+          const src = getIconImageSource(type, iconDefinitions);
+          if (!src) return null;
+          try {
+            return await loadImage(src);
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      // ── Banner ──────────────────────────────────────────────────────
+      const bannerX = 24;
+      const bannerY = 22;
+      const bannerW = EXPORT_CANVAS_WIDTH - bannerX * 2;
+      const bannerH = 56;
+      context.fillStyle = palette.headerStart;
+      context.fillRect(bannerX, bannerY, bannerW, bannerH);
+
+      const bannerTitle = (exportPlanTitle.trim() || EXPORT_THEME_DEFAULT_TITLES.evacuation).toUpperCase();
+      const titleSize = fitTitleFontSize(context, bannerTitle, bannerW - 460, 34);
+      context.font = `900 ${titleSize}px ${EXPORT_FONT}`;
+      const titleWidth = context.measureText(bannerTitle).width;
+
+      // Pictogram plate then title, measured as one group so the pair sits on
+      // the banner's axis rather than the text alone.
+      const plateSize = bannerH - 16;
+      const plateGap = 12;
+      const groupWidth = (exitPictogram ? plateSize + plateGap : 0) + titleWidth;
+      let bannerCursorX = bannerX + (bannerW - groupWidth) / 2;
+
+      if (exitPictogram) {
+        context.fillStyle = "#ffffff";
+        tracePath(context, bannerCursorX, bannerY + 8, plateSize, plateSize, 4);
+        context.fill();
+        context.drawImage(exitPictogram, bannerCursorX + 4, bannerY + 12, plateSize - 8, plateSize - 8);
+        bannerCursorX += plateSize + plateGap;
+      }
+
+      context.fillStyle = "#ffffff";
+      context.font = `900 ${titleSize}px ${EXPORT_FONT}`;
+      context.textAlign = "left";
+      context.fillText(bannerTitle, bannerCursorX, bannerY + bannerH / 2 + titleSize * 0.36);
+
+      // Conformity mention at the far right of the band
+      if (exportEvacConformity.trim()) {
+        context.fillStyle = "rgba(255,255,255,0.92)";
+        context.font = `600 9.5px ${EXPORT_FONT}`;
+        context.textAlign = "right";
+        context.fillText(exportEvacConformity.trim().toUpperCase(), bannerX + bannerW - 12, bannerY + bannerH - 9);
+        context.textAlign = "left";
+      }
+
+      const contentTop = bannerY + bannerH + 22;
+
+      // ── Left instruction column ─────────────────────────────────────
+      const colX = 24;
+      const colW = 290;
+      const colCenter = colX + colW / 2;
+      const leftColumnVisible = exportShowSafety;
+
+      /** Small handset glyph for the emergency-call line. */
+      const drawEvacHandset = (x: number, y: number, size: number, color: string) => {
+        context.save();
+        context.fillStyle = color;
+        context.strokeStyle = color;
+        context.lineWidth = size * 0.16;
+        context.lineCap = "round";
+        context.lineJoin = "round";
+        context.beginPath();
+        context.arc(x + size * 0.35, y + size * 0.35, size * 0.35, Math.PI * 0.75, Math.PI * 1.75);
+        context.stroke();
+        context.beginPath();
+        context.arc(x + size * 0.15, y + size * 0.15, size * 0.18, 0, Math.PI * 2);
+        context.fill();
+        context.beginPath();
+        context.arc(x + size * 0.75, y + size * 0.75, size * 0.18, 0, Math.PI * 2);
+        context.fill();
+        context.restore();
+      };
+
+      /** Coloured pill with its title centred, matching the printed sheet. */
+      const drawEvacPill = (y: number, label: string, color: string, picto: HTMLImageElement | null, labelColor = "#ffffff") => {
+        context.fillStyle = color;
+        tracePath(context, colX, y, colW, 26, 13);
+        context.fill();
+
+        const badgeText = label.toUpperCase();
+        context.font = `900 14px ${EXPORT_FONT}`;
+        const spacedCtx = context as CanvasRenderingContext2D & { letterSpacing?: string };
+        const previousSpacing = spacedCtx.letterSpacing;
+        if (previousSpacing !== undefined) spacedCtx.letterSpacing = "0.1em";
+        const badgeWidth = context.measureText(badgeText).width;
+        if (previousSpacing !== undefined) spacedCtx.letterSpacing = previousSpacing;
+
+        const iconZone = picto ? 30 : 0;
+        const rightLimit = colX + colW - iconZone - 8;
+        let badgeX = colX + (colW - badgeWidth) / 2;
+        if (badgeX + badgeWidth > rightLimit) badgeX = Math.max(colX + 10, rightLimit - badgeWidth);
+
+        context.fillStyle = labelColor;
+        context.textAlign = "left";
+        drawTrackedText(context, badgeText, badgeX, y + 18, "0.1em");
+
+        if (picto) {
+          context.drawImage(picto, colX + colW - 28, y + 4, 18, 18);
+        }
+      };
+
+      /** Centred prose block; blank lines act as paragraph spacers. */
+      const drawEvacProse = (y: number, text: string, size: number) => {
+        const lineHeight = Math.round(size * 1.34);
+        let cursor = y;
+        context.fillStyle = textColor;
+        context.font = `700 ${size}px ${EXPORT_FONT}`;
+        context.textAlign = "center";
+        text.split("\n").forEach((paragraph) => {
+          if (!paragraph.trim()) {
+            cursor += Math.round(lineHeight * 0.55);
+            return;
+          }
+          getCanvasWrappedLines(context, paragraph, colW - 16).forEach((line) => {
+            context.fillText(line, colCenter, cursor);
+            cursor += lineHeight;
+          });
+        });
+        context.textAlign = "left";
+        return cursor;
+      };
+
+      if (leftColumnVisible) {
+        let cursorY = contentTop;
+
+        if (exportEvacFireTitle.trim()) {
+          drawEvacPill(cursorY, exportEvacFireTitle, redColor, null);
+          cursorY += 38;
+        }
+        cursorY = drawEvacProse(cursorY, exportEvacFireText, bodySize) + 6;
+
+        // Emergency call line: a handset then the free-text call wording.
+        if (exportEvacCallText.trim()) {
+          const callLines = exportEvacCallText.split("\n").filter((line) => line.trim());
+          context.font = `700 ${bodySize + 1}px ${EXPORT_FONT}`;
+          const callLineH = Math.round((bodySize + 1) * 1.4);
+          drawEvacHandset(colX + 6, cursorY - 2, 16, redColor);
+          context.fillStyle = textColor;
+          context.textAlign = "left";
+          callLines.forEach((line, index) => {
+            context.fillText(line.trim(), colX + 30, cursorY + 9 + index * callLineH);
+          });
+          cursorY += callLines.length * callLineH + 12;
+        }
+
+        if (exportEvacTitle.trim()) {
+          drawEvacPill(cursorY, exportEvacTitle, greenColor, exitPictogram);
+          cursorY += 38;
+        }
+        cursorY = drawEvacProse(cursorY, exportEvacText, bodySize) + 10;
+
+        if (exportEvacPreventionTitle.trim()) {
+          drawEvacPill(cursorY, exportEvacPreventionTitle, amberColor, null, "#ffffff");
+          cursorY += 38;
+        }
+        cursorY = drawEvacProse(cursorY, exportEvacPreventionText, bodySize) + 16;
+
+        // Assembly point: green-framed box with its pictogram and label.
+        if (exportEvacAssemblyLabel.trim()) {
+          const boxH = 54;
+          context.fillStyle = "#ffffff";
+          context.strokeStyle = greenColor;
+          context.lineWidth = 1.5;
+          context.fillRect(colX, cursorY, colW, boxH);
+          context.strokeRect(colX, cursorY, colW, boxH);
+          if (assemblyPictogram) {
+            context.drawImage(assemblyPictogram, colX + 10, cursorY + 9, 36, 36);
+          }
+          context.fillStyle = textColor;
+          context.font = `800 ${bodySize + 0.5}px ${EXPORT_FONT}`;
+          const labelX = colX + (assemblyPictogram ? 56 : 14);
+          const labelLines = getCanvasWrappedLines(context, exportEvacAssemblyLabel.trim(), colX + colW - 12 - labelX);
+          const labelTop = cursorY + boxH / 2 - ((labelLines.length - 1) * 12) / 2 + 4;
+          labelLines.forEach((line, index) => {
+            context.fillText(line, labelX, labelTop + index * 12);
+          });
+          cursorY += boxH + 12;
+        }
+
+        // 114 box, shared wording with the normative sheet.
+        if (exportNfDeafText.trim()) {
+          const deafBoxH = 48;
+          context.fillStyle = "#ffffff";
+          context.strokeStyle = redColor;
+          context.lineWidth = 1.5;
+          context.fillRect(colX, cursorY, colW, deafBoxH);
+          context.strokeRect(colX, cursorY, colW, deafBoxH);
+
+          context.fillStyle = redColor;
+          tracePath(context, colX + 8, cursorY + 6, 40, 36, 4);
+          context.fill();
+          context.fillStyle = "#ffffff";
+          context.font = `900 7px ${EXPORT_FONT}`;
+          context.textAlign = "center";
+          context.fillText("URGENCE", colX + 28, cursorY + 16);
+          context.font = `900 11px ${EXPORT_FONT}`;
+          context.fillText("114", colX + 28, cursorY + 34);
+          context.textAlign = "left";
+
+          context.save();
+          context.beginPath();
+          context.rect(colX + 52, cursorY, colW - 60, deafBoxH);
+          context.clip();
+          context.fillStyle = redColor;
+          context.font = `700 8px ${EXPORT_FONT}`;
+          const deafLines = getCanvasWrappedLines(context, exportNfDeafText.trim(), colW - 70);
+          const deafTop = cursorY + deafBoxH / 2 - ((deafLines.length - 1) * 11) / 2 + 3;
+          context.textAlign = "center";
+          deafLines.forEach((line, index) => {
+            context.fillText(line, colX + 52 + (colW - 60) / 2, deafTop + index * 11);
+          });
+          context.textAlign = "left";
+          context.restore();
+        }
+      }
+
+      // Studio logo, bottom-left
+      if (studioLogoImage && studioLogoImage.width && studioLogoImage.height) {
+        const maxStudioW = colW - 40;
+        const maxStudioH = 62;
+        const aspect = studioLogoImage.width / studioLogoImage.height;
+        let studioH = maxStudioH;
+        let studioW = studioH * aspect;
+        if (studioW > maxStudioW) {
+          studioW = maxStudioW;
+          studioH = studioW / aspect;
+        }
+        studioW *= studioLogoScale;
+        studioH *= studioLogoScale;
+        context.drawImage(
+          studioLogoImage,
+          colX + exportStudioLogoOffsetX,
+          EXPORT_CANVAS_HEIGHT - 22 - studioH + exportStudioLogoOffsetY,
+          studioW,
+          studioH
+        );
+      }
+
+      // ── Right column: client identity, then the legend ──────────────
+      const rightColW = 250;
+      const rightColX = EXPORT_CANVAS_WIDTH - 24 - rightColW;
+      const rightColCenter = rightColX + rightColW / 2;
+      let columnY = contentTop + 6;
+
+      if (clientLogoImage && clientLogoImage.width && clientLogoImage.height) {
+        const maxLogoW = rightColW - 20;
+        const maxLogoH = 76;
+        const aspect = clientLogoImage.width / clientLogoImage.height;
+        let logoH = maxLogoH;
+        let logoW = logoH * aspect;
+        if (logoW > maxLogoW) {
+          logoW = maxLogoW;
+          logoH = logoW / aspect;
+        }
+        logoW *= clientLogoScale;
+        logoH *= clientLogoScale;
+        context.drawImage(
+          clientLogoImage,
+          rightColCenter - logoW / 2 + exportClientLogoOffsetX,
+          columnY + exportClientLogoOffsetY,
+          logoW,
+          logoH
+        );
+        columnY += logoH + exportClientLogoOffsetY + 28;
+      }
+
+      const siteNameText = exportSiteName.trim() || plan?.building_name || "";
+      if (siteNameText) {
+        context.fillStyle = textColor;
+        context.font = `800 15px ${EXPORT_FONT}`;
+        context.textAlign = "center";
+        const addressLines = siteNameText.split("\n");
+        addressLines.forEach((line, index) => {
+          context.fillText(line.trim(), rightColCenter, columnY + index * 20);
+        });
+        context.textAlign = "left";
+        columnY += addressLines.length * 20;
+      }
+
+      const hasLegend = exportShowLegend && loadedLegendImages.length > 0;
+      if (hasLegend) {
+        const legendTop = Math.max(columnY + 40, contentTop + 190);
+        const legendAvailable = Math.max(60, EXPORT_CANVAS_HEIGHT - 40 - legendTop);
+        const headerRowH = 26;
+        const iconColW = 44;
+
+        let labelSize = 9;
+        let rows: { image: HTMLImageElement; lines: string[]; height: number }[] = [];
+        let tableH = 0;
+
+        for (let attempt = 0; attempt < 14; attempt++) {
+          const lineHeight = Math.round(labelSize * 1.25);
+          const iconSize = Math.max(11, Math.round(labelSize * 1.9));
+          context.font = `700 ${labelSize}px ${EXPORT_FONT}`;
+          rows = loadedLegendImages.map(({ type, image }) => {
+            const lines = getCanvasWrappedLines(context, iconDefinitions[type]?.label || type, rightColW - iconColW - 14);
+            return { image, lines, height: Math.max(iconSize + 6, lines.length * lineHeight + 7) };
+          });
+          tableH = headerRowH + rows.reduce((total, row) => total + row.height, 0);
+          if (tableH <= legendAvailable || labelSize <= 6) break;
+          labelSize -= 0.25;
+        }
+
+        const lineHeight = Math.round(labelSize * 1.25);
+        const iconSize = Math.max(11, Math.round(labelSize * 1.9));
+
+        context.fillStyle = "#ffffff";
+        context.strokeStyle = palette.legend;
+        context.lineWidth = 1.5;
+        context.fillRect(rightColX, legendTop, rightColW, tableH);
+        context.strokeRect(rightColX, legendTop, rightColW, tableH);
+
+        context.beginPath();
+        context.moveTo(rightColX, legendTop + headerRowH);
+        context.lineTo(rightColX + rightColW, legendTop + headerRowH);
+        context.stroke();
+
+        context.fillStyle = textColor;
+        context.font = `900 13px ${EXPORT_FONT}`;
+        context.textAlign = "center";
+        drawTrackedText(
+          context,
+          (exportNfLegendTitle.trim() || NF_DEFAULTS.legendTitle).toUpperCase(),
+          rightColCenter,
+          legendTop + 18,
+          "0.12em"
+        );
+        context.textAlign = "left";
+
+        let rowY = legendTop + headerRowH;
+        rows.forEach(({ image, lines, height }, index) => {
+          if (index > 0) {
+            context.beginPath();
+            context.moveTo(rightColX, rowY);
+            context.lineTo(rightColX + rightColW, rowY);
+            context.stroke();
+          }
+          context.beginPath();
+          context.moveTo(rightColX + iconColW, rowY);
+          context.lineTo(rightColX + iconColW, rowY + height);
+          context.stroke();
+
+          context.drawImage(image, rightColX + iconColW / 2 - iconSize / 2, rowY + (height - iconSize) / 2, iconSize, iconSize);
+
+          context.fillStyle = textColor;
+          context.font = `700 ${labelSize}px ${EXPORT_FONT}`;
+          context.textAlign = "center";
+          const textTop = rowY + (height - lines.length * lineHeight) / 2 + lineHeight * 0.76;
+          lines.forEach((line, lineIndex) => {
+            context.fillText(line, rightColX + iconColW + (rightColW - iconColW) / 2, textTop + lineIndex * lineHeight);
+          });
+          context.textAlign = "left";
+          rowY += height;
+        });
+      }
+
+      // ── The plan, with its level tag underneath ─────────────────────
+      const levelText = (exportLevelLabel.trim() || plan?.floor_name || "").toUpperCase();
+      const levelBandH = levelText ? 46 : 12;
+      const planX = leftColumnVisible ? colX + colW + 22 : 24;
+      const planRight = hasLegend || clientLogoImage || siteNameText ? rightColX - 22 : EXPORT_CANVAS_WIDTH - 24;
+      const planY = contentTop;
+      const basePlanW = Math.max(120, planRight - planX);
+      const basePlanH = Math.max(120, EXPORT_CANVAS_HEIGHT - 24 - levelBandH - planY);
+      const planW = basePlanW * (exportPlanAreaScale / 100);
+      const planH = basePlanH * (exportPlanAreaScale / 100);
+
+      const baseScale = Math.min(planW / trimmedPlan.width, planH / trimmedPlan.height);
+      const scale = baseScale * (exportPlanScale / 100);
+      const drawW = trimmedPlan.width * scale;
+      const drawH = trimmedPlan.height * scale;
+      const drawX = planX + planW / 2 + exportPlanOffsetX;
+      const drawY = planY + planH / 2 + exportPlanOffsetY;
+
+      context.save();
+      if (!exportDisablePlanClipping) {
+        const clipX1 = leftColumnVisible ? colX + colW + 4 : 0;
+        const clipX2 = hasLegend || clientLogoImage || siteNameText ? rightColX - 4 : EXPORT_CANVAS_WIDTH;
+        const clipY1 = contentTop;
+        const clipY2 = EXPORT_CANVAS_HEIGHT;
+        context.beginPath();
+        context.rect(clipX1, clipY1, Math.max(0, clipX2 - clipX1), Math.max(0, clipY2 - clipY1));
+        context.clip();
+      } else {
+        context.beginPath();
+        context.rect(0, 0, EXPORT_CANVAS_WIDTH, EXPORT_CANVAS_HEIGHT);
+        context.clip();
+      }
+      context.translate(drawX, drawY);
+      context.drawImage(trimmedPlan, -drawW / 2, -drawH / 2, drawW, drawH);
+      context.restore();
+
+      if (levelText) {
+        context.font = `800 15px ${EXPORT_FONT}`;
+        const tagW = Math.min(planW, context.measureText(levelText).width + 44);
+        const tagH = 28;
+        const tagX = planX + planW / 2 - tagW / 2;
+        const tagY = planY + planH + 8;
+        context.fillStyle = palette.muted;
+        tracePath(context, tagX, tagY, tagW, tagH, 4);
+        context.fill();
+        context.fillStyle = "#ffffff";
+        context.textAlign = "center";
+        drawTrackedText(context, levelText, planX + planW / 2, tagY + 19, "0.06em");
+        context.textAlign = "left";
+      }
+
+      return canvas.toDataURL("image/png", 1);
+    }
 
     if (exportTheme === "consignes") {
       context.fillStyle = palette.sheet;
@@ -2229,8 +3862,8 @@ export default function PlanEditorPage() {
 
       // Logos sit in the plan header band (from mainX to the right edge).
       // Offset them so they clear the level block on the far left of that band.
-      drawHeaderLogo(context, clientLogoImage, "left", headerH, mainX + levelW + 12, mainX + levelW + 96);
-      drawHeaderLogo(context, studioLogoImage, "right", headerH, EXPORT_CANVAS_WIDTH - 108, EXPORT_CANVAS_WIDTH - 12);
+      drawHeaderLogo(context, clientLogoImage, "left", headerH, mainX + levelW + 12, mainX + levelW + 96, clientLogoScale, exportClientLogoOffsetX, exportClientLogoOffsetY);
+      drawHeaderLogo(context, studioLogoImage, "right", headerH, EXPORT_CANVAS_WIDTH - 108, EXPORT_CANVAS_WIDTH - 12, studioLogoScale, exportStudioLogoOffsetX, exportStudioLogoOffsetY);
 
       const drawSectionBar = (y: number, label: string, color: string) => {
         context.fillStyle = color;
@@ -2378,8 +4011,8 @@ export default function PlanEditorPage() {
     // ── Header logos: client on the left, studio on the right ───────────
     // Both sit inside the coloured band, so a white plate keeps coloured or
     // dark logos legible regardless of the theme palette.
-    drawHeaderLogo(context, clientLogoImage, "left", EXPORT_HEADER_H);
-    drawHeaderLogo(context, studioLogoImage, "right", EXPORT_HEADER_H);
+    drawHeaderLogo(context, clientLogoImage, "left", EXPORT_HEADER_H, undefined, undefined, clientLogoScale, exportClientLogoOffsetX, exportClientLogoOffsetY);
+    drawHeaderLogo(context, studioLogoImage, "right", EXPORT_HEADER_H, undefined, undefined, studioLogoScale, exportStudioLogoOffsetX, exportStudioLogoOffsetY);
 
     // ── Column geometry ─────────────────────────────────────────────────
     // Columns are dropped entirely when every panel they hold is hidden, and the
@@ -2393,9 +4026,11 @@ export default function PlanEditorPage() {
       ? EXPORT_CANVAS_WIDTH - EXPORT_MARGIN - EXPORT_SIDE_W
       : EXPORT_CANVAS_WIDTH - EXPORT_MARGIN;
     const planX = leftX + leftColumnWidth + (leftColumnVisible ? EXPORT_GUTTER : 0);
-    const planW = Math.max(0, rightX - EXPORT_GUTTER - planX);
+    const basePlanW = Math.max(0, rightX - EXPORT_GUTTER - planX);
+    const basePlanH = contentBottom - contentTop;
+    const planW = basePlanW * (exportPlanAreaScale / 100);
+    const planH = basePlanH * (exportPlanAreaScale / 100);
     const planY = contentTop;
-    const planH = contentBottom - contentTop;
 
     const topPanelH = exportSafetyPanelHeight;
     const bottomPanelY = contentTop + topPanelH + 22;
@@ -2522,8 +4157,18 @@ export default function PlanEditorPage() {
     const drawY = planY + planH / 2 + exportPlanOffsetY;
 
     context.save();
-    tracePath(context, planX, planY, planW, planH, EXPORT_CARD_RADIUS);
-    context.clip();
+    if (!exportDisablePlanClipping) {
+      const clipX1 = (exportShowSafety || exportShowIntervention) ? leftX + EXPORT_SIDE_W + 4 : 0;
+      const clipX2 = exportShowLegend ? rightX - 4 : EXPORT_CANVAS_WIDTH;
+      const clipY1 = contentTop;
+      const clipY2 = contentBottom;
+      tracePath(context, clipX1, clipY1, Math.max(0, clipX2 - clipX1), Math.max(0, clipY2 - clipY1), EXPORT_CARD_RADIUS);
+      context.clip();
+    } else {
+      context.beginPath();
+      context.rect(0, 0, EXPORT_CANVAS_WIDTH, EXPORT_CANVAS_HEIGHT);
+      context.clip();
+    }
     context.translate(drawX, drawY);
     // No rotation here: the canvas already captured the sheet turned, pictograms
     // upright. Turning the bitmap again would double the angle and tilt them back.
@@ -2661,14 +4306,47 @@ export default function PlanEditorPage() {
     exportLegendPanelHeight,
     exportLegendFontSize,
     exportPlanScale,
+    exportPlanAreaScale,
     exportPlanRotation,
     exportPlanOffsetX,
     exportPlanOffsetY,
+    exportDisablePlanClipping,
     exportClientLogo,
     exportStudioLogo,
+    exportClientLogoScale,
+    exportClientLogoOffsetX,
+    exportClientLogoOffsetY,
+    exportStudioLogoScale,
+    exportStudioLogoOffsetX,
+    exportStudioLogoOffsetY,
     exportShowSafety,
     exportShowIntervention,
     exportShowLegend,
+    exportNfConformity,
+    exportNfFireTitle,
+    exportNfFireIntro,
+    exportNfFireNumbers,
+    exportNfEmergencyNote,
+    exportNfEvacuationTitle,
+    exportNfEvacuationText,
+    exportNfMedicalTitle,
+    exportNfMedicalNumbers,
+    exportNfDeafText,
+    exportNfPreventionTitle,
+    exportNfPreventionText,
+    exportNfLegendTitle,
+    exportNfBodyFontSize,
+    exportLevelLabel,
+    exportEvacConformity,
+    exportEvacFireTitle,
+    exportEvacFireText,
+    exportEvacCallText,
+    exportEvacTitle,
+    exportEvacText,
+    exportEvacPreventionTitle,
+    exportEvacPreventionText,
+    exportEvacAssemblyLabel,
+    exportEvacBodyFontSize,
     iconDefinitions,
   ]);
 
@@ -2689,7 +4367,7 @@ export default function PlanEditorPage() {
     }
   };
 
-  const handleExportTemplate = async () => {
+  const executeExportTemplateAction = async () => {
     setExporting(true);
     try {
       const dataUrl = await buildTemplateImage();
@@ -2721,7 +4399,7 @@ export default function PlanEditorPage() {
     return window.Konva.stages[0];
   };
 
-  const handleExportPng = async () => {
+  const executeExportPngAction = async () => {
     const stage = getStageInstance();
     if (!stage) return;
     
@@ -2746,7 +4424,7 @@ export default function PlanEditorPage() {
     document.body.removeChild(link);
   };
 
-  const handleExportPdf = async () => {
+  const executeExportPdfAction = async () => {
     const stage = getStageInstance();
     if (!stage) return;
 
@@ -2779,6 +4457,19 @@ export default function PlanEditorPage() {
     pdf.save(`${plan?.title || "plan"}_evacuation.pdf`);
   };
 
+  const triggerExportWithConfirmation = (action: () => Promise<void>) => {
+    if (hasUnsavedChanges()) {
+      setPendingExportAction(() => action);
+      setExportSaveConfirmOpen(true);
+    } else {
+      void action();
+    }
+  };
+
+  const handleExportTemplate = () => triggerExportWithConfirmation(executeExportTemplateAction);
+  const handleExportPng = () => triggerExportWithConfirmation(executeExportPngAction);
+  const handleExportPdf = () => triggerExportWithConfirmation(executeExportPdfAction);
+
   if (loading) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-white text-slate-950">
@@ -2801,29 +4492,21 @@ export default function PlanEditorPage() {
   const costEstimatePanel = (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
       <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Coût estimé</div>
-      {cleanMethod === "local" ? (
+      {cleanMethod === "grok" ? (
+        <>
+          <div className="mt-1 text-xl font-bold text-slate-950">≈ 0,05 $ US / image</div>
+          <p className="mt-1 text-xs text-slate-500">
+            Modèle grok-imagine-image-quality · résolution 2K · analyse grok-4.5 incluse.
+          </p>
+          <p className="mt-3 text-xs leading-5 text-slate-500">
+            Estimation indicative. Le montant réel facturé par xAI peut varier selon la taille de l'image et les éventuelles nouvelles tentatives.
+          </p>
+        </>
+      ) : (
         <>
           <div className="mt-1 text-xl font-bold text-safety-green">Gratuit</div>
           <p className="mt-1 text-xs text-slate-500">Aucun appel à une API externe.</p>
         </>
-      ) : openaiCostLoading && !openaiCostEstimate ? (
-        <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-500">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Calcul de l'estimation...
-        </div>
-      ) : openaiCostEstimate ? (
-        <>
-          <div className="mt-1 text-xl font-bold text-slate-950">{formatEstimatedCost(openaiCostEstimate)}</div>
-          <p className="mt-1 text-xs text-slate-500">
-            {openaiCostEstimate.details.quality === "low" ? "Qualité basse" : openaiCostEstimate.details.quality === "high" ? "Haute qualité" : "Qualité moyenne"} · Analyse + {openaiCostEstimate.details.generation_count_max} génération{openaiCostEstimate.details.generation_count_max > 1 ? "s" : ""}
-            {openaiCostEstimate.details.verification ? " · Vérification activée" : " · Aucune vérification automatique"}
-          </p>
-          <p className="mt-3 text-xs leading-5 text-slate-500">
-            Estimation indicative basée sur les paramètres sélectionnés. Le montant réel facturé par OpenAI peut varier selon la taille de l'image, le modèle, les tokens utilisés et les éventuelles nouvelles tentatives.
-          </p>
-        </>
-      ) : (
-        <p className="mt-1 text-xs text-slate-500">Estimation indisponible pour le moment.</p>
       )}
     </div>
   );
@@ -2837,27 +4520,27 @@ export default function PlanEditorPage() {
         </div>
         <button
           type="button"
-          onClick={() => void fetchOpenAIHistory()}
-          disabled={openaiHistoryLoading || openaiCleaning || openaiApplying}
+          onClick={() => void fetchCleaningHistory()}
+          disabled={cleaningHistoryLoading || grokCleaning}
           className="inline-flex items-center gap-2 rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-xs font-semibold text-safety-green transition-colors hover:bg-green-100 disabled:opacity-50"
         >
-          {openaiHistoryLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          {cleaningHistoryLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
           Actualiser
         </button>
       </div>
 
-      {openaiHistoryLoading ? (
+      {cleaningHistoryLoading ? (
         <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-500">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           Chargement de l'historique...
         </div>
-      ) : openaiHistory.length === 0 ? (
+      ) : cleaningHistory.length === 0 ? (
         <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-medium text-slate-500">
           Aucun plan nettoyé enregistré pour ce plan.
         </div>
       ) : (
         <div className="grid max-h-96 gap-3 overflow-y-auto pr-1 md:grid-cols-2">
-          {openaiHistory.map((item) => (
+          {cleaningHistory.map((item) => (
             <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
               <div className="mb-2 flex items-start justify-between gap-3">
                 <div>
@@ -2868,11 +4551,11 @@ export default function PlanEditorPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => void handleUseOpenAIHistory(item)}
-                  disabled={openaiHistoryApplyingId === item.id || openaiCleaning || openaiApplying}
+                  onClick={() => void handleUseHistory(item)}
+                  disabled={cleaningHistoryApplyingId === item.id || grokCleaning}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-safety-green px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-green-600 disabled:opacity-50"
                 >
-                  {openaiHistoryApplyingId === item.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Eye className="h-3 w-3" />}
+                  {cleaningHistoryApplyingId === item.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Eye className="h-3 w-3" />}
                   Utiliser
                 </button>
               </div>
@@ -2889,7 +4572,7 @@ export default function PlanEditorPage() {
   // Save the current edits then leave the editor.
   const handleSaveAndLeave = async () => {
     await handleSave();
-    router.push("/dashboard");
+    router.push("/evacuation-plans");
   };
 
   return (
@@ -2917,9 +4600,9 @@ export default function PlanEditorPage() {
               type="button"
               onClick={() => {
                 if (hasUnsavedChanges()) setPendingNav(true);
-                else router.push("/dashboard");
+                else router.push("/evacuation-plans");
               }}
-              title="Retour au tableau de bord"
+              title="Retour aux plans"
               className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-neutral-400 transition-colors hover:bg-white/10 hover:text-neutral-100"
             >
               <ArrowLeft className="h-4 w-4" />
@@ -2957,16 +4640,110 @@ export default function PlanEditorPage() {
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5">
+            {/* Undo / Redo */}
+            <div className="flex items-center gap-0.5 rounded bg-black/25 p-0.5">
+              <button
+                type="button"
+                onClick={handleUndo}
+                disabled={historyIndex <= 0}
+                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:pointer-events-none"
+                title="Annuler la dernière action (Cmd+Z / Ctrl+Z)"
+              >
+                <Undo2 className="h-3.5 w-3.5" />
+                <span>Annuler</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleRedo}
+                disabled={historyIndex < 0 || historyIndex >= history.length - 1}
+                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:pointer-events-none"
+                title="Rétablir l'action annulée (Cmd+Shift+Z / Ctrl+Y)"
+              >
+                <Redo2 className="h-3.5 w-3.5" />
+                <span>Rétablir</span>
+              </button>
+            </div>
+
+            {/* Canvas Rotation */}
+            <div className="flex items-center gap-1 rounded bg-black/25 px-1.5 py-0.5">
+              <span className="text-[10px] font-semibold text-neutral-400">Plan:</span>
+              <button
+                type="button"
+                onClick={() => setCanvasRotation((r) => (r - 90 + 360) % 360)}
+                className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
+                title="Pivoter le plan de -90° (Sens anti-horaire)"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setCanvasRotation(0)}
+                disabled={canvasRotation === 0}
+                className={`rounded px-1.5 py-0.5 text-[10px] font-bold transition-colors ${
+                  canvasRotation === 0
+                    ? "text-neutral-500 cursor-default"
+                    : "bg-sky-500/20 text-sky-300 hover:bg-sky-500/40 cursor-pointer"
+                }`}
+                title="Remettre la rotation du plan à 0° (Réinitialiser)"
+              >
+                {canvasRotation}° (0°)
+              </button>
+              <button
+                type="button"
+                onClick={() => setCanvasRotation((r) => (r + 90) % 360)}
+                className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
+                title="Pivoter le plan de +90° (Sens horaire)"
+              >
+                <RotateCw className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
             <ExportButtons onOpenExport={openExportTemplate} />
 
             <span className="h-5 w-px bg-white/10" />
 
+            <input
+              type="file"
+              ref={changePlanInputRef}
+              accept="image/*,application/pdf"
+              onChange={handleChangePlanFile}
+              className="hidden"
+            />
+
             <button
-              onClick={() => setCleanModalOpen(true)}
-              disabled={cleaning || openaiCleaning || openaiApplying}
+              onClick={() => changePlanInputRef.current?.click()}
+              disabled={changingBackground || cleaning || grokCleaning}
+              title="Importer un autre plan d'arrière-plan (Image ou PDF)"
               className="flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
             >
-              {cleaning || openaiCleaning || openaiApplying ? (
+              {changingBackground ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />
+              ) : (
+                <FileUp className="h-3.5 w-3.5 text-sky-400" />
+              )}
+              <span>Changer le plan</span>
+            </button>
+
+            <button
+              onClick={() => setCropModalOpen(true)}
+              disabled={cropping || changingBackground || cleaning || grokCleaning}
+              title="Rogner / Croper le plan d'arrière-plan avec une sélection"
+              className="flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
+            >
+              {cropping ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />
+              ) : (
+                <Crop className="h-3.5 w-3.5 text-sky-400" />
+              )}
+              <span>Rogner</span>
+            </button>
+
+            <button
+              onClick={() => setCleanModalOpen(true)}
+              disabled={cleaning || grokCleaning}
+              className="flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
+            >
+              {cleaning || grokCleaning ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
                 <Sparkles className="h-3.5 w-3.5" />
@@ -3038,6 +4815,7 @@ export default function PlanEditorPage() {
                   icons={icons}
                   onIconsChange={handleIconsChange}
                   selectedIconId={selectedIconId}
+                  planRotation={canvasRotation}
                   onSelectIcon={(iconId) => {
                     setSelectedIconId(iconId);
                     if (iconId) {
@@ -3070,8 +4848,9 @@ export default function PlanEditorPage() {
                     }
                   }}
                   shapeTool={shapeTool}
+                  onFinishShapeTool={() => setShapeTool(null)}
                   shapeStrokeWidth={shapeStrokeWidth}
-                  planRotation={exportPlanRotation}
+                  shapeColor={shapeColor}
                   texts={texts}
                   onTextsChange={handleTextsChange}
                   selectedTextId={selectedTextId}
@@ -3245,9 +5024,21 @@ export default function PlanEditorPage() {
 
                       <div className="flex items-center justify-between pt-1">
                         <span className="text-[10px] text-neutral-500">Rotation</span>
-                        <span className="text-[10px] tabular-nums text-neutral-400">
-                          {Math.round(selectedIcon.rotation)}&deg;
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] tabular-nums text-neutral-400">
+                            {Math.round(selectedIcon.rotation)}&deg;
+                          </span>
+                          {Math.round(selectedIcon.rotation) !== 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateSelectedIcon("rotation", 0)}
+                              className="rounded bg-sky-500/20 px-1.5 py-0.5 text-[9px] font-bold text-sky-300 transition-colors hover:bg-sky-500/40"
+                              title="Remettre la rotation à 0° (Zéro)"
+                            >
+                              0° (Remettre à 0)
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <input
                         type="range"
@@ -3257,6 +5048,57 @@ export default function PlanEditorPage() {
                         onChange={(e) => handleUpdateSelectedIcon("rotation", Number(e.target.value))}
                         className="h-1 w-full cursor-pointer accent-emerald-500"
                       />
+                      <div className="grid grid-cols-4 gap-1 pt-1">
+                        {[0, 90, 180, 270].map((deg) => (
+                          <button
+                            key={deg}
+                            type="button"
+                            onClick={() => handleUpdateSelectedIcon("rotation", deg)}
+                            className={`rounded py-1 text-[10px] font-medium transition-colors ${
+                              Math.round(selectedIcon.rotation) === deg
+                                ? "bg-sky-500 font-bold text-white shadow-sm"
+                                : "bg-[#1b1b1d] text-neutral-400 hover:bg-white/10 hover:text-white"
+                            }`}
+                          >
+                            {deg}°
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Flip / Mirror controls */}
+                  <div className="border-t border-black/40 pt-3">
+                    <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                      Sens & Miroir (Retourner)
+                    </span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateSelectedIcon("flip_x", !selectedIcon.flip_x)}
+                        className={`flex items-center justify-center gap-1.5 rounded border px-2 py-1.5 text-xs font-medium transition-colors ${
+                          selectedIcon.flip_x
+                            ? "border-sky-500 bg-sky-500/20 text-sky-300 ring-1 ring-sky-500/50"
+                            : "border-black/50 bg-[#1b1b1d] text-neutral-300 hover:bg-white/10"
+                        }`}
+                        title="Retourner l'icône de gauche à droite (Miroir horizontal)"
+                      >
+                        <FlipHorizontal className="h-3.5 w-3.5" />
+                        <span>Miroir ↔</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateSelectedIcon("flip_y", !selectedIcon.flip_y)}
+                        className={`flex items-center justify-center gap-1.5 rounded border px-2 py-1.5 text-xs font-medium transition-colors ${
+                          selectedIcon.flip_y
+                            ? "border-sky-500 bg-sky-500/20 text-sky-300 ring-1 ring-sky-500/50"
+                            : "border-black/50 bg-[#1b1b1d] text-neutral-300 hover:bg-white/10"
+                        }`}
+                        title="Retourner l'icône de haut en bas (Miroir vertical)"
+                      >
+                        <FlipVertical className="h-3.5 w-3.5" />
+                        <span>Miroir ↕</span>
+                      </button>
                     </div>
                   </div>
 
@@ -3501,9 +5343,21 @@ export default function PlanEditorPage() {
                       <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
                         Rotation
                       </span>
-                      <span className="text-[10px] tabular-nums text-neutral-400">
-                        {Math.round(selectedText.rotation)}&deg;
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] tabular-nums text-neutral-400">
+                          {Math.round(selectedText.rotation)}&deg;
+                        </span>
+                        {Math.round(selectedText.rotation) !== 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateSelectedText("rotation", 0)}
+                            className="rounded bg-sky-500/20 px-1.5 py-0.5 text-[9px] font-bold text-sky-300 transition-colors hover:bg-sky-500/40"
+                            title="Remettre la rotation à 0° (Zéro)"
+                          >
+                            0° (Remettre à 0)
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <input
                       type="range"
@@ -3513,6 +5367,22 @@ export default function PlanEditorPage() {
                       onChange={(e) => handleUpdateSelectedText("rotation", Number(e.target.value))}
                       className="mt-1.5 h-1 w-full cursor-pointer accent-emerald-500"
                     />
+                    <div className="grid grid-cols-4 gap-1 pt-1.5">
+                      {[0, 90, 180, 270].map((deg) => (
+                        <button
+                          key={deg}
+                          type="button"
+                          onClick={() => handleUpdateSelectedText("rotation", deg)}
+                          className={`rounded py-1 text-[10px] font-medium transition-colors ${
+                            Math.round(selectedText.rotation) === deg
+                              ? "bg-sky-500 font-bold text-white shadow-sm"
+                              : "bg-[#1b1b1d] text-neutral-400 hover:bg-white/10 hover:text-white"
+                          }`}
+                        >
+                          {deg}°
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   {/* Destructive action */}
@@ -3523,6 +5393,219 @@ export default function PlanEditorPage() {
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                       <span>Supprimer le texte</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : selectedShape ? (
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {/* Shape identity */}
+                <div className="flex items-center gap-3 border-b border-black/40 px-3 py-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded border border-white/10 bg-sky-500/10 p-1.5 text-sky-400">
+                    <Waypoints className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-semibold text-neutral-100">
+                      {selectedShape.shape_type === "free_polygon_zone"
+                        ? "Zone libre"
+                        : selectedShape.shape_type === "curve_polygon_zone"
+                        ? "Zone courbe"
+                        : selectedShape.shape_type === "polygon_zone"
+                        ? "Zone polygone"
+                        : selectedShape.shape_type === "zone"
+                        ? "Zone"
+                        : selectedShape.shape_type === "line"
+                        ? "Ligne"
+                        : selectedShape.shape_type === "rect"
+                        ? "Rectangle"
+                        : "Cercle"}
+                    </p>
+                    <p className="text-[10px] text-neutral-500">Forme & Zone du plan</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4 p-3">
+                  {/* Stroke Color */}
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                        Couleur de contour
+                      </span>
+                      <label className="flex cursor-pointer items-center gap-1.5 text-[10px] text-neutral-400">
+                        <input
+                          type="checkbox"
+                          checked={selectedShape.stroke_width > 0}
+                          onChange={(e) =>
+                            handleUpdateSelectedShape("stroke_width", e.target.checked ? (shapeStrokeWidth || 3) : 0)
+                          }
+                          className="h-3.5 w-3.5 cursor-pointer accent-sky-500"
+                        />
+                        Afficher le contour
+                      </label>
+                    </div>
+                    {selectedShape.stroke_width > 0 && (
+                      <>
+                        <div className="mt-1.5 flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={selectedShape.color || "#000000"}
+                            onChange={(e) => handleUpdateSelectedShape("color", e.target.value)}
+                            className="h-7 w-9 shrink-0 cursor-pointer rounded border border-black/50 bg-transparent"
+                          />
+                          <input
+                            type="text"
+                            value={selectedShape.color || "#000000"}
+                            onChange={(e) => handleUpdateSelectedShape("color", e.target.value)}
+                            className="w-full rounded border border-black/50 bg-[#1b1b1d] px-2 py-1 text-[11px] tabular-nums text-neutral-200 focus:border-sky-500/60 focus:outline-none"
+                          />
+                        </div>
+                        <div className="mt-2.5 grid grid-cols-6 gap-1.5">
+                          {PRESET_COLORS.map((preset) => (
+                            <button
+                              key={`stroke-${preset.hex}`}
+                              type="button"
+                              title={preset.name}
+                              onClick={() => handleUpdateSelectedShape("color", preset.hex)}
+                              className={`h-6 w-full rounded border transition-transform hover:scale-105 focus:outline-none ${
+                                selectedShape.color === preset.hex ? "border-sky-400 ring-2 ring-sky-400/50" : "border-white/20"
+                              }`}
+                              style={{ backgroundColor: preset.hex }}
+                            />
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Stroke Width */}
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                        Épaisseur du contour
+                      </span>
+                      <span className="text-[10px] tabular-nums text-neutral-400">
+                        {selectedShape.stroke_width} px
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={40}
+                      value={selectedShape.stroke_width}
+                      onChange={(e) => handleUpdateSelectedShape("stroke_width", Number(e.target.value))}
+                      className="mt-1.5 h-1 w-full cursor-pointer accent-sky-500"
+                    />
+                  </div>
+
+                  {/* Fill Color (Background) */}
+                  {selectedShape.shape_type !== "line" && (
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                          Couleur de fond
+                        </span>
+                        <label className="flex cursor-pointer items-center gap-1.5 text-[10px] text-neutral-400">
+                          <input
+                            type="checkbox"
+                            checked={selectedShape.fill_color !== null && selectedShape.fill_color !== undefined}
+                            onChange={(e) =>
+                              handleUpdateSelectedShape("fill_color", e.target.checked ? selectedShape.color : null)
+                            }
+                            className="h-3.5 w-3.5 cursor-pointer accent-sky-500"
+                          />
+                          Remplir
+                        </label>
+                      </div>
+                      {selectedShape.fill_color !== null && selectedShape.fill_color !== undefined && (
+                        <>
+                          <div className="mt-1.5 flex items-center gap-2">
+                            <input
+                              type="color"
+                              value={selectedShape.fill_color || selectedShape.color}
+                              onChange={(e) => handleUpdateSelectedShape("fill_color", e.target.value)}
+                              className="h-7 w-9 shrink-0 cursor-pointer rounded border border-black/50 bg-transparent"
+                            />
+                            <input
+                              type="text"
+                              value={selectedShape.fill_color || selectedShape.color}
+                              onChange={(e) => handleUpdateSelectedShape("fill_color", e.target.value)}
+                              className="w-full rounded border border-black/50 bg-[#1b1b1d] px-2 py-1 text-[11px] tabular-nums text-neutral-200 focus:border-sky-500/60 focus:outline-none"
+                            />
+                          </div>
+
+                          <div className="mt-2.5 grid grid-cols-6 gap-1.5">
+                            {PRESET_COLORS.map((preset) => (
+                              <button
+                                key={`fill-${preset.hex}`}
+                                type="button"
+                                title={preset.name}
+                                onClick={() => handleUpdateSelectedShape("fill_color", preset.hex)}
+                                className={`h-6 w-full rounded border transition-transform hover:scale-105 focus:outline-none ${
+                                  selectedShape.fill_color === preset.hex ? "border-sky-400 ring-2 ring-sky-400/50" : "border-white/20"
+                                }`}
+                                style={{ backgroundColor: preset.hex }}
+                              />
+                            ))}
+                          </div>
+
+                          <div className="mt-2.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                                Opacité du fond
+                              </span>
+                              <span className="text-[10px] tabular-nums text-neutral-400">
+                                {Math.round((selectedShape.fill_opacity !== undefined ? selectedShape.fill_opacity : 0.35) * 100)}%
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={1}
+                              step={0.05}
+                              value={selectedShape.fill_opacity !== undefined ? selectedShape.fill_opacity : 0.35}
+                              onChange={(e) => handleUpdateSelectedShape("fill_opacity", Number(e.target.value))}
+                              className="mt-1.5 h-1 w-full cursor-pointer accent-sky-500"
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Global Curve Tension */}
+                  {(selectedShape.shape_type === "polygon_zone" || selectedShape.shape_type === "free_polygon_zone") && (
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                          Courbure globale
+                        </span>
+                        <span className="text-[10px] tabular-nums text-neutral-400">
+                          {Math.round((selectedShape.tension || 0) * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={selectedShape.tension || 0}
+                        onChange={(e) => handleUpdateSelectedShape("tension", Number(e.target.value))}
+                        className="mt-1.5 h-1 w-full cursor-pointer accent-sky-500"
+                      />
+                      <p className="mt-1 text-[9px] text-neutral-500">
+                        Pour courber un seul côté, faites glisser la poignée bleue située au milieu de ce côté. (Double-cliquez dessus pour rétablir une ligne droite).
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Delete Shape */}
+                  <div className="border-t border-black/40 pt-3">
+                    <button
+                      onClick={handleDeleteSelectedShape}
+                      className="flex w-full cursor-pointer items-center justify-center gap-2 rounded border border-red-500/30 bg-red-500/10 py-2 text-[11px] font-semibold text-red-400 transition-colors hover:bg-red-500/20 hover:text-red-300"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Supprimer la forme</span>
                     </button>
                   </div>
                 </div>
@@ -3566,7 +5649,11 @@ export default function PlanEditorPage() {
               {([
                 { kind: "line" as ShapeKind, Icon: Minus, label: "Ligne" },
                 { kind: "rect" as ShapeKind, Icon: Square, label: "Carré" },
-                { kind: "circle" as ShapeKind, Icon: Circle, label: "Cercle" }
+                { kind: "circle" as ShapeKind, Icon: Circle, label: "Cercle" },
+                { kind: "zone" as ShapeKind, Icon: PaintBucket, label: "Zone" },
+                { kind: "polygon_zone" as ShapeKind, Icon: Waypoints, label: "Zone poly." },
+                { kind: "free_polygon_zone" as ShapeKind, Icon: Waypoints, label: "Zone libre" },
+                { kind: "curve_polygon_zone" as ShapeKind, Icon: Waypoints, label: "Zone courbe" }
               ]).map(({ kind, Icon, label }) => (
                 <button
                   key={kind}
@@ -3599,6 +5686,19 @@ export default function PlanEditorPage() {
                   className="h-1 w-20 cursor-pointer accent-sky-500"
                 />
                 <span className="w-6 tabular-nums text-neutral-400">{shapeStrokeWidth}</span>
+              </label>
+            )}
+
+            {/* Color picker for shapes and zones */}
+            {shapeTool && (
+              <label className="flex items-center gap-1.5 text-[11px] text-neutral-500" title="Couleur de la forme">
+                <span className="hidden 2xl:inline">Couleur</span>
+                <input
+                  type="color"
+                  value={shapeColor}
+                  onChange={(event) => setShapeColor(event.target.value)}
+                  className="h-5 w-7 cursor-pointer rounded border border-black/40 bg-transparent"
+                />
               </label>
             )}
 
@@ -3744,7 +5844,7 @@ export default function PlanEditorPage() {
 
         {cleanModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 px-4 py-4 backdrop-blur-sm">
-            <div className={`flex max-h-[92vh] w-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl ${cleanMethod !== "local" ? "max-w-5xl" : "max-w-3xl"}`}>
+            <div className={`flex max-h-[92vh] w-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl ${cleanMethod !== "local_plan" && cleanMethod !== "local_walls" ? "max-w-5xl" : "max-w-3xl"}`}>
               <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-4">
                 <div>
                   <h2 className="text-lg font-bold text-slate-950">Nettoyer le plan</h2>
@@ -3753,7 +5853,7 @@ export default function PlanEditorPage() {
                 <button
                   type="button"
                   onClick={() => setCleanModalOpen(false)}
-                  disabled={cleaning || openaiCleaning || openaiApplying}
+                  disabled={cleaning || grokCleaning}
                   className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-green-50 hover:text-safety-green disabled:opacity-50"
                   title="Fermer"
                 >
@@ -3762,74 +5862,78 @@ export default function PlanEditorPage() {
               </div>
 
               <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
-                <div className="grid gap-3 lg:grid-cols-3">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {/* ── Option 1 : nettoyage local du plan ── */}
                   <button
                     type="button"
-                    onClick={() => setCleanMethod("local")}
+                    onClick={() => setCleanMethod("local_plan")}
                     className={`rounded-xl border p-4 text-left transition-colors ${
-                      cleanMethod === "local"
+                      cleanMethod === "local_plan"
                         ? "border-safety-green bg-green-50 text-slate-950 shadow-sm"
                         : "border-slate-200 bg-white text-slate-600 hover:border-green-200 hover:bg-green-50/50"
                     }`}
                   >
                     <div className="flex items-center gap-3">
                       <span className={`flex h-5 w-5 items-center justify-center rounded-full border ${
-                        cleanMethod === "local" ? "border-safety-green" : "border-slate-300"
+                        cleanMethod === "local_plan" ? "border-safety-green" : "border-slate-300"
                       }`}>
-                        {cleanMethod === "local" ? <span className="h-2.5 w-2.5 rounded-full bg-safety-green" /> : null}
+                        {cleanMethod === "local_plan" ? <span className="h-2.5 w-2.5 rounded-full bg-safety-green" /> : null}
                       </span>
-                      <span className="text-sm font-bold">Nettoyage local</span>
+                      <span className="text-sm font-bold">Nettoyer le plan</span>
                     </div>
-                    <p className="mt-2 text-xs leading-5 text-slate-500">Utilise le système OCR/OpenCV existant. Aucune donnée n’est envoyée à un service externe.</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">Nettoyage OpenCV complet du plan. Aucune donnée envoyée à un service externe.</p>
                   </button>
 
+                  {/* ── Option 2 : nettoyage local des murs ── */}
                   <button
                     type="button"
-                    onClick={() => setCleanMethod("sketch_to_plan")}
+                    onClick={() => setCleanMethod("local_walls")}
                     className={`rounded-xl border p-4 text-left transition-colors ${
-                      cleanMethod === "sketch_to_plan"
+                      cleanMethod === "local_walls"
                         ? "border-safety-green bg-green-50 text-slate-950 shadow-sm"
                         : "border-slate-200 bg-white text-slate-600 hover:border-green-200 hover:bg-green-50/50"
                     }`}
                   >
                     <div className="flex items-center gap-3">
                       <span className={`flex h-5 w-5 items-center justify-center rounded-full border ${
-                        cleanMethod === "sketch_to_plan" ? "border-safety-green" : "border-slate-300"
+                        cleanMethod === "local_walls" ? "border-safety-green" : "border-slate-300"
                       }`}>
-                        {cleanMethod === "sketch_to_plan" ? <span className="h-2.5 w-2.5 rounded-full bg-safety-green" /> : null}
+                        {cleanMethod === "local_walls" ? <span className="h-2.5 w-2.5 rounded-full bg-safety-green" /> : null}
                       </span>
-                      <span className="text-sm font-bold">Croquis → plan propre avec OpenAI</span>
+                      <span className="text-sm font-bold">Nettoyer les murs</span>
                     </div>
-                    <p className="mt-2 text-xs leading-5 text-slate-500">Analyse visuelle du plan, création automatique d’instructions adaptées, puis génération d’un plan propre.</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">Extraction locale des murs uniquement (OpenCV). Aucune donnée envoyée à un service externe.</p>
                   </button>
 
+                  {/* ── Option 3 : vider avec l'IA (Grok) ── */}
                   <button
                     type="button"
-                    onClick={() => setCleanMethod("existing_plan_cleanup")}
+                    onClick={() => setCleanMethod("grok")}
                     className={`rounded-xl border p-4 text-left transition-colors ${
-                      cleanMethod === "existing_plan_cleanup"
+                      cleanMethod === "grok"
                         ? "border-safety-green bg-green-50 text-slate-950 shadow-sm"
                         : "border-slate-200 bg-white text-slate-600 hover:border-green-200 hover:bg-green-50/50"
                     }`}
                   >
                     <div className="flex items-center gap-3">
                       <span className={`flex h-5 w-5 items-center justify-center rounded-full border ${
-                        cleanMethod === "existing_plan_cleanup" ? "border-safety-green" : "border-slate-300"
+                        cleanMethod === "grok" ? "border-safety-green" : "border-slate-300"
                       }`}>
-                        {cleanMethod === "existing_plan_cleanup" ? <span className="h-2.5 w-2.5 rounded-full bg-safety-green" /> : null}
+                        {cleanMethod === "grok" ? <span className="h-2.5 w-2.5 rounded-full bg-safety-green" /> : null}
                       </span>
-                      <span className="text-sm font-bold">Nettoyer un plan existant</span>
+                      <span className="text-sm font-bold">Vider avec l&apos;IA (Grok)</span>
                     </div>
-                    <p className="mt-2 text-xs leading-5 text-slate-500">Supprime les dimensions, annotations et détails inutiles d’un plan déjà existant afin de le rendre plus adapté comme base de plan d’évacuation.</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">Transforme un plan d&apos;évacuation existant en base architecturale vide, prête à recevoir une nouvelle signalétique.</p>
                   </button>
                 </div>
 
                 {costEstimatePanel}
 
-                {cleanMethod === "local" ? (
+                {/* ── Bloc local (plan ou murs) ── */}
+                {(cleanMethod === "local_plan" || cleanMethod === "local_walls") && (
                   <div className="rounded-xl border border-slate-200 bg-white p-4">
                     <h3 className="text-sm font-bold text-slate-950">Options locales</h3>
-                    <p className="mt-1 text-xs leading-5 text-slate-500">Ces boutons conservent le comportement actuel de nettoyage local.</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">Traitement OpenCV effectué sur le serveur, sans appel à une API externe.</p>
                     <div className="mt-4 flex flex-col gap-3 sm:flex-row">
                       <button
                         type="button"
@@ -3857,25 +5961,28 @@ export default function PlanEditorPage() {
                       </button>
                     </div>
                   </div>
-                ) : (
+                )}
+
+                {/* ── Bloc Grok : clé API xAI + lancement ── */}
+                {cleanMethod === "grok" && (
                   <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-4">
                     <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>
-                          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">État de la clé API</div>
+                          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Clé API xAI</div>
                           <div className="mt-1 text-sm font-bold text-slate-950">
-                            {openaiSettingsLoading ? "Vérification..." : openaiHasSavedKey ? "Configurée" : "Non configurée"}
+                            {xaiSettingsLoading ? "Vérification..." : xaiHasSavedKey ? "Configurée" : "Non configurée"}
                           </div>
                           <p className="mt-1 text-xs text-slate-500">
-                            {openaiHasSavedKey
-                              ? `Dernière modification : ${formatOpenAISettingsDate() || "date non disponible"}.`
-                              : "Configurez une clé avant de lancer le nettoyage OpenAI."}
+                            {xaiHasSavedKey
+                              ? `Dernière modification : ${formatXaiSettingsDate() || "date non disponible"}.`
+                              : "Configurez une clé API xAI avant de lancer le nettoyage."}
                           </p>
                         </div>
                         <button
                           type="button"
-                          onClick={() => setOpenaiKeyConfigOpen((current) => !current)}
-                          disabled={openaiCleaning || openaiApplying}
+                          onClick={() => setXaiKeyConfigOpen((current) => !current)}
+                          disabled={grokCleaning}
                           className="inline-flex items-center justify-center rounded-xl border border-green-200 bg-green-50 px-4 py-2 text-xs font-semibold text-safety-green transition-colors hover:bg-green-100 disabled:opacity-50"
                         >
                           Configurer la clé API
@@ -3883,404 +5990,222 @@ export default function PlanEditorPage() {
                       </div>
                     </div>
 
-                    {openaiKeyConfigOpen ? (
-                      <div className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4 lg:grid-cols-[1fr_auto_auto_auto]">
-                        <div>
-                          <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                            {openaiHasSavedKey ? "Nouvelle clé API" : "Clé API"}
-                          </label>
+                    {xaiKeyConfigOpen && (
+                      <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <label className="block">
+                          <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Clé API xAI</span>
                           <input
                             type="password"
-                            value={openaiApiKey}
-                            onChange={(event) => {
-                              setOpenaiApiKey(event.target.value);
-                              setOpenaiKeyStatus("");
-                            }}
-                            placeholder={openaiHasSavedKey ? "Laisser vide pour utiliser la clé sauvegardée" : "sk-..."}
-                            disabled={openaiCleaning || openaiApplying || openaiKeySaving || openaiKeyDeleting}
-                            className="block w-full rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none focus:ring-2 focus:ring-safety-green/20"
+                            value={xaiApiKey}
+                            onChange={(event) => setXaiApiKey(event.target.value)}
+                            placeholder="xai-..."
+                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                            autoComplete="off"
                           />
-                          {openaiKeyStatus ? (
-                            <p className="mt-1.5 text-xs font-medium text-slate-500">{openaiKeyStatus}</p>
-                          ) : null}
-                        </div>
-                        <div className="flex items-end">
+                        </label>
+                        <div className="flex flex-wrap gap-2">
                           <button
                             type="button"
-                            onClick={handleTestOpenAIKey}
-                            disabled={openaiCleaning || openaiApplying || openaiKeySaving || openaiKeyDeleting || (!openaiApiKey.trim() && !openaiHasSavedKey)}
-                            className="inline-flex h-10 items-center justify-center rounded-xl border border-green-200 bg-green-50 px-4 text-xs font-semibold text-safety-green transition-colors hover:bg-green-100 disabled:opacity-50"
+                            onClick={() => void handleTestXaiKey()}
+                            disabled={xaiKeyTesting || xaiKeySaving}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 transition-colors hover:bg-slate-100 disabled:opacity-50"
                           >
+                            {xaiKeyTesting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
                             Tester
                           </button>
-                        </div>
-                        <div className="flex items-end">
                           <button
                             type="button"
-                            onClick={() => void handleSaveOpenAIKey()}
-                            disabled={openaiCleaning || openaiApplying || openaiKeySaving || openaiKeyDeleting || !openaiApiKey.trim()}
-                            className="inline-flex h-10 items-center justify-center rounded-xl bg-safety-green px-4 text-xs font-semibold text-white transition-colors hover:bg-green-600 disabled:opacity-50"
+                            onClick={() => void handleSaveXaiKey()}
+                            disabled={xaiKeySaving || !xaiApiKey.trim()}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-safety-green px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-green-600 disabled:opacity-50"
                           >
-                            {openaiKeySaving ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
-                            {openaiHasSavedKey ? "Remplacer" : "Sauvegarder"}
+                            {xaiKeySaving ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                            Enregistrer
                           </button>
-                        </div>
-                        <div className="flex items-end gap-2">
-                          <button
-                            type="button"
-                            onClick={clearOpenAIKeyInput}
-                            disabled={openaiCleaning || openaiApplying || openaiKeySaving || openaiKeyDeleting || !openaiApiKey}
-                            className="inline-flex h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-50"
-                          >
-                            Effacer
-                          </button>
-                          {openaiHasSavedKey ? (
+                          {xaiHasSavedKey && (
                             <button
                               type="button"
-                              onClick={handleDeleteOpenAIKey}
-                              disabled={openaiCleaning || openaiApplying || openaiKeyDeleting || openaiKeySaving}
-                              className="inline-flex h-10 items-center justify-center rounded-xl border border-red-200 bg-red-50 px-4 text-xs font-semibold text-red-700 transition-colors hover:bg-red-100 disabled:opacity-50"
+                              onClick={() => void handleDeleteXaiKey()}
+                              disabled={xaiKeyDeleting}
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] font-semibold text-red-700 transition-colors hover:bg-red-100 disabled:opacity-50"
                             >
-                              {openaiKeyDeleting ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
+                              {xaiKeyDeleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
                               Supprimer
                             </button>
-                          ) : null}
+                          )}
                         </div>
-                      </div>
-                    ) : null}
-
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <div>
-                        <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Qualité
-                        </label>
-                        <div className="grid gap-2">
-                          {[
-                            {
-                              value: "low",
-                              label: "Légère",
-                              description: "Traitement économique pour les tests rapides.",
-                            },
-                            {
-                              value: "medium",
-                              label: "Moyenne",
-                              description: "Bon équilibre entre qualité, délai et coût.",
-                            },
-                            {
-                              value: "high",
-                              label: "Haute qualité",
-                              description: "Meilleur rendu pour le résultat final.",
-                            },
-                          ].map((option) => (
-                            <label
-                              key={option.value}
-                              className={`flex cursor-pointer gap-3 rounded-xl border px-3 py-2.5 transition-colors ${
-                                openaiQuality === option.value
-                                  ? "border-green-200 bg-green-50 text-slate-950"
-                                  : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                              }`}
-                            >
-                              <input
-                                type="radio"
-                                name="openai-quality"
-                                value={option.value}
-                                checked={openaiQuality === option.value}
-                                onChange={() => setOpenaiQuality(option.value as "low" | "medium" | "high")}
-                                disabled={openaiCleaning || openaiApplying}
-                                className="mt-1 h-4 w-4 accent-safety-green"
-                              />
-                              <span>
-                                <span className="block text-sm font-semibold">{option.label}</span>
-                                <span className="block text-xs leading-5 text-slate-500">{option.description}</span>
-                              </span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Instructions supplémentaires
-                        </label>
-                        <textarea
-                          value={openaiAdditionalInstructions}
-                          onChange={(event) => setOpenaiAdditionalInstructions(event.target.value)}
-                          disabled={openaiCleaning || openaiApplying}
-                          rows={3}
-                          placeholder="Facultatif"
-                          className="block w-full resize-none rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none focus:ring-2 focus:ring-safety-green/20"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-3">
-                      <div>
-                        <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Taille finale
-                        </label>
-                        <select
-                          value={openaiOutputSize}
-                          onChange={(event) => setOpenaiOutputSize(event.target.value)}
-                          disabled={openaiCleaning || openaiApplying}
-                          className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-950 focus:border-safety-green focus:outline-none"
-                        >
-                          <option value="auto">Auto</option>
-                          <option value="1024x1024">1024 × 1024</option>
-                          <option value="1536x1024">1536 × 1024</option>
-                          <option value="1024x1536">1024 × 1536</option>
-                        </select>
-                      </div>
-                      <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={openaiVerificationEnabled}
-                          onChange={(event) => setOpenaiVerificationEnabled(event.target.checked)}
-                          disabled={openaiCleaning || openaiApplying}
-                          className="h-4 w-4 rounded border-slate-300 accent-safety-green"
-                        />
-                        <span>Vérification automatique</span>
-                      </label>
-                      <div>
-                        <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Corrections auto max
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          max="5"
-                          value={openaiMaxAutomaticCorrections}
-                          onChange={(event) => setOpenaiMaxAutomaticCorrections(Math.max(0, Math.min(5, Number(event.target.value))))}
-                          disabled={openaiCleaning || openaiApplying}
-                          className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-950 focus:border-safety-green focus:outline-none"
-                        />
-                      </div>
-                    </div>
-
-                    {cleanMethod === "sketch_to_plan" ? (
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-700">
-                          <input
-                            type="checkbox"
-                            checked={openaiKeepMachines}
-                            onChange={(event) => setOpenaiKeepMachines(event.target.checked)}
-                            disabled={openaiCleaning || openaiApplying}
-                            className="h-4 w-4 rounded border-slate-300 accent-safety-green"
-                          />
-                          <span>Conserver les machines et obstacles</span>
-                        </label>
-                        <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-700">
-                          <input
-                            type="checkbox"
-                            checked={openaiRemoveText}
-                            onChange={(event) => setOpenaiRemoveText(event.target.checked)}
-                            disabled={openaiCleaning || openaiApplying}
-                            className="h-4 w-4 rounded border-slate-300 accent-safety-green"
-                          />
-                          <span>Supprimer les textes</span>
-                        </label>
-                        <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-700">
-                          <input
-                            type="checkbox"
-                            checked={openaiRemoveDimensions}
-                            onChange={(event) => setOpenaiRemoveDimensions(event.target.checked)}
-                            disabled={openaiCleaning || openaiApplying}
-                            className="h-4 w-4 rounded border-slate-300 accent-safety-green"
-                          />
-                          <span>Supprimer les dimensions</span>
-                        </label>
-                        <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-700">
-                          <input
-                            type="checkbox"
-                            checked={openaiCorrectPerspective}
-                            onChange={(event) => setOpenaiCorrectPerspective(event.target.checked)}
-                            disabled={openaiCleaning || openaiApplying}
-                            className="h-4 w-4 rounded border-slate-300 accent-safety-green"
-                          />
-                          <span>Corriger la perspective</span>
-                        </label>
-                        <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-700 sm:col-span-2">
-                          <input
-                            type="checkbox"
-                            checked={openaiKeepDoorsOpenings}
-                            onChange={(event) => setOpenaiKeepDoorsOpenings(event.target.checked)}
-                            disabled={openaiCleaning || openaiApplying}
-                            className="h-4 w-4 rounded border-slate-300 accent-safety-green"
-                          />
-                          <span>Conserver les portes et ouvertures</span>
-                        </label>
-                      </div>
-                    ) : (
-                      <div className="space-y-4">
-                        <div>
-                          <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                            Niveau de nettoyage
-                          </label>
-                          <div className="grid gap-2 sm:grid-cols-3">
-                            {[
-                              { value: "leger", label: "Léger" },
-                              { value: "moyen", label: "Moyen" },
-                              { value: "fort", label: "Fort" },
-                            ].map((option) => (
-                              <label
-                                key={option.value}
-                                className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-semibold transition-colors ${
-                                  existingCleanupLevel === option.value
-                                    ? "border-green-200 bg-green-50 text-slate-950"
-                                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                                }`}
-                              >
-                                <input
-                                  type="radio"
-                                  name="existing-cleanup-level"
-                                  value={option.value}
-                                  checked={existingCleanupLevel === option.value}
-                                  onChange={() => setExistingCleanupLevel(option.value as "leger" | "moyen" | "fort")}
-                                  disabled={openaiCleaning || openaiApplying}
-                                  className="h-4 w-4 accent-safety-green"
-                                />
-                                <span>{option.label}</span>
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          {[
-                            ["Supprimer les pictogrammes existants", existingRemovePictograms, setExistingRemovePictograms],
-                            ["Supprimer tous les textes", existingRemoveText, setExistingRemoveText],
-                            ["Supprimer les dimensions", existingRemoveDimensions, setExistingRemoveDimensions],
-                            ["Supprimer les annotations", existingRemoveAnnotations, setExistingRemoveAnnotations],
-                            ["Supprimer le cartouche", existingRemoveTitleBlock, setExistingRemoveTitleBlock],
-                            ["Supprimer les hachures", existingRemoveHatching, setExistingRemoveHatching],
-                            ["Supprimer le mobilier", existingRemoveFurniture, setExistingRemoveFurniture],
-                            ["Conserver les portes", existingPreserveDoors, setExistingPreserveDoors],
-                            ["Conserver les escaliers", existingPreserveStairs, setExistingPreserveStairs],
-                            ["Conserver les ouvertures", existingPreserveOpenings, setExistingPreserveOpenings],
-                            ["Simplifier le rendu", existingSimplifyRendering, setExistingSimplifyRendering],
-                          ].map(([label, checked, setter]) => (
-                            <label key={label as string} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-700">
-                              <input
-                                type="checkbox"
-                                checked={checked as boolean}
-                                onChange={(event) => (setter as React.Dispatch<React.SetStateAction<boolean>>)(event.target.checked)}
-                                disabled={openaiCleaning || openaiApplying}
-                                className="h-4 w-4 rounded border-slate-300 accent-safety-green"
-                              />
-                              <span>{label as string}</span>
-                            </label>
-                          ))}
-                        </div>
+                        {xaiKeyStatus && (
+                          <p className="text-[11px] font-semibold text-slate-600">{xaiKeyStatus}</p>
+                        )}
                       </div>
                     )}
 
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">État du traitement</div>
-                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-                        {openaiStepOrder.map((step) => {
-                          const stepState = getOpenAIStepState(step);
+                    {grokError && (
+                      <div className="whitespace-pre-line rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+                        {grokError}
+                      </div>
+                    )}
+
+                    {grokCleaning && (
+                      <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        {grokStepOrder.map((step) => {
+                          const stepState = getGrokStepState(step);
                           return (
-                            <div
-                              key={step}
-                              className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold ${
-                                stepState === "done"
-                                  ? "border-green-200 bg-green-50 text-safety-green"
-                                  : stepState === "current"
-                                    ? "border-blue-200 bg-blue-50 text-blue-700"
-                                    : "border-slate-200 bg-white text-slate-500"
-                              }`}
-                            >
-                              <span>{stepState === "done" ? "✓" : stepState === "current" ? "…" : "○"}</span>
-                              <span>{openaiStepLabels[step]}</span>
+                            <div key={step} className="flex items-center gap-3 text-sm">
+                              <span
+                                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border ${
+                                  stepState === "done"
+                                    ? "border-safety-green bg-safety-green text-white"
+                                    : stepState === "current"
+                                      ? "border-safety-green text-safety-green"
+                                      : "border-slate-300 text-slate-400"
+                                }`}
+                              >
+                                {stepState === "current" ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : stepState === "done" ? (
+                                  <Check className="h-3.5 w-3.5" />
+                                ) : null}
+                              </span>
+                              <span className={stepState === "current" ? "font-semibold text-slate-900" : "text-slate-500"}>
+                                {grokStepLabels[step]}
+                              </span>
                             </div>
                           );
                         })}
                       </div>
-                      {openaiCleaningStep === "completed" ? (
-                        <div className="mt-3 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-semibold text-safety-green">
-                          ✓ Terminé
-                        </div>
-                      ) : null}
-                      {openaiCleaningStep === "failed" ? (
-                        <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
-                          Erreur
-                        </div>
-                      ) : null}
-                    </div>
+                    )}
 
-                    {openaiError ? (
-                      <div className="whitespace-pre-line rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
-                        {openaiError}
-                      </div>
-                    ) : null}
-
-                    {openaiResult ? (
-                      <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                        <div className="grid gap-4 lg:grid-cols-2">
-                          <div>
-                            <div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Avant</div>
-                            <div className="flex min-h-56 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white">
-                              <img src={openaiResult.before_image} alt="Plan avant nettoyage OpenAI" className="max-h-72 w-full object-contain" />
-                            </div>
-                          </div>
-                          <div>
-                            <div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Après</div>
-                            <div className="flex min-h-56 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white">
-                              <img src={openaiResult.after_image} alt="Plan après nettoyage OpenAI" className="max-h-72 w-full object-contain" />
-                            </div>
-                          </div>
-                        </div>
-                        {openaiResult.verification ? (
-                          <div className="rounded-xl border border-slate-200 bg-white p-3">
-                            <div className="mb-2 flex items-center justify-between">
-                              <span className="text-sm font-bold text-slate-950">Vérification</span>
-                              <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-bold text-safety-green">
-                                Score {Math.round(openaiResult.verification.score * 100)}%
-                              </span>
-                            </div>
-                            <div className="grid gap-2 text-xs text-slate-600 sm:grid-cols-3">
-                              <span>Murs oubliés: {openaiResult.verification.murs_oublies.length}</span>
-                              <span>Murs inventés: {openaiResult.verification.murs_inventes.length}</span>
-                              <span>Ouvertures déplacées: {openaiResult.verification.ouvertures_deplacees}</span>
-                            </div>
-                            <ul className="mt-2 space-y-1 text-xs text-slate-500">
-                              {openaiResult.verification.recommandations.map((recommendation) => (
-                                <li key={recommendation}>{recommendation}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-
-                    <div className="flex flex-col gap-3 border-t border-slate-200 pt-4">
-                      {!openaiResult && openaiCostEstimate ? (
-                        <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-xs font-semibold text-safety-green">
-                          Coût estimé maximum pour cette opération : {openaiCostEstimate.estimated_max.toFixed(3)} $ {openaiCostEstimate.currency === "USD" ? "US" : openaiCostEstimate.currency}
-                        </div>
-                      ) : null}
-                      <div className="flex flex-col justify-end gap-3 sm:flex-row">
-                      {openaiResult ? (
+                    {/* ── Type de plan source (Preset Grok) ── */}
+                    <div className="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <label className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                        Type de plan source
+                      </label>
+                      <p className="text-xs leading-4 text-slate-500">
+                        Choisissez le profil d&apos;analyse de l&apos;IA selon le type de document à vider.
+                      </p>
+                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                         <button
                           type="button"
-                          onClick={handleOpenAIClean}
-                          disabled={openaiCleaning || openaiApplying}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl border border-green-200 bg-green-50 px-5 py-2.5 text-xs font-semibold text-safety-green transition-colors hover:bg-green-100 disabled:opacity-50"
+                          disabled={grokCleaning}
+                          onClick={() => setGrokPreset("evacuation")}
+                          className={`flex flex-col items-start gap-1.5 rounded-xl border p-3 text-left transition-all ${
+                            grokPreset === "evacuation"
+                              ? "border-safety-green bg-white shadow-sm ring-2 ring-safety-green/30 text-slate-950"
+                              : "border-slate-200 bg-white/70 text-slate-600 hover:border-slate-300 hover:bg-white"
+                          }`}
                         >
-                          {openaiCleaning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                          {cleanMethod === "existing_plan_cleanup" ? "Renettoyer" : "Régénérer"}
+                          <div className="flex items-center gap-2 font-bold text-xs text-slate-900">
+                            <Sparkles className="h-4 w-4 text-safety-green" />
+                            <span>Plan d&apos;Évacuation</span>
+                          </div>
+                          <span className="text-[11px] leading-4 text-slate-500">
+                            Supprime les flèches, pictogrammes, &apos;Vous êtes ici&apos; et légendes d&apos;un plan d&apos;évacuation.
+                          </span>
                         </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={openaiResult ? handleUseOpenAIPlan : handleOpenAIClean}
-                        disabled={openaiCleaning || openaiApplying || (!openaiResult && !hasUsableOpenAIKey)}
-                        className="inline-flex items-center justify-center gap-2 rounded-xl bg-safety-green px-5 py-2.5 text-xs font-semibold text-white shadow-lg shadow-safety-green/20 transition-colors hover:bg-green-600 disabled:opacity-50"
-                      >
-                        {openaiCleaning || openaiApplying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                        {openaiResult ? "Utiliser ce plan" : cleanMethod === "existing_plan_cleanup" ? "Nettoyer ce plan avec OpenAI" : "Analyser et nettoyer avec OpenAI"}
-                      </button>
+
+                        <button
+                          type="button"
+                          disabled={grokCleaning}
+                          onClick={() => setGrokPreset("autocad")}
+                          className={`flex flex-col items-start gap-1.5 rounded-xl border p-3 text-left transition-all ${
+                            grokPreset === "autocad"
+                              ? "border-sky-500 bg-white shadow-sm ring-2 ring-sky-500/30 text-slate-950"
+                              : "border-slate-200 bg-white/70 text-slate-600 hover:border-slate-300 hover:bg-white"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 font-bold text-xs text-slate-900">
+                            <Waypoints className="h-4 w-4 text-sky-500" />
+                            <span>Plan d&apos;Architecte AutoCAD</span>
+                          </div>
+                          <span className="text-[11px] leading-4 text-slate-500">
+                            Analyse 2-Step AutoCAD : supprime cotations, axes, cartouches, hachures, calques &amp; meubles.
+                          </span>
+                        </button>
                       </div>
                     </div>
+
+                    {/* ── Couleur de fond du plan ── */}
+                    <div className="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                          Couleur de fond du plan
+                        </label>
+                        <span className="font-mono text-xs font-bold text-slate-600 uppercase">
+                          {grokBackgroundColor}
+                        </span>
+                      </div>
+                      <p className="text-xs leading-4 text-slate-500">
+                        Déterminez la couleur du fond du plan nettoyé (Blanc sec pur <code className="font-mono text-[11px] font-bold text-slate-800">#FFFFFF</code> par défaut).
+                      </p>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        {[
+                          { label: "Blanc sec", value: "#FFFFFF" },
+                          { label: "Blanc cassé", value: "#FAF9F6" },
+                          { label: "Gris clair", value: "#F3F4F6" },
+                          { label: "Sombre", value: "#121212" },
+                        ].map((preset) => {
+                          const isSelected = grokBackgroundColor.toUpperCase() === preset.value.toUpperCase();
+                          return (
+                            <button
+                              key={preset.value}
+                              type="button"
+                              disabled={grokCleaning}
+                              onClick={() => setGrokBackgroundColor(preset.value)}
+                              className={`flex flex-col items-center justify-center gap-1.5 rounded-xl border p-2.5 text-center text-xs font-semibold transition-all ${
+                                isSelected
+                                  ? "border-safety-green bg-white shadow-sm ring-2 ring-safety-green/30 text-slate-950"
+                                  : "border-slate-200 bg-white/70 text-slate-600 hover:border-slate-300 hover:bg-white"
+                              }`}
+                            >
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className="h-4 w-4 rounded-full border border-slate-300 shadow-inner shrink-0"
+                                  style={{ backgroundColor: preset.value }}
+                                />
+                                <span>{preset.label}</span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-2 flex items-center gap-2 pt-1 border-t border-slate-200/60">
+                        <span className="text-xs font-medium text-slate-600">Sur mesure :</span>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={grokBackgroundColor}
+                            disabled={grokCleaning}
+                            onChange={(e) => setGrokBackgroundColor(e.target.value)}
+                            className="h-7 w-9 cursor-pointer rounded border border-slate-300 bg-white p-0.5"
+                          />
+                          <input
+                            type="text"
+                            value={grokBackgroundColor}
+                            disabled={grokCleaning}
+                            onChange={(e) => setGrokBackgroundColor(e.target.value)}
+                            placeholder="#FFFFFF"
+                            maxLength={7}
+                            className="w-24 rounded-md border border-slate-300 bg-white px-2.5 py-1 font-mono text-xs text-slate-800 uppercase focus:border-safety-green focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void launchGrokCleaning()}
+                      disabled={grokCleaning || !xaiHasSavedKey}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-safety-green px-4 py-2.5 text-xs font-semibold text-white shadow-lg shadow-safety-green/20 transition-colors hover:bg-green-600 disabled:opacity-50"
+                    >
+                      {grokCleaning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                      Vider le plan avec l&apos;IA
+                    </button>
+                    {!xaiHasSavedKey && !xaiKeyConfigOpen && (
+                      <p className="text-[11px] text-slate-500">
+                        Configurez d&apos;abord votre clé API xAI pour activer cette option.
+                      </p>
+                    )}
                   </div>
                 )}
                 {cleaningHistoryPanel}
@@ -4296,7 +6221,7 @@ export default function PlanEditorPage() {
                 <div>
                   <h2 className="text-lg font-bold text-slate-950">Rétablir le plan original ?</h2>
                   <p className="mt-2 text-sm leading-6 text-slate-500">
-                    Le fond nettoyé sera désactivé et le plan original sera affiché. Les nettoyages OpenAI restent disponibles dans l'historique.
+                    Le fond nettoyé sera désactivé et le plan original sera affiché. Les versions nettoyées restent disponibles dans l&apos;historique.
                   </p>
                 </div>
                 <button
@@ -4389,6 +6314,10 @@ export default function PlanEditorPage() {
 	                            if (!exportUseCustomColors) {
 	                              setExportCustomColors(getThemeCustomColors(theme));
 	                            }
+	                            // A title you typed yourself survives the switch.
+	                            setExportPlanTitle((current) =>
+	                              isUntouchedExportTitle(current) ? EXPORT_THEME_DEFAULT_TITLES[theme] : current
+	                            );
 	                          }}
 	                          className={`rounded-lg border px-3 py-2 text-left transition-colors ${
 	                            exportTheme === theme
@@ -4427,7 +6356,7 @@ export default function PlanEditorPage() {
 	                      </label>
 	                    </div>
 	                    <div className="grid grid-cols-2 gap-2">
-	                      {EXPORT_CUSTOM_COLOR_FIELDS.map((field) => {
+	                      {exportColorFields.map((field) => {
 	                        const normalized = normalizeHexColor(
 	                          exportCustomColors[field.key],
 	                          DEFAULT_EXPORT_CUSTOM_COLORS[field.key]
@@ -4460,10 +6389,10 @@ export default function PlanEditorPage() {
 	                    </div>
 	                    <button
 	                      type="button"
-	                      onClick={() => setExportCustomColors(DEFAULT_EXPORT_CUSTOM_COLORS)}
+	                      onClick={() => setExportCustomColors(getThemeCustomColors())}
 	                      className="mt-2 text-xs font-semibold text-safety-green hover:text-green-700"
 	                    >
-	                      Réinitialiser les couleurs
+	                      Réinitialiser sur le thème
 	                    </button>
 	                  </div>
 
@@ -4474,6 +6403,7 @@ export default function PlanEditorPage() {
                         type="button"
                         onClick={() => {
                           setExportPlanScale(100);
+                          setExportPlanAreaScale(100);
                           setExportPlanRotation(0);
                           setExportPlanOffsetX(0);
                           setExportPlanOffsetY(0);
@@ -4487,17 +6417,47 @@ export default function PlanEditorPage() {
                     <div className="space-y-2">
                       <div>
                         <div className="mb-1 flex justify-between text-xs text-slate-500">
-                          <span>Taille</span>
+                          <span>Taille du plan (Zoom)</span>
                           <span>{exportPlanScale}%</span>
                         </div>
                         <input
                           type="range"
                           min="40"
-                          max="180"
+                          max="300"
                           value={exportPlanScale}
                           onChange={(e) => setExportPlanScale(Number(e.target.value))}
                           className="w-full accent-safety-green"
                         />
+                      </div>
+
+                      <div>
+                        <div className="mb-1 flex justify-between text-xs text-slate-500">
+                          <span>Grandeur du cadre / Fenêtre de zone</span>
+                          <span>{exportPlanAreaScale}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="50"
+                          max="200"
+                          value={exportPlanAreaScale}
+                          onChange={(e) => setExportPlanAreaScale(Number(e.target.value))}
+                          className="w-full accent-safety-green"
+                        />
+                      </div>
+
+                      <div className="pt-1">
+                        <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={exportDisablePlanClipping}
+                            onChange={(e) => setExportDisablePlanClipping(e.target.checked)}
+                            className="h-4 w-4 cursor-pointer accent-safety-green"
+                          />
+                          <span>Plan complet sans découpage (Plein cadre)</span>
+                        </label>
+                        <p className="mt-0.5 pl-6 text-[11px] leading-4 text-slate-500">
+                          Affiche l&apos;intégralité du plan sans le couper sur les bords lorsqu&apos;il est zoomé.
+                        </p>
                       </div>
 
                       <div>
@@ -4573,25 +6533,443 @@ export default function PlanEditorPage() {
                       value={exportPlanTitle}
                       onChange={(e) => setExportPlanTitle(e.target.value)}
                       className="block w-full rounded-xl border border-slate-300 bg-white py-2.5 px-4 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
-                      placeholder="PLAN D'ÉVACUATION"
+                      placeholder={EXPORT_THEME_DEFAULT_TITLES[exportTheme]}
                     />
                     <p className="mt-1 text-[11px] text-slate-500">
-                      Titre affiché dans le bandeau. Vide, il reprend « PLAN D&apos;ÉVACUATION ».
+                      Titre affiché dans le bandeau. Vide, il reprend «&nbsp;{EXPORT_THEME_DEFAULT_TITLES[exportTheme]}&nbsp;».
                     </p>
                   </div>
 
                   <div>
                     <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Nom du site
+                      {usesAddressBlock ? "Adresse du site" : "Nom du site"}
                     </label>
-                    <input
-                      value={exportSiteName}
-                      onChange={(e) => setExportSiteName(e.target.value)}
-                      className="block w-full rounded-xl border border-slate-300 bg-white py-2.5 px-4 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
-                      placeholder="Ex: Rez-de-chaussée"
-                    />
+                    {usesAddressBlock ? (
+                      <>
+                        <textarea
+                          value={exportSiteName}
+                          onChange={(e) => setExportSiteName(e.target.value)}
+                          rows={2}
+                          className="block w-full resize-none rounded-xl border border-slate-300 bg-white py-2.5 px-4 text-sm text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
+                          placeholder={"13 RUE HENRI TUROT\n75019 PARIS"}
+                        />
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          Affichée sous le logo client, en haut à droite. Un retour à la ligne
+                          = une ligne imprimée.
+                        </p>
+                        {usesLevelTag && (
+                          <div className="mt-2">
+                            <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                              Étiquette de niveau
+                            </span>
+                            <input
+                              value={exportLevelLabel}
+                              onChange={(e) => setExportLevelLabel(e.target.value)}
+                              placeholder={plan?.floor_name || "REZ-DE-CHAUSSEE"}
+                              className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
+                            />
+                            <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                              {isEvacuationTheme
+                                ? "Pastille grise sous le plan. Vide, elle reprend l'étage du plan."
+                                : "Pastille grise sous l'adresse. Vide, elle reprend l'étage du plan."}
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <input
+                        value={exportSiteName}
+                        onChange={(e) => setExportSiteName(e.target.value)}
+                        className="block w-full rounded-xl border border-slate-300 bg-white py-2.5 px-4 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
+                        placeholder="Ex: Rez-de-chaussée"
+                      />
+                    )}
                   </div>
 
+                  {/* ── Copy blocks. The normative sheet has its own set of
+                      blocks, so the fields on offer follow the active theme
+                      instead of showing controls that would do nothing. ── */}
+                  {isEvacuationTheme ? (
+                    <div className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50/40 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-bold text-slate-950">Textes plan d&apos;évacuation</h3>
+                          <p className="text-[11px] leading-4 text-slate-500">
+                            Colonne de consignes à gauche de la planche.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={resetEvacTexts}
+                          className="shrink-0 text-xs font-semibold text-safety-green hover:text-green-700"
+                        >
+                          Réinitialiser
+                        </button>
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Mention de conformité
+                        </span>
+                        <input
+                          value={exportEvacConformity}
+                          onChange={(e) => setExportEvacConformity(e.target.value)}
+                          placeholder="Laisser vide pour ne rien imprimer"
+                          className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
+                        />
+                        <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                          Imprimée à droite du bandeau vert.
+                        </p>
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Bloc 1 — titre
+                        </span>
+                        <input
+                          value={exportEvacFireTitle}
+                          onChange={(e) => setExportEvacFireTitle(e.target.value)}
+                          placeholder="INCENDIE"
+                          className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                        <textarea
+                          value={exportEvacFireText}
+                          onChange={(e) => setExportEvacFireText(e.target.value)}
+                          rows={5}
+                          className="mt-2 block w-full resize-none rounded-lg border border-slate-300 bg-white py-2.5 px-3 text-[11px] leading-4 text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Ligne d&apos;appel d&apos;urgence
+                        </span>
+                        <textarea
+                          value={exportEvacCallText}
+                          onChange={(e) => setExportEvacCallText(e.target.value)}
+                          rows={2}
+                          placeholder="Laisser vide pour masquer la ligne"
+                          className="block w-full resize-none rounded-lg border border-slate-300 bg-white py-2 px-3 text-[11px] leading-4 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Bloc 2 — titre
+                        </span>
+                        <input
+                          value={exportEvacTitle}
+                          onChange={(e) => setExportEvacTitle(e.target.value)}
+                          placeholder="EVACUATION"
+                          className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                        <textarea
+                          value={exportEvacText}
+                          onChange={(e) => setExportEvacText(e.target.value)}
+                          rows={6}
+                          className="mt-2 block w-full resize-none rounded-lg border border-slate-300 bg-white py-2.5 px-3 text-[11px] leading-4 text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Bloc 3 — titre
+                        </span>
+                        <input
+                          value={exportEvacPreventionTitle}
+                          onChange={(e) => setExportEvacPreventionTitle(e.target.value)}
+                          placeholder="PREVENTION"
+                          className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                        <textarea
+                          value={exportEvacPreventionText}
+                          onChange={(e) => setExportEvacPreventionText(e.target.value)}
+                          rows={5}
+                          className="mt-2 block w-full resize-none rounded-lg border border-slate-300 bg-white py-2.5 px-3 text-[11px] leading-4 text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Point de rassemblement
+                        </span>
+                        <input
+                          value={exportEvacAssemblyLabel}
+                          onChange={(e) => setExportEvacAssemblyLabel(e.target.value)}
+                          placeholder="Laisser vide pour masquer l'encadré"
+                          className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Encadré 114
+                        </span>
+                        <textarea
+                          value={exportNfDeafText}
+                          onChange={(e) => setExportNfDeafText(e.target.value)}
+                          rows={2}
+                          placeholder="Laisser vide pour masquer l'encadré"
+                          className="block w-full resize-none rounded-lg border border-slate-300 bg-white py-2 px-3 text-[11px] leading-4 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                            Titre de la légende
+                          </span>
+                          <input
+                            value={exportNfLegendTitle}
+                            onChange={(e) => setExportNfLegendTitle(e.target.value)}
+                            placeholder="LEGENDE"
+                            className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 focus:border-safety-green focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <div className="mb-1 flex justify-between text-xs text-slate-500">
+                            <span>Taille du texte</span>
+                            <span>{exportEvacBodyFontSize}px</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="7"
+                            max="14"
+                            step="0.5"
+                            value={exportEvacBodyFontSize}
+                            onChange={(e) => setExportEvacBodyFontSize(Number(e.target.value))}
+                            className="w-full accent-safety-green"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ) : isInterventionTheme ? (
+                    <div className="space-y-3 rounded-xl border border-red-200 bg-red-50/40 p-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-950">Textes plan d&apos;intervention</h3>
+                        <p className="text-[11px] leading-4 text-slate-500">
+                          Colonne d&apos;identification à droite. Le plan occupe tout le reste de la feuille.
+                        </p>
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Mention de conformité
+                        </span>
+                        <input
+                          value={exportNfConformity}
+                          onChange={(e) => setExportNfConformity(e.target.value)}
+                          placeholder="Laisser vide pour ne rien imprimer"
+                          className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Titre de la légende
+                        </span>
+                        <input
+                          value={exportNfLegendTitle}
+                          onChange={(e) => setExportNfLegendTitle(e.target.value)}
+                          placeholder="LEGENDE"
+                          className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                        <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                          La légende reprend tous les équipements posés sur le plan et resserre
+                          ses lignes pour tenir dans la colonne.
+                        </p>
+                      </div>
+                    </div>
+                  ) : isNfTheme ? (
+                    <div className="space-y-3 rounded-xl border border-red-200 bg-red-50/40 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-bold text-slate-950">Textes NF X08-070</h3>
+                          <p className="text-[11px] leading-4 text-slate-500">
+                            Colonne de gauche de la planche normative.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={resetNfTexts}
+                          className="shrink-0 text-xs font-semibold text-safety-green hover:text-green-700"
+                        >
+                          Réinitialiser
+                        </button>
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Mention de conformité
+                        </span>
+                        <input
+                          value={exportNfConformity}
+                          onChange={(e) => setExportNfConformity(e.target.value)}
+                          placeholder="Laisser vide pour ne rien imprimer"
+                          className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
+                        />
+                        <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                          Imprimée dans le bandeau. Ne la laissez que si la planche est
+                          réellement conforme.
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-[1fr_120px] gap-2">
+                        <div>
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                            Bloc 1 — titre
+                          </span>
+                          <input
+                            value={exportNfFireTitle}
+                            onChange={(e) => setExportNfFireTitle(e.target.value)}
+                            placeholder="INCENDIE"
+                            className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 focus:border-safety-green focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                            Numéros
+                          </span>
+                          <input
+                            value={exportNfFireNumbers}
+                            onChange={(e) => setExportNfFireNumbers(e.target.value)}
+                            placeholder="18 / 112"
+                            className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 focus:border-safety-green focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Phrase d&apos;appel
+                        </span>
+                        <input
+                          value={exportNfFireIntro}
+                          onChange={(e) => setExportNfFireIntro(e.target.value)}
+                          className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Mention sous les numéros
+                        </span>
+                        <input
+                          value={exportNfEmergencyNote}
+                          onChange={(e) => setExportNfEmergencyNote(e.target.value)}
+                          className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Bloc 2 — titre
+                        </span>
+                        <input
+                          value={exportNfEvacuationTitle}
+                          onChange={(e) => setExportNfEvacuationTitle(e.target.value)}
+                          placeholder="EVACUATION"
+                          className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                        <textarea
+                          value={exportNfEvacuationText}
+                          onChange={(e) => setExportNfEvacuationText(e.target.value)}
+                          rows={9}
+                          className="mt-2 block w-full resize-none rounded-lg border border-slate-300 bg-white py-2.5 px-3 text-[11px] leading-4 text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                        <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                          Une ligne commençant par « 1 - » est mise en gras, une ligne
+                          mentionnant « ascenseur » passe en rouge.
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-[1fr_120px] gap-2">
+                        <div>
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                            Bloc 3 — titre
+                          </span>
+                          <input
+                            value={exportNfMedicalTitle}
+                            onChange={(e) => setExportNfMedicalTitle(e.target.value)}
+                            placeholder="ACCIDENT OU MALAISE"
+                            className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 focus:border-safety-green focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                            Numéros
+                          </span>
+                          <input
+                            value={exportNfMedicalNumbers}
+                            onChange={(e) => setExportNfMedicalNumbers(e.target.value)}
+                            placeholder="15 / 118"
+                            className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 focus:border-safety-green focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Encadré 114
+                        </span>
+                        <textarea
+                          value={exportNfDeafText}
+                          onChange={(e) => setExportNfDeafText(e.target.value)}
+                          rows={2}
+                          placeholder="Laisser vide pour masquer l'encadré"
+                          className="block w-full resize-none rounded-lg border border-slate-300 bg-white py-2 px-3 text-[11px] leading-4 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                          Bloc 4 — titre
+                        </span>
+                        <input
+                          value={exportNfPreventionTitle}
+                          onChange={(e) => setExportNfPreventionTitle(e.target.value)}
+                          placeholder="PREVENTION"
+                          className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                        <textarea
+                          value={exportNfPreventionText}
+                          onChange={(e) => setExportNfPreventionText(e.target.value)}
+                          rows={4}
+                          className="mt-2 block w-full resize-none rounded-lg border border-slate-300 bg-white py-2.5 px-3 text-[11px] leading-4 text-slate-950 focus:border-safety-green focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                            Titre de la légende
+                          </span>
+                          <input
+                            value={exportNfLegendTitle}
+                            onChange={(e) => setExportNfLegendTitle(e.target.value)}
+                            placeholder="LEGENDE"
+                            className="block w-full rounded-lg border border-slate-300 bg-white py-2 px-3 text-xs font-semibold text-slate-950 focus:border-safety-green focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <div className="mb-1 flex justify-between text-xs text-slate-500">
+                            <span>Taille du texte</span>
+                            <span>{exportNfBodyFontSize}px</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="7"
+                            max="14"
+                            step="0.5"
+                            value={exportNfBodyFontSize}
+                            onChange={(e) => setExportNfBodyFontSize(Number(e.target.value))}
+                            className="w-full accent-safety-green"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                  <>
                   <div>
                     <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500">
                       Consignes en cas d'incendie
@@ -4709,20 +7087,63 @@ export default function PlanEditorPage() {
                       </div>
                     </div>
                   </div>
+                  </>
+                  )}
 
-                  {/* Logos: client (left of the header) and studio (right) */}
+                  {/* Logos: who made the sheet, and who it is for */}
                   <div className="rounded-xl border border-slate-200 bg-white p-3">
                     <h3 className="mb-1 text-sm font-bold text-slate-950">Logos</h3>
                     <p className="mb-3 text-[11px] leading-4 text-slate-500">
-                      Affichés dans la bande d'en-tête. Client à gauche, studio à droite.
+                      {isInterventionTheme
+                        ? "Colonne de droite : logo client en haut, au-dessus de l'adresse. Logo studio (auteur de la planche) en bas, sous la légende."
+                        : isNfTheme || isEvacuationTheme
+                          ? "Logo client en haut à droite, au-dessus de l'adresse. Logo studio (auteur de la planche) en bas à gauche."
+                          : "Affichés dans la bande d'en-tête. Client à gauche, studio à droite."}
                     </p>
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-3">
                       {([
-                        { key: "client", label: "Logo client", value: exportClientLogo, setter: setExportClientLogo },
-                        { key: "studio", label: "Logo studio", value: exportStudioLogo, setter: setExportStudioLogo }
-                      ] as const).map(({ key, label, value, setter }) => (
-                        <div key={key}>
-                          <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</span>
+                        {
+                          key: "client",
+                          label: "Logo client",
+                          value: exportClientLogo,
+                          setter: setExportClientLogo,
+                          scale: exportClientLogoScale,
+                          setScale: setExportClientLogoScale,
+                          offsetX: exportClientLogoOffsetX,
+                          setOffsetX: setExportClientLogoOffsetX,
+                          offsetY: exportClientLogoOffsetY,
+                          setOffsetY: setExportClientLogoOffsetY
+                        },
+                        {
+                          key: "studio",
+                          label: "Logo studio",
+                          value: exportStudioLogo,
+                          setter: setExportStudioLogo,
+                          scale: exportStudioLogoScale,
+                          setScale: setExportStudioLogoScale,
+                          offsetX: exportStudioLogoOffsetX,
+                          setOffsetX: setExportStudioLogoOffsetX,
+                          offsetY: exportStudioLogoOffsetY,
+                          setOffsetY: setExportStudioLogoOffsetY
+                        }
+                      ] as const).map(({ key, label, value, setter, scale, setScale, offsetX, setOffsetX, offsetY, setOffsetY }) => (
+                        <div key={key} className="rounded-lg border border-slate-200 p-2.5">
+                          <div className="mb-1.5 flex items-center justify-between">
+                            <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</span>
+                            {value && (scale !== 100 || offsetX !== 0 || offsetY !== 0) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setScale(100);
+                                  setOffsetX(0);
+                                  setOffsetY(0);
+                                }}
+                                className="text-[11px] font-semibold text-safety-green hover:text-green-700"
+                              >
+                                Réinitialiser
+                              </button>
+                            )}
+                          </div>
                           <div className="flex items-center gap-2">
                             <label
                               className={`flex h-12 flex-1 cursor-pointer items-center justify-center overflow-hidden rounded-lg border border-slate-300 bg-slate-50 text-[11px] font-medium text-slate-500 transition-colors hover:bg-slate-100 ${
@@ -4759,6 +7180,56 @@ export default function PlanEditorPage() {
                               </button>
                             )}
                           </div>
+
+                          {/* Size and position, only once there is something to move */}
+                          {value && (
+                            <div className="mt-2.5 space-y-2">
+                              <div>
+                                <div className="mb-1 flex justify-between text-xs text-slate-500">
+                                  <span>Taille</span>
+                                  <span>{scale}%</span>
+                                </div>
+                                <input
+                                  type="range"
+                                  min="40"
+                                  max="500"
+                                  value={scale}
+                                  onChange={(e) => setScale(Number(e.target.value))}
+                                  className="w-full accent-safety-green"
+                                />
+                              </div>
+                              <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                  <div className="mb-1 flex justify-between text-xs text-slate-500">
+                                    <span>← Horizontal →</span>
+                                    <span>{offsetX}px</span>
+                                  </div>
+                                  <input
+                                    type="range"
+                                    min="-250"
+                                    max="250"
+                                    value={offsetX}
+                                    onChange={(e) => setOffsetX(Number(e.target.value))}
+                                    className="w-full accent-safety-green"
+                                  />
+                                </div>
+                                <div>
+                                  <div className="mb-1 flex justify-between text-xs text-slate-500">
+                                    <span>↑ Vertical ↓</span>
+                                    <span>{offsetY}px</span>
+                                  </div>
+                                  <input
+                                    type="range"
+                                    min="-250"
+                                    max="250"
+                                    value={offsetY}
+                                    onChange={(e) => setOffsetY(Number(e.target.value))}
+                                    className="w-full accent-safety-green"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -4772,8 +7243,22 @@ export default function PlanEditorPage() {
                     </p>
                     <div className="space-y-2">
                       {([
-                        { key: "safety", label: "Consignes de sécurité", checked: exportShowSafety, setter: setExportShowSafety },
-                        { key: "intervention", label: "Équipe d'intervention", checked: exportShowIntervention, setter: setExportShowIntervention },
+                        // The intervention sheet is the plan plus its legend —
+                        // it has no instruction column at all. The normative one
+                        // has a consignes column but no intervention panel.
+                        // Showing switches that do nothing is worse than hiding
+                        // them.
+                        ...(isInterventionTheme
+                          ? []
+                          : [{
+                              key: "safety",
+                              label: isNfTheme || isEvacuationTheme ? "Colonne de consignes" : "Consignes de sécurité",
+                              checked: exportShowSafety,
+                              setter: setExportShowSafety
+                            }]),
+                        ...(isNfTheme || isInterventionTheme || isEvacuationTheme
+                          ? []
+                          : [{ key: "intervention", label: "Équipe d'intervention", checked: exportShowIntervention, setter: setExportShowIntervention }]),
                         { key: "legend", label: "Légende", checked: exportShowLegend, setter: setExportShowLegend }
                       ] as const).map(({ key, label, checked, setter }) => (
                         <label
@@ -4919,7 +7404,7 @@ export default function PlanEditorPage() {
                   type="button"
                   onClick={() => {
                     setPendingNav(false);
-                    router.push("/dashboard");
+                    router.push("/evacuation-plans");
                   }}
                   className="w-full rounded-lg border border-white/10 bg-white/[0.04] py-2.5 text-[12px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
                 >
@@ -4936,6 +7421,78 @@ export default function PlanEditorPage() {
             </div>
           </div>
         )}
+
+        {/* Modal : Confirmation Sauvegarder ou non avant export */}
+        {exportSaveConfirmOpen && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4 backdrop-blur-md">
+            <div className="w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-[#232326] p-6 text-neutral-100 shadow-2xl">
+              <div className="flex items-start gap-4">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
+                  <Save className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-white">Sauvegarder avant d&apos;exporter ?</h3>
+                  <p className="mt-1 text-xs leading-relaxed text-neutral-400">
+                    Vous avez des modifications non enregistrées sur votre plan. Voulez-vous sauvegarder les modifications en base de données avant de télécharger le fichier ?
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-6 space-y-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setExportSaveConfirmOpen(false);
+                    if (pendingExportAction) {
+                      await handleSave();
+                      await pendingExportAction();
+                      setPendingExportAction(null);
+                    }
+                  }}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-500"
+                >
+                  <Save className="h-4 w-4" />
+                  Sauvegarder et exporter
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setExportSaveConfirmOpen(false);
+                    if (pendingExportAction) {
+                      await pendingExportAction();
+                      setPendingExportAction(null);
+                    }
+                  }}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] py-2.5 text-xs font-medium text-neutral-200 transition-colors hover:bg-white/10"
+                >
+                  <Download className="h-4 w-4" />
+                  Exporter sans sauvegarder
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportSaveConfirmOpen(false);
+                    setPendingExportAction(null);
+                  }}
+                  className="w-full rounded-xl py-2 text-xs font-medium text-neutral-400 hover:text-white"
+                >
+                  Annuler
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Crop Modal */}
+        <CropModal
+          isOpen={cropModalOpen}
+          onClose={() => setCropModalOpen(false)}
+          imageUrl={backgroundUrl || ""}
+          onApplyCrop={handleApplyCrop}
+          loading={cropping}
+        />
       </div>
     </ProtectedRoute>
   );

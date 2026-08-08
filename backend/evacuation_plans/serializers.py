@@ -1,8 +1,8 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import EvacuationPlan, PlanCleaningHistory, PlanIcon, PlanShape, PlanText, UserOpenAISettings
+from .models import EvacuationPlan, PlanCleaningHistory, PlanIcon, PlanShape, PlanText, UserXaiSettings
 
-MAX_OPENAI_IMAGE_DATA_LENGTH = 20 * 1024 * 1024
+MAX_IMAGE_DATA_LENGTH = 20 * 1024 * 1024
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
@@ -32,15 +32,40 @@ class PlanIconSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanIcon
         fields = ['id', 'plan', 'icon_type', 'x', 'y', 'width', 'height', 'rotation', 'label',
-                  'anchor_x', 'anchor_y', 'created_at', 'updated_at']
+                  'anchor_x', 'anchor_y', 'leader_width', 'framed', 'flip_x', 'flip_y', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 class PlanShapeSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanShape
         fields = ['id', 'plan', 'shape_type', 'x', 'y', 'width', 'height', 'rotation',
-                  'stroke_width', 'color', 'created_at', 'updated_at']
+                  'stroke_width', 'color', 'fill_color', 'fill_opacity', 'tension',
+                  'control_points', 'points', 'created_at', 'updated_at']
         read_only_fields = ['id', 'plan', 'created_at', 'updated_at']
+
+    def validate(self, attrs):
+        shape_type = attrs.get('shape_type')
+        points = attrs.get('points')
+        is_polygon = shape_type in (
+            PlanShape.SHAPE_POLYGON_ZONE,
+            PlanShape.SHAPE_FREE_POLYGON_ZONE,
+            PlanShape.SHAPE_CURVE_POLYGON_ZONE,
+        )
+        if is_polygon:
+            if not points or not isinstance(points, list) or len(points) < 3:
+                raise serializers.ValidationError(
+                    {'points': 'Un polygone nécessite au moins 3 points.'}
+                )
+            for index, point in enumerate(points):
+                if not isinstance(point, dict) or 'x' not in point or 'y' not in point:
+                    raise serializers.ValidationError(
+                        {'points': f'Point {index + 1} invalide.'}
+                    )
+        elif points is not None:
+            raise serializers.ValidationError(
+                {'points': 'Les points ne sont autorisés que pour les zones polygonales.'}
+            )
+        return attrs
 
 
 class PlanTextSerializer(serializers.ModelSerializer):
@@ -79,11 +104,11 @@ class PlanCleaningHistorySerializer(serializers.ModelSerializer):
         return request.build_absolute_uri(url) if request else url
 
 
-class UserOpenAISettingsSerializer(serializers.ModelSerializer):
+class UserXaiSettingsSerializer(serializers.ModelSerializer):
     has_api_key = serializers.SerializerMethodField()
 
     class Meta:
-        model = UserOpenAISettings
+        model = UserXaiSettings
         fields = ['has_api_key', 'created_at', 'updated_at']
         read_only_fields = ['has_api_key', 'created_at', 'updated_at']
 
@@ -91,7 +116,7 @@ class UserOpenAISettingsSerializer(serializers.ModelSerializer):
         return bool(obj.encrypted_api_key)
 
 
-class SaveUserOpenAISettingsSerializer(serializers.Serializer):
+class SaveUserXaiSettingsSerializer(serializers.Serializer):
     api_key = serializers.CharField(write_only=True, trim_whitespace=True)
 
     def validate_api_key(self, value):
@@ -100,109 +125,11 @@ class SaveUserOpenAISettingsSerializer(serializers.Serializer):
         return value
 
 
-class TestOpenAIKeySerializer(serializers.Serializer):
+class TestXaiKeySerializer(serializers.Serializer):
     api_key = serializers.CharField(write_only=True, trim_whitespace=True, required=False, allow_blank=True)
 
     def validate_api_key(self, value):
         return value or ""
-
-
-class AnalyzePlanImageSerializer(serializers.Serializer):
-    image = serializers.ImageField(write_only=True)
-
-
-class OpenAICleanPlanSerializer(serializers.Serializer):
-    CLEANING_MODE_CHOICES = {
-        'sketch_to_plan': 'sketch_to_plan',
-        'existing_plan_cleanup': 'existing_plan_cleanup',
-    }
-    QUALITY_CHOICES = {
-        'low': 'low',
-        'medium': 'medium',
-        'high': 'high',
-    }
-    CLEANUP_LEVEL_CHOICES = {
-        'leger': 'leger', 'light': 'light',
-        'moyen': 'moyen', 'medium': 'medium',
-        'fort': 'fort', 'strong': 'strong',
-    }
-
-    cleaning_mode = serializers.ChoiceField(
-        choices=list(CLEANING_MODE_CHOICES.keys()),
-        required=False,
-        default='sketch_to_plan',
-    )
-    quality = serializers.ChoiceField(
-        choices=list(QUALITY_CHOICES.keys()),
-        required=False,
-        default='medium',
-    )
-    conserver_machines = serializers.BooleanField(required=False, default=True)
-    supprimer_texte = serializers.BooleanField(required=False, default=False)
-    supprimer_dimensions = serializers.BooleanField(required=False, default=False)
-    corriger_perspective = serializers.BooleanField(required=False, default=False)
-    conserver_ouvertures = serializers.BooleanField(required=False, default=True)
-    epaisseur_murs = serializers.IntegerField(required=False, min_value=1, max_value=5, default=3)
-    instructions_supplementaires = serializers.CharField(required=False, allow_blank=True, default="")
-    plan_type = serializers.CharField(required=False, allow_blank=True, default="")
-    cleaning_profile = serializers.CharField(required=False, allow_blank=True, default="")
-    detected_plan_type = serializers.CharField(required=False, allow_blank=True, default="")
-    detection_confidence = serializers.FloatField(required=False, allow_null=True, default=None)
-    detected_elements = serializers.DictField(required=False, default=dict)
-    supprimer_pictogrammes = serializers.BooleanField(required=False, default=True)
-    supprimer_itineraires = serializers.BooleanField(required=False, default=True)
-    supprimer_vous_etes_ici = serializers.BooleanField(required=False, default=True)
-    supprimer_legende = serializers.BooleanField(required=False, default=True)
-    supprimer_logos = serializers.BooleanField(required=False, default=True)
-    supprimer_ombres_papier = serializers.BooleanField(required=False, default=False)
-    redresser_lignes = serializers.BooleanField(required=False, default=False)
-    reduire_bruit = serializers.BooleanField(required=False, default=True)
-    conserver_noms_locaux = serializers.BooleanField(required=False, default=True)
-    conserver_fenetres = serializers.BooleanField(required=False, default=True)
-    supprimer_annotations = serializers.BooleanField(required=False, default=True)
-    supprimer_cartouche = serializers.BooleanField(required=False, default=True)
-    supprimer_hachures = serializers.BooleanField(required=False, default=True)
-    supprimer_mobilier = serializers.BooleanField(required=False, default=True)
-    conserver_portes = serializers.BooleanField(required=False, default=True)
-    conserver_escaliers = serializers.BooleanField(required=False, default=True)
-    simplifier_rendu = serializers.BooleanField(required=False, default=True)
-    niveau_nettoyage = serializers.ChoiceField(
-        choices=list(CLEANUP_LEVEL_CHOICES.keys()),
-        required=False,
-        default='moyen',
-    )
-    output_size = serializers.CharField(required=False, allow_blank=True, default="auto")
-    verification_enabled = serializers.BooleanField(required=False, default=False)
-    max_automatic_corrections = serializers.IntegerField(required=False, min_value=0, max_value=5, default=0)
-
-
-class OpenAICleanCostEstimateSerializer(serializers.Serializer):
-    CLEANING_MODE_CHOICES = {
-        'local': 'local',
-        'local_walls': 'local_walls',
-        'sketch_to_plan': 'sketch_to_plan',
-        'existing_plan_cleanup': 'existing_plan_cleanup',
-    }
-    QUALITY_CHOICES = OpenAICleanPlanSerializer.QUALITY_CHOICES
-
-    cleaning_mode = serializers.ChoiceField(choices=list(CLEANING_MODE_CHOICES.keys()))
-    quality = serializers.ChoiceField(choices=list(QUALITY_CHOICES.keys()), default='medium')
-    output_size = serializers.CharField(required=False, allow_blank=True, default="auto")
-    verification_enabled = serializers.BooleanField(required=False, default=False)
-    max_automatic_corrections = serializers.IntegerField(required=False, min_value=0, max_value=5, default=0)
-
-
-class UseOpenAICleanedPlanSerializer(serializers.Serializer):
-    image_data = serializers.CharField(write_only=True)
-
-    def validate_image_data(self, value):
-        if not value.startswith('data:image/'):
-            raise serializers.ValidationError("Image générée invalide.")
-        if ';base64,' not in value:
-            raise serializers.ValidationError("Image générée invalide.")
-        if len(value) > MAX_OPENAI_IMAGE_DATA_LENGTH:
-            raise serializers.ValidationError("Image générée trop volumineuse.")
-        return value
 
 
 class UseCleaningHistorySerializer(serializers.Serializer):
@@ -219,6 +146,6 @@ class ApplyManualPlanEditSerializer(serializers.Serializer):
             raise serializers.ValidationError("Image retouchée invalide.")
         if ';base64,' not in value:
             raise serializers.ValidationError("Image retouchée invalide.")
-        if len(value) > MAX_OPENAI_IMAGE_DATA_LENGTH:
+        if len(value) > MAX_IMAGE_DATA_LENGTH:
             raise serializers.ValidationError("Image retouchée trop volumineuse.")
         return value

@@ -22,10 +22,10 @@ export default function ExportButtons({ onOpenExport }: ExportButtonsProps) {
       <button
         onClick={() => onOpenExport("pdf")}
         className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
-        title="Exporter en PDF"
+        title="Exporter"
       >
         <FileDown className="h-3.5 w-3.5" />
-        <span>PDF</span>
+        <span>Export</span>
       </button>
     </div>
   );

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { ArrowRight, FilePlus2, ShieldCheck } from "lucide-react";
 
-const SHOW_REGISTER_ENTRY_POINTS = false;
+const SHOW_REGISTER_ENTRY_POINTS = true;
 
 export default function Home() {
   return (

@@ -6,8 +6,6 @@ import threading
 import numpy as np
 import fitz # PyMuPDF
 from urllib.parse import quote
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 from django.conf import settings
 from django.db import close_old_connections, transaction
 from django.core.files.base import ContentFile
@@ -16,44 +14,39 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.contrib.auth.models import User
-from .models import EvacuationPlan, OpenAIPlanCleaningJob, PlanCleaningHistory, PlanIcon, PlanShape, PlanText, UserOpenAISettings
-from .openai_analysis import OpenAIPlanAnalysisError, analyze_plan_image_with_openai
-from .pipeline import (
-    InvalidGeneratedPromptError,
-    OpenAIPlanCleaningPipelineError,
-    clean_plan_with_openai,
+from .models import (
+    EvacuationPlan,
+    GrokCleaningJob,
+    PlanCleaningHistory,
+    PlanIcon,
+    PlanShape,
+    PlanText,
+    UserXaiSettings,
+)
+from .grok_cleaning import (
+    GrokCleaningError,
+    MissingXaiApiKeyError,
+    analyze_and_clean_plan,
 )
 from .serializers import (
-    AnalyzePlanImageSerializer,
-    OpenAICleanCostEstimateSerializer,
-    OpenAICleanPlanSerializer,
     UserRegistrationSerializer,
     UserSerializer,
     EvacuationPlanSerializer,
     PlanIconSerializer,
     PlanShapeSerializer,
     PlanTextSerializer,
-    SaveUserOpenAISettingsSerializer,
-    TestOpenAIKeySerializer,
+    SaveUserXaiSettingsSerializer,
+    TestXaiKeySerializer,
     PlanCleaningHistorySerializer,
     ApplyManualPlanEditSerializer,
     UseCleaningHistorySerializer,
-    UseOpenAICleanedPlanSerializer,
-    UserOpenAISettingsSerializer
+    UserXaiSettingsSerializer,
 )
-from .openai_pricing import estimate_cleaning_cost
-from .plan_analyzer import normalize_cleanup_level
-from .plan_type_detector import PlanTypeDetectionError, detect_plan_type
 
 PLAN_PICTOGRAM_DIRS = ('plan_picto', 'nf_x-picto')
 PLAN_PICTOGRAM_EXTENSIONS = {'.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif'}
 logger = logging.getLogger(__name__)
 
-
-TERMINAL_OPENAI_CLEANING_STATUSES = {
-    OpenAIPlanCleaningJob.STATUS_COMPLETED,
-    OpenAIPlanCleaningJob.STATUS_FAILED,
-}
 
 def get_plan_pictogram_directory():
     for directory in PLAN_PICTOGRAM_DIRS:
@@ -89,11 +82,20 @@ def list_plan_pictograms(request):
 
     return pictograms
 
-def load_plan_image(plan, dpi=200):
-    original_path = plan.background_file.path
+def load_plan_image(plan, dpi=200, use_active_background=True):
+    target_file = None
+    if use_active_background and plan.use_cleaned_background and plan.cleaned_background_file:
+        target_file = plan.cleaned_background_file
+    else:
+        target_file = plan.background_file
 
-    if plan.background_type == 'pdf':
-        doc = fitz.open(original_path)
+    if not target_file or not target_file.name:
+        return None, "Background file missing"
+
+    target_path = target_file.path
+
+    if plan.background_type == 'pdf' and not (use_active_background and plan.use_cleaned_background):
+        doc = fitz.open(target_path)
         try:
             if doc.page_count == 0:
                 return None, "PDF has no pages"
@@ -110,18 +112,17 @@ def load_plan_image(plan, dpi=200):
         finally:
             doc.close()
 
-    img = cv2.imread(original_path)
+    img = cv2.imread(target_path)
     if img is None:
-        return None, "Failed to load original image"
+        return None, "Failed to load image"
     return img, None
 
-def create_cleaning_history(plan, image_bytes, prefix, cleaning_method, title, options=None, openai_job=None):
+def create_cleaning_history(plan, image_bytes, prefix, cleaning_method, title, options=None):
     original_name = os.path.splitext(os.path.basename(plan.background_file.path))[0]
     filename = f"{prefix}_{original_name}.png"
     history = PlanCleaningHistory(
         plan=plan,
         user=plan.user,
-        openai_job=openai_job,
         cleaning_method=cleaning_method,
         title=title,
         options=options or {},
@@ -157,151 +158,6 @@ def image_bytes_to_data_url(image_bytes):
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return f"data:image/png;base64,{encoded}"
 
-
-def serialize_openai_cleaning_job(job):
-    data = {
-        "job_id": job.id,
-        "status": job.status,
-        "error_code": job.error_code or "",
-        "error": job.error_message or "",
-        "diagnostic": job.diagnostic or "",
-        "estimated_cost_min": float(job.estimated_cost_min) if job.estimated_cost_min is not None else None,
-        "estimated_cost_max": float(job.estimated_cost_max) if job.estimated_cost_max is not None else None,
-        "pricing_currency": job.pricing_currency,
-        "actual_cost": float(job.actual_cost) if job.actual_cost is not None else None,
-        "actual_cost_available": job.actual_cost_available,
-        "detected_plan_type": job.detected_plan_type or "",
-        "detection_confidence": job.detection_confidence,
-        "detected_elements": job.detected_elements or {},
-        "confirmed_plan_type": job.confirmed_plan_type or "",
-        "cleanup_level": job.cleanup_level or "medium",
-    }
-    if job.status == OpenAIPlanCleaningJob.STATUS_COMPLETED:
-        data.update({
-            "before_image": job.before_image_data,
-            "after_image": job.after_image_data,
-            "analysis": job.analysis,
-            "generation_prompt": job.generation_prompt,
-            "models": job.models_used,
-            "quality": job.options.get("quality", "medium"),
-            "warnings": job.warnings,
-        })
-    return data
-
-
-def serialize_openai_cleaning_history_item(job):
-    return {
-        "job_id": job.id,
-        "created_at": job.created_at,
-        "updated_at": job.updated_at,
-        "before_image": job.before_image_data,
-        "after_image": job.after_image_data,
-        "quality": job.options.get("quality", "medium"),
-        "cleaning_mode": job.options.get("cleaning_mode", "sketch_to_plan"),
-        "options": job.options,
-        "models": job.models_used,
-        "warnings": job.warnings,
-    }
-
-
-def run_openai_cleaning_job(job_id):
-    close_old_connections()
-    try:
-        job = OpenAIPlanCleaningJob.objects.select_related("plan", "user").get(id=job_id)
-        plan = job.plan
-        user = job.user
-
-        job.mark_status(OpenAIPlanCleaningJob.STATUS_LOADING_SOURCE)
-        original_image, error = load_plan_image(plan, dpi=250)
-        if error:
-            job.mark_failed("IMAGE_SAVE_FAILED", error, "source_load_failed")
-            return
-
-        original_bytes = encode_image_to_png_bytes(original_image)
-        if original_bytes is None:
-            job.mark_failed("IMAGE_SAVE_FAILED", "Impossible de préparer le plan original.", "source_encode_failed")
-            return
-
-        before_image_data = image_bytes_to_data_url(original_bytes)
-
-        try:
-            result = clean_plan_with_openai(
-                original_bytes,
-                user,
-                job.options,
-                user_instructions=job.options.get("instructions_supplementaires"),
-                plan=plan,
-                status_callback=job.mark_status,
-            )
-        except InvalidGeneratedPromptError as exc:
-            job.mark_failed(exc.error_code, str(exc), exc.diagnostic)
-            return
-        except OpenAIPlanCleaningPipelineError as exc:
-            job.mark_failed(exc.error_code, str(exc), exc.diagnostic)
-            return
-        except Exception as exc:
-            logger.exception("openai_clean.job.unexpected_failed", extra={"job_id": job.id, "user_id": user.id, "plan_id": plan.id})
-            job.mark_failed("IMAGE_GENERATION_FAILED", "Erreur pendant le nettoyage OpenAI.", exc.__class__.__name__)
-            return
-
-        job.refresh_from_db()
-        if job.status == OpenAIPlanCleaningJob.STATUS_FAILED:
-            return
-
-        after_image_data = image_bytes_to_data_url(result.cleaned_image_bytes)
-        # "Completed" must never be reported before the image actually exists. The
-        # status and the image go out in the same UPDATE below, so a client polling
-        # the job can never see a finished job without its result.
-        if not result.cleaned_image_bytes or not after_image_data:
-            job.mark_failed("IMAGE_SAVE_FAILED", "Image nettoyée vide.", "empty_cleaned_image")
-            return
-
-        job.status = OpenAIPlanCleaningJob.STATUS_COMPLETED
-        job.before_image_data = before_image_data
-        job.after_image_data = after_image_data
-        job.analysis = result.analysis
-        job.generation_prompt = result.generation_prompt
-        job.models_used = {
-            "analysis": result.analysis_model,
-            "image": result.image_model,
-        }
-        job.options = {**job.options, "quality": result.quality}
-        job.warnings = result.warnings
-        job.error_code = ""
-        job.error_message = ""
-        job.diagnostic = ""
-        job.save(update_fields=[
-            "status",
-            "before_image_data",
-            "after_image_data",
-            "analysis",
-            "generation_prompt",
-            "models_used",
-            "options",
-            "warnings",
-            "error_code",
-            "error_message",
-            "diagnostic",
-            "updated_at",
-        ])
-        cleaning_mode = job.options.get("cleaning_mode", "sketch_to_plan")
-        if cleaning_mode == "existing_plan_cleanup":
-            cleaning_method = PlanCleaningHistory.METHOD_OPENAI_EXISTING
-            title = "Nettoyage OpenAI d'un plan existant"
-        else:
-            cleaning_method = PlanCleaningHistory.METHOD_OPENAI_SKETCH
-            title = "Croquis vers plan propre avec OpenAI"
-        create_cleaning_history(
-            plan,
-            result.cleaned_image_bytes,
-            "openai",
-            cleaning_method,
-            title,
-            options=job.options,
-            openai_job=job,
-        )
-    finally:
-        close_old_connections()
 
 def save_cleaned_plan_bytes(plan, image_bytes, prefix, cleaning_method=None, title=None, options=None, create_history=True):
     image_array = np.frombuffer(image_bytes, dtype=np.uint8)
@@ -388,6 +244,131 @@ def clean_walls_image(img):
     cleaned[walls > 0] = 0
     return cleaned
 
+
+# ── Grok cleaning job lifecycle ─────────────────────────────────────────────
+
+def serialize_grok_cleaning_job(job):
+    """Public representation of a Grok cleaning job, for the polling endpoint."""
+    data = {
+        "job_id": job.id,
+        "status": job.status,
+        "preset": getattr(job, "preset", "evacuation"),
+        "error_code": job.error_code or "",
+        "error": job.error_message or "",
+        "diagnostic": job.diagnostic or "",
+    }
+    if job.status == GrokCleaningJob.STATUS_COMPLETED:
+        data.update({
+            "before_image": job.before_image_data,
+            "after_image": job.after_image_data,
+            "analysis": job.analysis,
+            "generation_prompt": job.generation_prompt,
+            "model": job.model_used,
+        })
+    return data
+
+
+def run_grok_cleaning_job(job_id):
+    """Background worker: analyse + image generation, then auto-apply the result."""
+    close_old_connections()
+    try:
+        job = GrokCleaningJob.objects.select_related("plan", "user").get(id=job_id)
+        plan = job.plan
+        user = job.user
+        preset = getattr(job, "preset", "evacuation")
+
+        settings_obj = UserXaiSettings.objects.filter(user=user).first()
+        if not settings_obj:
+            job.mark_failed("XAI_KEY_MISSING", "Aucune clé API xAI enregistrée.", "missing_xai_settings")
+            return
+        api_key = settings_obj.get_api_key()
+
+        # 150 dpi keeps the analysis fast: the model downsamples to 2K anyway,
+        # so a heavier source only inflates transfer + reasoning time.
+        original_image, error = load_plan_image(plan, dpi=150, use_active_background=False)
+        if error:
+            job.mark_failed("IMAGE_SAVE_FAILED", error, "source_load_failed")
+            return
+
+        original_bytes = encode_image_to_png_bytes(original_image)
+        if original_bytes is None:
+            job.mark_failed("IMAGE_SAVE_FAILED", "Impossible de préparer le plan original.", "source_encode_failed")
+            return
+
+        before_image_data = image_bytes_to_data_url(original_bytes)
+        job.before_image_data = before_image_data
+        job.save(update_fields=["before_image_data", "updated_at"])
+
+        job.mark_status(GrokCleaningJob.STATUS_ANALYZING)
+        try:
+            result = analyze_and_clean_plan(
+                original_bytes, api_key, background_color=job.target_background_color or "#FFFFFF", preset=preset
+            )
+        except (GrokCleaningError, MissingXaiApiKeyError) as exc:
+            job.mark_failed(exc.error_code, exc.user_message, exc.diagnostic)
+            return
+        except Exception as exc:
+            logger.exception("grok_clean.job.unexpected_failed",
+                             extra={"job_id": job.id, "user_id": user.id, "plan_id": plan.id})
+            job.mark_failed("GROK_FAILED", "Erreur pendant le nettoyage avec l'IA.", exc.__class__.__name__)
+            return
+
+        job.refresh_from_db()
+        if job.status == GrokCleaningJob.STATUS_FAILED:
+            return
+
+        job.mark_status(GrokCleaningJob.STATUS_GENERATING)
+
+        after_image_data = image_bytes_to_data_url(result.cleaned_image_bytes)
+        if not result.cleaned_image_bytes or not after_image_data:
+            job.mark_failed("IMAGE_SAVE_FAILED", "Image nettoyée vide.", "empty_cleaned_image")
+            return
+
+        # Apply the cleaned image immediately and record it in the shared history.
+        history_method = PlanCleaningHistory.METHOD_GROK_AUTOCAD if preset == "autocad" else PlanCleaningHistory.METHOD_GROK
+        history_title = "Base architecturale AutoCAD extraite par l'IA (Grok)" if preset == "autocad" else "Base architecturale extraite par l'IA (Grok)"
+
+        if not save_cleaned_plan_bytes(
+            plan,
+            result.cleaned_image_bytes,
+            "grok_cleaned",
+            history_method,
+            history_title,
+            options={
+                "preset": preset,
+                "analysis_model": result.analysis_model,
+                "image_model": result.image_model,
+                "target_background_color": job.target_background_color or "#FFFFFF",
+            },
+        ):
+            job.mark_failed("IMAGE_SAVE_FAILED", "Impossible d'enregistrer l'image nettoyée.", "save_failed")
+            return
+
+        # "completed" only flips after the image exists, so a client polling the
+        # job can never see a finished job without its result.
+        job.status = GrokCleaningJob.STATUS_COMPLETED
+        job.after_image_data = after_image_data
+        job.analysis = result.analysis
+        job.generation_prompt = result.generation_prompt
+        job.model_used = result.image_model
+        job.error_code = ""
+        job.error_message = ""
+        job.diagnostic = ""
+        job.save(update_fields=[
+            "status",
+            "after_image_data",
+            "analysis",
+            "generation_prompt",
+            "model_used",
+            "error_code",
+            "error_message",
+            "diagnostic",
+            "updated_at",
+        ])
+    finally:
+        close_old_connections()
+
+
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     permission_classes = [permissions.AllowAny]
@@ -401,11 +382,13 @@ class CurrentUserView(generics.RetrieveAPIView):
         return self.request.user
 
 
-class UserOpenAISettingsView(APIView):
+# ── xAI API key management ──────────────────────────────────────────────────
+
+class UserXaiSettingsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        settings_obj = UserOpenAISettings.objects.filter(user=request.user).first()
+        settings_obj = UserXaiSettings.objects.filter(user=request.user).first()
         if not settings_obj:
             return Response({
                 "has_api_key": False,
@@ -413,87 +396,81 @@ class UserOpenAISettingsView(APIView):
                 "updated_at": None,
             }, status=status.HTTP_200_OK)
 
-        serializer = UserOpenAISettingsSerializer(settings_obj)
+        serializer = UserXaiSettingsSerializer(settings_obj)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-class SaveUserOpenAISettingsView(APIView):
+class SaveUserXaiSettingsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        serializer = SaveUserOpenAISettingsSerializer(data=request.data)
+        serializer = SaveUserXaiSettingsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        settings_obj, _ = UserOpenAISettings.objects.get_or_create(user=request.user)
+        settings_obj, _ = UserXaiSettings.objects.get_or_create(user=request.user)
         settings_obj.set_api_key(serializer.validated_data["api_key"])
         settings_obj.save()
 
-        response_serializer = UserOpenAISettingsSerializer(settings_obj)
+        response_serializer = UserXaiSettingsSerializer(settings_obj)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
 
-class DeleteUserOpenAISettingsView(APIView):
+class DeleteUserXaiSettingsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def delete(self, request):
-        UserOpenAISettings.objects.filter(user=request.user).delete()
+        UserXaiSettings.objects.filter(user=request.user).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class TestOpenAIKeyView(APIView):
+class TestXaiKeyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        serializer = TestOpenAIKeySerializer(data=request.data)
+        serializer = TestXaiKeySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         api_key = serializer.validated_data.get("api_key", "").strip()
 
         if not api_key:
-            settings_obj = UserOpenAISettings.objects.filter(user=request.user).first()
+            settings_obj = UserXaiSettings.objects.filter(user=request.user).first()
             if not settings_obj:
                 return Response({"result": "invalide"}, status=status.HTTP_200_OK)
             api_key = settings_obj.get_api_key()
 
-        openai_request = Request(
-            "https://api.openai.com/v1/models",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-            },
-            method="GET",
-        )
-
+        # A minimal Grok chat call is the most direct way to confirm the key is
+        # accepted by xAI. We send a tiny prompt so the request is cheap.
         try:
-            with urlopen(openai_request, timeout=10) as response:
-                result = "valide" if 200 <= response.status < 300 else "invalide"
-        except (HTTPError, URLError, TimeoutError, OSError):
+            from xai_sdk import Client
+            from xai_sdk.chat import user
+
+            client = Client(api_key=api_key)
+            chat = client.chat.create(model="grok-4.5")
+            chat.append(user("Reply with the single word: ok"))
+            chat.sample()
+            result = "valide"
+        except Exception as exc:
+            if _looks_like_grpc_error(exc):
+                code = None
+                try:
+                    code = exc.code()  # type: ignore[attr-defined]
+                except Exception:  # pragma: no cover - defensive
+                    pass
+                code_name = getattr(code, "name", str(code)) if code is not None else "UNKNOWN"
+                logger.warning("xai_test_key.failed code=%s", code_name,
+                               extra={"user_id": request.user.id})
+            else:
+                logger.warning("xai_test_key.failed class=%s", exc.__class__.__name__,
+                               extra={"user_id": request.user.id})
             result = "invalide"
 
         return Response({"result": result}, status=status.HTTP_200_OK)
 
 
-class AnalyzePlanImageView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+def _looks_like_grpc_error(exc: Exception) -> bool:
+    if exc.__class__.__module__.startswith("grpc"):
+        return True
+    return hasattr(exc, "code") and hasattr(exc, "details")
 
-    def post(self, request):
-        serializer = AnalyzePlanImageSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        settings_obj = UserOpenAISettings.objects.filter(user=request.user).first()
-        if not settings_obj:
-            return Response(
-                {"error": "Aucune clé API OpenAI enregistrée.", "error_code": "OPENAI_KEY_INVALID"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            analysis = analyze_plan_image_with_openai(
-                serializer.validated_data["image"],
-                settings_obj.get_api_key(),
-            )
-        except OpenAIPlanAnalysisError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-
-        return Response(analysis, status=status.HTTP_200_OK)
 
 class EvacuationPlanViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
@@ -513,63 +490,10 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
     def pictograms(self, request):
         return Response(list_plan_pictograms(request), status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['post'], url_path='detect-plan-type')
-    def detect_plan_type_action(self, request, pk=None):
-        """Step 1: classify the imported plan so the options can follow."""
-        plan = self.get_object()
-
-        settings_obj = UserOpenAISettings.objects.filter(user=request.user).first()
-        if not settings_obj:
-            return Response(
-                {"error": "Aucune clé API OpenAI enregistrée.", "error_code": "OPENAI_KEY_INVALID"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        image, error = load_plan_image(plan, dpi=200)
-        if error:
-            return Response({"error": error, "error_code": "IMAGE_SAVE_FAILED"},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        image_bytes = encode_image_to_png_bytes(image)
-        if image_bytes is None:
-            return Response({"error": "Impossible de préparer le plan.", "error_code": "IMAGE_SAVE_FAILED"},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            detection = detect_plan_type(image_bytes, settings_obj.get_api_key())
-        except PlanTypeDetectionError as exc:
-            logger.warning("openai_detect.failed diagnostic=%s", exc.diagnostic,
-                           extra={"user_id": request.user.id, "plan_id": plan.id})
-            return Response(
-                {"error": str(exc), "error_code": exc.error_code, "diagnostic": exc.diagnostic},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-        except Exception as exc:
-            logger.exception("openai_detect.unexpected",
-                             extra={"user_id": request.user.id, "plan_id": plan.id})
-            return Response(
-                {"error": "Erreur pendant la détection du type de plan.",
-                 "error_code": "DETECTION_FAILED", "diagnostic": exc.__class__.__name__},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-
-        return Response(detection.as_dict(), status=status.HTTP_200_OK)
-
-    @action(detail=True, methods=['post'], url_path='openai-clean-cost-estimate')
-    def openai_clean_cost_estimate(self, request, pk=None):
-        self.get_object()
-        serializer = OpenAICleanCostEstimateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        try:
-            estimate = estimate_cleaning_cost(**serializer.validated_data)
-        except ValueError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(estimate, status=status.HTTP_200_OK)
-
     @action(detail=True, methods=['post'], url_path='clean')
     def clean_plan(self, request, pk=None):
         plan = self.get_object()
-        img, error = load_plan_image(plan)
+        img, error = load_plan_image(plan, use_active_background=False)
         if error:
             return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -590,7 +514,7 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='clean-walls')
     def clean_walls(self, request, pk=None):
         plan = self.get_object()
-        img, error = load_plan_image(plan, dpi=250)
+        img, error = load_plan_image(plan, dpi=250, use_active_background=False)
         if error:
             return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -608,89 +532,126 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(plan)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['post'], url_path='openai-clean')
-    def openai_clean(self, request, pk=None):
+    @action(detail=True, methods=['post'], url_path='change-background')
+    def change_background(self, request, pk=None):
         plan = self.get_object()
-        serializer = OpenAICleanPlanSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        file_obj = request.FILES.get('background_file')
+        if not file_obj:
+            return Response({"error": "Aucun fichier fourni."}, status=status.HTTP_400_BAD_REQUEST)
 
-        settings_obj = UserOpenAISettings.objects.filter(user=request.user).first()
-        if not settings_obj:
-            return Response(
-                {"error": "Aucune clé API OpenAI enregistrée.", "error_code": "OPENAI_KEY_INVALID"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        extension = os.path.splitext(file_obj.name)[1].lower()
+        background_type = 'pdf' if extension == '.pdf' else 'image'
 
-        cost_estimate = estimate_cleaning_cost(
-            cleaning_mode=serializer.validated_data.get("cleaning_mode", "sketch_to_plan"),
-            quality=serializer.validated_data.get("quality", "medium"),
-            output_size=serializer.validated_data.get("output_size", "auto"),
-            verification_enabled=serializer.validated_data.get("verification_enabled", False),
-            max_automatic_corrections=serializer.validated_data.get("max_automatic_corrections", 0),
-        )
-
-        job = OpenAIPlanCleaningJob.objects.create(
-            user=request.user,
-            plan=plan,
-            status=OpenAIPlanCleaningJob.STATUS_PENDING,
-            options=serializer.validated_data,
-            estimated_cost_min=cost_estimate["estimated_min"],
-            estimated_cost_max=cost_estimate["estimated_max"],
-            pricing_currency=cost_estimate["currency"],
-            quality=cost_estimate["details"]["quality"],
-            generation_attempts=cost_estimate["details"]["generation_count_max"],
-            verification_enabled=cost_estimate["details"]["verification"],
-            detected_plan_type=serializer.validated_data.get("detected_plan_type", ""),
-            detection_confidence=serializer.validated_data.get("detection_confidence"),
-            detected_elements=serializer.validated_data.get("detected_elements") or {},
-            confirmed_plan_type=serializer.validated_data.get("plan_type", ""),
-            cleanup_level=normalize_cleanup_level(serializer.validated_data.get("niveau_nettoyage")),
-            cleaning_profile=serializer.validated_data.get("cleaning_profile", ""),
-        )
-        thread = threading.Thread(target=run_openai_cleaning_job, args=(job.id,), daemon=True)
-        thread.start()
-
-        return Response(serialize_openai_cleaning_job(job), status=status.HTTP_202_ACCEPTED)
-
-    @action(detail=True, methods=['get'], url_path='openai-clean-status')
-    def openai_clean_status(self, request, pk=None):
-        plan = self.get_object()
-        job_id = request.query_params.get("job_id")
-        jobs = OpenAIPlanCleaningJob.objects.filter(user=request.user, plan=plan)
-        if job_id:
-            jobs = jobs.filter(id=job_id)
-        job = jobs.order_by("-created_at").first()
-        if not job:
-            return Response({"error": "Traitement OpenAI introuvable.", "error_code": "JOB_NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
-        return Response(serialize_openai_cleaning_job(job), status=status.HTTP_200_OK)
-
-    @action(detail=True, methods=['post'], url_path='use-openai-cleaned')
-    def use_openai_cleaned(self, request, pk=None):
-        plan = self.get_object()
-        serializer = UseOpenAICleanedPlanSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        image_data = serializer.validated_data["image_data"]
-        _, encoded_image = image_data.split(";base64,", 1)
-        try:
-            image_bytes = base64.b64decode(encoded_image, validate=True)
-        except ValueError:
-            return Response({"error": "Image générée invalide."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if not save_cleaned_plan_bytes(
-            plan,
-            image_bytes,
-            "openai_cleaned",
-            PlanCleaningHistory.METHOD_OPENAI_APPLIED,
-            "Résultat OpenAI appliqué",
-        ):
-            return Response({"error": "Image générée invalide."}, status=status.HTTP_400_BAD_REQUEST)
+        plan.background_file = file_obj
+        plan.background_type = background_type
+        plan.cleaned_background_file = None
+        plan.use_cleaned_background = False
+        plan.save()
 
         serializer = self.get_serializer(plan)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['get'], url_path='openai-clean-history')
-    def openai_clean_history(self, request, pk=None):
+    @action(detail=True, methods=['post'], url_path='crop')
+    def crop(self, request, pk=None):
+        """Crop the current background image to a selected bounding box."""
+        plan = self.get_object()
+
+        try:
+            crop_x = float(request.data.get('x', 0))
+            crop_y = float(request.data.get('y', 0))
+            crop_w = float(request.data.get('width', 1))
+            crop_h = float(request.data.get('height', 1))
+        except (ValueError, TypeError):
+            return Response({"error": "Coordonnées de rognage invalides."}, status=status.HTTP_400_BAD_REQUEST)
+
+        is_normalized = bool(request.data.get('normalized', True))
+
+        img, error = load_plan_image(plan, dpi=150)
+        if error or img is None:
+            return Response({"error": error or "Impossible de charger le plan."}, status=status.HTTP_400_BAD_REQUEST)
+
+        img_h, img_w = img.shape[:2]
+
+        if is_normalized:
+            x1 = max(0, min(img_w - 1, int(crop_x * img_w)))
+            y1 = max(0, min(img_h - 1, int(crop_y * img_h)))
+            w = max(10, min(img_w - x1, int(crop_w * img_w)))
+            h = max(10, min(img_h - y1, int(crop_h * img_h)))
+        else:
+            x1 = max(0, min(img_w - 1, int(crop_x)))
+            y1 = max(0, min(img_h - 1, int(crop_y)))
+            w = max(10, min(img_w - x1, int(crop_w)))
+            h = max(10, min(img_h - y1, int(crop_h)))
+
+        x2 = min(img_w, x1 + w)
+        y2 = min(img_h, y1 + h)
+
+        if x2 - x1 < 10 or y2 - y1 < 10:
+            return Response({"error": "Zone de rognage trop petite."}, status=status.HTTP_400_BAD_REQUEST)
+
+        cropped_img = img[y1:y2, x1:x2]
+
+        if not save_cleaned_plan(
+            plan,
+            cropped_img,
+            "cropped",
+            PlanCleaningHistory.METHOD_LOCAL,
+            "Rognage du plan",
+        ):
+            return Response({"error": "Impossible d'enregistrer le plan rogné."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        serializer = self.get_serializer(plan)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='grok-clean')
+    def grok_clean(self, request, pk=None):
+        """Launch an asynchronous Grok cleaning job (analyse + image generation)."""
+        plan = self.get_object()
+
+        settings_obj = UserXaiSettings.objects.filter(user=request.user).first()
+        if not settings_obj:
+            return Response(
+                {"error": "Aucune clé API xAI enregistrée.", "error_code": "XAI_KEY_MISSING"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        background_color = "#FFFFFF"
+        preset = "evacuation"
+        if isinstance(request.data, dict):
+            if "background_color" in request.data:
+                background_color = str(request.data["background_color"]).strip() or "#FFFFFF"
+            if "preset" in request.data:
+                preset = str(request.data["preset"]).strip() or "evacuation"
+
+        job = GrokCleaningJob.objects.create(
+            user=request.user,
+            plan=plan,
+            status=GrokCleaningJob.STATUS_PENDING,
+            target_background_color=background_color,
+            preset=preset,
+        )
+        thread = threading.Thread(target=run_grok_cleaning_job, args=(job.id,), daemon=True)
+        thread.start()
+
+        return Response(serialize_grok_cleaning_job(job), status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=['get'], url_path='grok-clean-status')
+    def grok_clean_status(self, request, pk=None):
+        plan = self.get_object()
+        job_id = request.query_params.get("job_id")
+        jobs = GrokCleaningJob.objects.filter(user=request.user, plan=plan)
+        if job_id:
+            jobs = jobs.filter(id=job_id)
+        job = jobs.order_by("-created_at").first()
+        if not job:
+            return Response(
+                {"error": "Traitement introuvable.", "error_code": "JOB_NOT_FOUND"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(serialize_grok_cleaning_job(job), status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get'], url_path='cleaning-history')
+    def cleaning_history(self, request, pk=None):
         plan = self.get_object()
         history = PlanCleaningHistory.objects.filter(
             user=request.user,
@@ -699,24 +660,25 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         serializer = PlanCleaningHistorySerializer(history, many=True, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['post'], url_path='use-openai-clean-history')
-    def use_openai_clean_history(self, request, pk=None):
+    @action(detail=True, methods=['post'], url_path='use-cleaning-history')
+    def use_cleaning_history(self, request, pk=None):
         plan = self.get_object()
         serializer = UseCleaningHistorySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         history = PlanCleaningHistory.objects.filter(
             id=serializer.validated_data["history_id"],
-            user=request.user,
             plan=plan,
         ).first()
         if not history or not history.image_file:
             return Response({"error": "Historique de nettoyage introuvable."}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            image_bytes = history.image_file.read()
-        except OSError:
-            return Response({"error": "Image historique invalide."}, status=status.HTTP_400_BAD_REQUEST)
+            with history.image_file.open('rb') as f:
+                image_bytes = f.read()
+        except Exception as exc:
+            logger.exception("use_cleaning_history.file_read_failed")
+            return Response({"error": "Impossible de lire le fichier de l'historique."}, status=status.HTTP_400_BAD_REQUEST)
 
         if not save_cleaned_plan_bytes(plan, image_bytes, "history_restored", create_history=False):
             return Response({"error": "Image historique invalide."}, status=status.HTTP_400_BAD_REQUEST)
@@ -798,7 +760,11 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 rotation=icon_data.get('rotation', 0.0),
                 label=icon_data.get('label', ''),
                 anchor_x=icon_data.get('anchor_x'),
-                anchor_y=icon_data.get('anchor_y')
+                anchor_y=icon_data.get('anchor_y'),
+                leader_width=icon_data.get('leader_width', 2.0),
+                framed=icon_data.get('framed', False),
+                flip_x=icon_data.get('flip_x', False),
+                flip_y=icon_data.get('flip_y', False),
             )
             icon.save()
             created_icons.append(icon)
