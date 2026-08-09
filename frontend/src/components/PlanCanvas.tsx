@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect, useRef, useCallback, useImperativeHandle } from "react";
 import { Stage, Layer, Image as KonvaImage, Transformer, Group, Rect, Text, Line, Ellipse, Circle, Path } from "react-konva";
+import { SheetBlock, findPlanBlock } from "@/lib/sheetTemplates";
+import SheetBlockNode, { SheetLegendEntry } from "@/components/SheetBlockNode";
 import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource, getIconLeaderColor, isDirectionalIcon, isYouAreHereIcon } from "@/utils/safetyIcons";
 
 export interface CanvasIcon {
@@ -165,6 +167,42 @@ interface PlanCanvasProps {
   /** When true, the next click on the plan places a new text. */
   placementText?: boolean;
   onPlaceText?: (x: number, y: number) => void;
+
+  // ── Sheet mode ────────────────────────────────────────────────────────────
+  /**
+   * When set, the studio stops showing the bare plan and shows the printed
+   * sheet instead: the plan is drawn inside its window and the template's
+   * blocks — banner, notices, legend, logos — are laid around it, each one
+   * draggable and resizable with the mouse.
+   */
+  sheet?: {
+    width: number;
+    height: number;
+    blocks: SheetBlock[];
+  } | null;
+  onSheetBlocksChange?: (blocks: SheetBlock[]) => void;
+  selectedBlockId?: string | null;
+  onSelectBlock?: (id: string | null) => void;
+  /** Logos available to the sheet's `image` blocks. */
+  sheetImages?: Partial<Record<string, HTMLImageElement | null>>;
+  /** Rows of the legend block, built from the pictograms actually placed. */
+  sheetLegendEntries?: SheetLegendEntry[];
+  /** Pictogram artwork for `picto` blocks, keyed by icon type. */
+  sheetPictoImages?: Partial<Record<string, HTMLImageElement | null>>;
+  /**
+   * Placing a pictogram outside the plan's window drops it on the sheet itself,
+   * so a symbol can sit in a heading or beside a notice. Coordinates are in
+   * sheet units.
+   */
+  onPlaceSheetIcon?: (type: IconType, x: number, y: number) => void;
+  /**
+   * When on, dragging the plan reframes it inside its window instead of moving
+   * the window across the sheet. Holding Alt does the same for one gesture.
+   */
+  planReframeMode?: boolean;
+  /** How the plan sits inside its window: zoom in %, then a nudge in sheet units. */
+  planPlacement?: { scale: number; offsetX: number; offsetY: number };
+  onPlanPlacementChange?: (placement: { scale: number; offsetX: number; offsetY: number }) => void;
 }
 
 export interface PlanCanvasHandle {
@@ -288,6 +326,17 @@ function PlanCanvas({
   onSelectText,
   placementText = false,
   onPlaceText,
+  sheet = null,
+  onSheetBlocksChange,
+  selectedBlockId = null,
+  onSelectBlock,
+  sheetImages = {},
+  sheetLegendEntries = [],
+  sheetPictoImages = {},
+  onPlaceSheetIcon,
+  planReframeMode = false,
+  planPlacement = { scale: 100, offsetX: 0, offsetY: 0 },
+  onPlanPlacementChange,
   canvasRef
 }: PlanCanvasProps & { canvasRef?: React.Ref<PlanCanvasHandle> }) {
   const stageRef = useRef<any>(null);
@@ -369,7 +418,7 @@ function PlanCanvas({
 
   const beginShape = (stage: any) => {
     if (!shapeTool || isPolygonTool(shapeTool)) return;
-    const point = stage.getAbsoluteTransform().copy().invert().point(stage.getPointerPosition());
+    const point = pointerInPlanCoords(stage);
     if (!point) return;
 
     draftOriginRef.current = { x: point.x, y: point.y };
@@ -391,7 +440,7 @@ function PlanCanvas({
     const current = draftShapeRef.current;
     if (!origin || !current || !shapeTool) return;
 
-    const point = stage.getAbsoluteTransform().copy().invert().point(stage.getPointerPosition());
+    const point = pointerInPlanCoords(stage);
     if (!point) return;
 
     if (current.shape_type === "line") {
@@ -891,6 +940,95 @@ function PlanCanvas({
     return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
   }, [icons, shapes, texts, imageSize]);
 
+  // ── Sheet mode geometry ───────────────────────────────────────────────────
+  const planBlock = React.useMemo(() => (sheet ? findPlanBlock(sheet.blocks) : null), [sheet]);
+
+  /**
+   * Where the plan sits on the sheet. The plan is fitted inside its window —
+   * turned, so it is the rotated bounding box that has to fit — then the user's
+   * zoom and nudge are applied on top.
+   */
+  const planTransform = React.useMemo(() => {
+    if (!planBlock || !contentBounds.width || !contentBounds.height) {
+      return { x: 0, y: 0, scale: 1 };
+    }
+
+    const radians = (planRotation * Math.PI) / 180;
+    const cos = Math.abs(Math.cos(radians));
+    const sin = Math.abs(Math.sin(radians));
+    const rotatedWidth = contentBounds.width * cos + contentBounds.height * sin;
+    const rotatedHeight = contentBounds.width * sin + contentBounds.height * cos;
+
+    const fit = Math.min(planBlock.width / rotatedWidth, planBlock.height / rotatedHeight);
+    const scale = fit * (Math.max(10, planPlacement.scale) / 100);
+
+    const centreX = contentBounds.x + contentBounds.width / 2;
+    const centreY = contentBounds.y + contentBounds.height / 2;
+
+    return {
+      x: planBlock.x + planBlock.width / 2 - centreX * scale + planPlacement.offsetX,
+      y: planBlock.y + planBlock.height / 2 - centreY * scale + planPlacement.offsetY,
+      scale
+    };
+  }, [planBlock, contentBounds, planRotation, planPlacement]);
+
+  const updateSheetBlock = useCallback(
+    (id: string, patch: Partial<SheetBlock>) => {
+      if (!sheet || !onSheetBlocksChange) return;
+      onSheetBlocksChange(
+        sheet.blocks.map((block) => (block.id === id ? { ...block, ...patch } : block))
+      );
+    },
+    [sheet, onSheetBlocksChange]
+  );
+
+  const planBlockSelected = Boolean(planBlock && selectedBlockId === planBlock.id);
+
+  /** Pointer in sheet units. Blocks sit straight on the layer, so this is the
+   *  stage transform — no plan placement involved. */
+  const pointerInSheetCoords = (stage: any) => {
+    const pointer = stage?.getPointerPosition();
+    if (!stage || !pointer) return null;
+    return stage.getAbsoluteTransform().copy().invert().point(pointer);
+  };
+
+  const isInsidePlanWindow = (point: { x: number; y: number }) =>
+    Boolean(
+      planBlock &&
+        planBlock.visible &&
+        point.x >= planBlock.x &&
+        point.x <= planBlock.x + planBlock.width &&
+        point.y >= planBlock.y &&
+        point.y <= planBlock.y + planBlock.height
+    );
+
+  // ── In-place text editing ─────────────────────────────────────────────────
+  // Double-clicking a block opens a textarea laid exactly over it, so copy is
+  // typed on the sheet rather than in a side panel.
+  const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
+  const editingBlock = sheet ? sheet.blocks.find((block) => block.id === editingBlockId) ?? null : null;
+
+  useEffect(() => {
+    if (!sheet) setEditingBlockId(null);
+  }, [sheet]);
+
+  const editorBox = React.useMemo(() => {
+    if (!editingBlock) return null;
+    const titleHeight = editingBlock.title ? editingBlock.titleHeight ?? 30 : 0;
+    const padding = editingBlock.padding ?? 8;
+    return {
+      left: (stagePos.x + (editingBlock.x + padding) * zoom),
+      top: stagePos.y + (editingBlock.y + titleHeight) * zoom,
+      width: Math.max(30, (editingBlock.width - padding * 2) * zoom),
+      height: Math.max(24, (editingBlock.height - titleHeight) * zoom),
+      fontSize: (editingBlock.fontSize ?? 14) * zoom,
+      lineHeight: editingBlock.lineHeight ?? 1.3,
+      align: editingBlock.align ?? "left",
+      color: editingBlock.color ?? "#1a1a1a",
+      bold: (editingBlock.fontStyle ?? "normal").includes("bold")
+    };
+  }, [editingBlock, stagePos, zoom]);
+
   /** Plan units -> pixels of the working canvas (a PDF is rasterised much larger). */
   const canvasScale = editedBackground && imageSize.width
     ? editedBackground.width / imageSize.width
@@ -948,10 +1086,16 @@ function PlanCanvas({
     layerRef.current?.batchDraw();
   };
 
+  /**
+   * Pointer -> plan coordinates. On the sheet the plan is nested inside its
+   * window and scaled to fit it, so the stage transform is no longer the one
+   * that maps a click onto the plan: the placement group's is.
+   */
   const pointerInPlanCoords = (stage: any) => {
     const pointer = stage?.getPointerPosition();
     if (!stage || !pointer) return null;
-    return stage.getAbsoluteTransform().copy().invert().point(pointer);
+    const placement = sheet ? stage.findOne(".planPlacement") : null;
+    return (placement || stage).getAbsoluteTransform().copy().invert().point(pointer);
   };
 
   const beginEraseStroke = (stage: any) => {
@@ -1063,21 +1207,28 @@ function PlanCanvas({
     if (!width || !height) return;
     if (!contentBounds.width || !contentBounds.height) return;
 
+    // In sheet mode the printed page is what has to be framed, and it never
+    // turns: the plan's rotation happens inside its own window.
+    const bounds = sheet
+      ? { x: 0, y: 0, width: sheet.width, height: sheet.height }
+      : contentBounds;
+    const angle = sheet ? 0 : planRotation;
+
     // Fit the whole sheet, not just the plan: icons placed outside must stay in
     // view. Turned, the sheet needs its rotated bounding box or it spills over.
-    const radians = (planRotation * Math.PI) / 180;
+    const radians = (angle * Math.PI) / 180;
     const cos = Math.abs(Math.cos(radians));
     const sin = Math.abs(Math.sin(radians));
-    const rotatedWidth = contentBounds.width * cos + contentBounds.height * sin;
-    const rotatedHeight = contentBounds.width * sin + contentBounds.height * cos;
+    const rotatedWidth = bounds.width * cos + bounds.height * sin;
+    const rotatedHeight = bounds.width * sin + bounds.height * cos;
 
     const scale = Math.min(width / rotatedWidth, height / rotatedHeight) * FIT_VIEWPORT_RATIO;
     const clampedScale = Math.max(0.1, Math.min(5, scale));
 
     // The scene pivots on the sheet's centre, so that point stays put: park it
     // in the middle of the workspace.
-    const centreX = contentBounds.x + contentBounds.width / 2;
-    const centreY = contentBounds.y + contentBounds.height / 2;
+    const centreX = bounds.x + bounds.width / 2;
+    const centreY = bounds.y + bounds.height / 2;
 
     setZoom(clampedScale);
     setStagePos({
@@ -1088,7 +1239,7 @@ function PlanCanvas({
     // This position is already correct for the new size — tell the centre-keeping
     // effect not to shift it again when it observes the resize.
     previousStageSizeRef.current = { width, height };
-  }, [contentBounds, planRotation, setZoom]);
+  }, [contentBounds, planRotation, setZoom, sheet]);
 
   // Re-measure after every render. A dock collapsing or the workspace-width
   // setting changing resizes this container without firing any resize event,
@@ -1231,7 +1382,8 @@ function PlanCanvas({
       const activeId =
         selectedIconId ||
         selectedTextId ||
-        (isPolygonShape(selectedShape?.shape_type) ? null : selectedShapeId);
+        (isPolygonShape(selectedShape?.shape_type) ? null : selectedShapeId) ||
+        selectedBlockId;
       if (activeId) {
         const selectedNode = stage.findOne("." + activeId);
         if (selectedNode) {
@@ -1243,7 +1395,7 @@ function PlanCanvas({
       transformerRef.current.nodes([]);
       transformerRef.current.getLayer().batchDraw();
     }
-  }, [selectedIconId, selectedShapeId, selectedTextId, icons, shapes, texts]);
+  }, [selectedIconId, selectedShapeId, selectedTextId, selectedBlockId, icons, shapes, texts, sheet]);
 
   // Keyboard shortcut to delete the selected icon or shape
   useEffect(() => {
@@ -1310,7 +1462,18 @@ function PlanCanvas({
       const pointer = stage?.getPointerPosition();
       if (!stage || !pointer) return;
 
-      const planPoint = stage.getAbsoluteTransform().copy().invert().point(pointer);
+      // On the sheet, dropping a pictogram outside the plan's window puts it on
+      // the page itself — in a heading, beside a notice, inside the legend.
+      if (sheet && onPlaceSheetIcon) {
+        const sheetPoint = pointerInSheetCoords(stage);
+        if (sheetPoint && !isInsidePlanWindow(sheetPoint)) {
+          onPlaceSheetIcon(placementIconType, sheetPoint.x, sheetPoint.y);
+          return;
+        }
+      }
+
+      const planPoint = pointerInPlanCoords(stage);
+      if (!planPoint) return;
       const iconWidth = Math.max(15, placementIconSize.width);
       const iconHeight = Math.max(15, placementIconSize.height);
 
@@ -1329,16 +1492,28 @@ function PlanCanvas({
       const pointer = stage?.getPointerPosition();
       if (!stage || !pointer) return;
 
-      const planPoint = stage.getAbsoluteTransform().copy().invert().point(pointer);
+      const planPoint = pointerInPlanCoords(stage);
+      if (!planPoint) return;
       onPlaceText(planPoint.x, planPoint.y);
       return;
     }
 
-    // Clicked on stage background -> deselect
-    if (e.target === e.target.getStage() || e.target.name() === "bgImage") {
+    // On the sheet, clicking the plan itself picks the plan window, so it can be
+    // moved and resized like any other block without hunting for a handle.
+    if (sheet && planBlock && (e.target.name() === "bgImage" || e.target.name() === "planWindow")) {
       onSelectIcon(null);
       onSelectShape?.(null);
       onSelectText?.(null);
+      onSelectBlock?.(planBlock.id);
+      return;
+    }
+
+    // Clicked on stage background -> deselect
+    if (e.target === e.target.getStage() || e.target.name() === "bgImage" || e.target.name() === "sheetPaper") {
+      onSelectIcon(null);
+      onSelectShape?.(null);
+      onSelectText?.(null);
+      onSelectBlock?.(null);
       return;
     }
   };
@@ -1464,6 +1639,105 @@ function PlanCanvas({
         }}
       >
         <Layer ref={layerRef}>
+          {/* ── Sheet mode: the printed page behind everything ── */}
+          {sheet && (
+            <Rect
+              name="sheetPaper"
+              x={0}
+              y={0}
+              width={sheet.width}
+              height={sheet.height}
+              fill="#ffffff"
+              shadowColor="#000000"
+              shadowBlur={24 / Math.max(zoom, 0.1)}
+              shadowOpacity={0.55}
+              shadowOffsetY={6 / Math.max(zoom, 0.1)}
+            />
+          )}
+
+          {/* The plan window's backing. It is also the node the Transformer
+              resizes, which is why it carries the block's name. */}
+          {sheet && planBlock && planBlock.visible && (
+            <Rect
+              name={planBlock.id}
+              id={planBlock.id}
+              x={planBlock.x}
+              y={planBlock.y}
+              width={planBlock.width}
+              height={planBlock.height}
+              fill={planBlock.fill || "#ffffff"}
+              cornerRadius={planBlock.cornerRadius ?? 0}
+              onTransformEnd={(event: any) => {
+                const node = event.target;
+                const scaleX = Math.abs(node.scaleX());
+                const scaleY = Math.abs(node.scaleY());
+                node.scaleX(1);
+                node.scaleY(1);
+                updateSheetBlock(planBlock.id, {
+                  x: Math.round(node.x()),
+                  y: Math.round(node.y()),
+                  width: Math.max(80, Math.round(planBlock.width * scaleX)),
+                  height: Math.max(80, Math.round(planBlock.height * scaleY))
+                });
+              }}
+            />
+          )}
+
+          {/* The plan window: clips the plan to the frame, and drags it — with
+              its content — across the sheet. Holding Alt reframes the plan
+              inside the window instead of moving the window. */}
+          <Group
+            name="planWindowClip"
+            clipFunc={
+              sheet && planBlock && planBlock.visible
+                ? (context: any) => {
+                    context.rect(planBlock.x, planBlock.y, planBlock.width, planBlock.height);
+                  }
+                : undefined
+            }
+            draggable={Boolean(sheet) && mode === "select" && planBlockSelected}
+            onDragEnd={(event: any) => {
+              if (!sheet || !planBlock) return;
+              const node = event.target;
+              if (node.name() !== "planWindowClip") return;
+              const dx = node.x();
+              const dy = node.y();
+              node.position({ x: 0, y: 0 });
+              if (!dx && !dy) return;
+              updateSheetBlock(planBlock.id, {
+                x: Math.round(planBlock.x + dx),
+                y: Math.round(planBlock.y + dy)
+              });
+            }}
+          >
+            <Group
+              name="planPlacement"
+              x={sheet ? planTransform.x : 0}
+              y={sheet ? planTransform.y : 0}
+              scaleX={sheet ? planTransform.scale : 1}
+              scaleY={sheet ? planTransform.scale : 1}
+              draggable={Boolean(sheet) && mode === "select" && planBlockSelected}
+              onDragStart={(event: any) => {
+                // Both the window and the plan inside it are draggable, and Konva
+                // always picks the innermost one. Alt is the switch: without it,
+                // hand the gesture back to the window so the whole block moves.
+                if (planReframeMode || event.evt?.altKey) return;
+                const node = event.target;
+                if (node.name() !== "planPlacement") return;
+                node.stopDrag();
+                node.getParent()?.startDrag(event.evt);
+              }}
+              onDragEnd={(event: any) => {
+                if (!sheet || !onPlanPlacementChange) return;
+                const node = event.target;
+                if (node.name() !== "planPlacement") return;
+                onPlanPlacementChange({
+                  ...planPlacement,
+                  offsetX: Math.round(planPlacement.offsetX + (node.x() - planTransform.x)),
+                  offsetY: Math.round(planPlacement.offsetY + (node.y() - planTransform.y))
+                });
+              }}
+            >
           {/* Everything that belongs to the sheet turns together, pivoting on the
               sheet's centre: the plan, the shapes, the leader lines and the
               pictogram positions keep their exact relationship. */}
@@ -1477,7 +1751,7 @@ function PlanCanvas({
           >
           {/* Sheet backing: the plan plus anything placed outside it. Also the
               rectangle the export captures — see getStageDataUrl. */}
-          {bgImage && (
+          {!sheet && bgImage && (
             <Rect
               x={contentBounds.x}
               y={contentBounds.y}
@@ -1930,6 +2204,53 @@ function PlanCanvas({
             );
           })}
           </Group>
+            </Group>
+          </Group>
+
+          {/* The window's rule, drawn over the plan so the frame stays crisp
+              whatever the plan bleeds to its edges. */}
+          {sheet && planBlock && planBlock.visible && planBlock.strokeWidth ? (
+            <Rect
+              name="planWindowBorder"
+              x={planBlock.x}
+              y={planBlock.y}
+              width={planBlock.width}
+              height={planBlock.height}
+              stroke={planBlock.stroke}
+              strokeWidth={planBlock.strokeWidth}
+              cornerRadius={planBlock.cornerRadius ?? 0}
+              listening={false}
+            />
+          ) : null}
+
+          {/* ── Sheet blocks: banner, notices, legend, logos ── */}
+          {sheet &&
+            sheet.blocks
+              .filter((block) => block.kind !== "plan")
+              .map((block) => (
+                <SheetBlockNode
+                  key={block.id}
+                  block={block}
+                  isSelected={selectedBlockId === block.id}
+                  editable={mode === "select"}
+                  legendEntries={sheetLegendEntries}
+                  images={sheetImages}
+                  pictoImages={sheetPictoImages}
+                  onSelect={(id) => {
+                    onSelectIcon(null);
+                    onSelectShape?.(null);
+                    onSelectText?.(null);
+                    onSelectBlock?.(id);
+                  }}
+                  onChange={updateSheetBlock}
+                  onEditText={(id) => {
+                    const target = sheet.blocks.find((item) => item.id === id);
+                    if (!target || target.kind === "image" || target.kind === "picto") return;
+                    onSelectBlock?.(id);
+                    setEditingBlockId(id);
+                  }}
+                />
+              ))}
 
           {/* Selection Transformer handles resizing & rotation */}
           {mode === "select" && (
@@ -1964,9 +2285,62 @@ function PlanCanvas({
         </Layer>
       </Stage>
 
+      {/* In-place text editing: a textarea laid over the block being edited, so
+          the copy is typed where it will be printed. */}
+      {editingBlock && editorBox && (
+        <textarea
+          autoFocus
+          value={editingBlock.text ?? ""}
+          onChange={(event) => updateSheetBlock(editingBlock.id, { text: event.target.value })}
+          onBlur={() => setEditingBlockId(null)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setEditingBlockId(null);
+            }
+            // Enter inserts a line break; Cmd/Ctrl+Enter closes the editor.
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              setEditingBlockId(null);
+            }
+            event.stopPropagation();
+          }}
+          style={{
+            position: "absolute",
+            left: editorBox.left,
+            top: editorBox.top,
+            width: editorBox.width,
+            height: editorBox.height,
+            fontSize: editorBox.fontSize,
+            lineHeight: editorBox.lineHeight,
+            textAlign: editorBox.align,
+            color: editorBox.color,
+            fontWeight: editorBox.bold ? 700 : 400,
+            fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
+            textTransform: editingBlock.uppercase ? "uppercase" : "none",
+            background: "rgba(255,255,255,0.97)",
+            border: "2px solid #3b82f6",
+            outline: "none",
+            resize: "none",
+            padding: 0,
+            margin: 0,
+            overflow: "hidden",
+            zIndex: 20
+          }}
+        />
+      )}
+
+      {editingBlock && (
+        <div className="pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 select-none rounded-md border border-sky-500/40 bg-sky-500/15 px-3 py-1.5 text-[11px] font-medium text-sky-200 backdrop-blur-sm">
+          Saisie directe &middot; Échap ou clic ailleurs pour terminer
+        </div>
+      )}
+
       {placementIconType && (
         <div className="pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 select-none rounded-md border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-medium text-emerald-300 backdrop-blur-sm">
-          Cliquez sur le plan pour placer l&apos;équipement &middot; Échap pour annuler
+          {sheet
+            ? "Cliquez sur le plan pour l'équipement, ailleurs sur la feuille pour un pictogramme libre · Échap pour annuler"
+            : "Cliquez sur le plan pour placer l'équipement · Échap pour annuler"}
         </div>
       )}
 

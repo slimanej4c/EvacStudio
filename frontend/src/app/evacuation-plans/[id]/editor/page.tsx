@@ -10,6 +10,18 @@ import { CropModal } from "@/components/CropModal";
 import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource, isYouAreHereIcon, inferPictogramColor } from "@/utils/safetyIcons";
 import { CanvasIcon, CanvasShape, CanvasText, ShapeKind, EraserShape, PlanCanvasHandle, FONT_OPTIONS } from "@/components/PlanCanvas";
 import { buildApiUrl } from "@/lib/api";
+import {
+  SHEET_WIDTH,
+  SHEET_HEIGHT,
+  SHEET_TEMPLATES,
+  SheetBlock,
+  SheetTemplateKey,
+  createSheetBlocks,
+  createFreeTextBlock,
+  createPictoBlock,
+  findPlanBlock
+} from "@/lib/sheetTemplates";
+import type { SheetLegendEntry } from "@/components/SheetBlockNode";
 import jsPDF from "jspdf";
 
 // Dynamically load PlanCanvas with SSR disabled since Konva depends on the DOM
@@ -815,6 +827,18 @@ export default function PlanEditorPage() {
   // tells us whether leaving the editor would discard work.
   const [savedSnapshot, setSavedSnapshot] = useState("");
   const [pendingNav, setPendingNav] = useState(false);
+  // ── Studio sheet mode ──────────────────────────────────────────────────────
+  // "plan" keeps the bare plan on screen, the way the editor has always worked;
+  // a template shows the printed sheet around it, editable in place.
+  const [sheetTemplate, setSheetTemplate] = useState<SheetTemplateKey | "none">("none");
+  const [sheetBlocks, setSheetBlocks] = useState<SheetBlock[]>([]);
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [sheetPlanPlacement, setSheetPlanPlacement] = useState({ scale: 100, offsetX: 0, offsetY: 0 });
+  const [sheetReframeMode, setSheetReframeMode] = useState(false);
+  const [sheetLogoImages, setSheetLogoImages] = useState<Record<string, HTMLImageElement | null>>({});
+  const [sheetLegendImages, setSheetLegendImages] = useState<Record<string, HTMLImageElement>>({});
+  const [sheetExporting, setSheetExporting] = useState(false);
+
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportSaveConfirmOpen, setExportSaveConfirmOpen] = useState(false);
   const [pendingExportAction, setPendingExportAction] = useState<(() => Promise<void>) | null>(null);
@@ -1859,21 +1883,147 @@ export default function PlanEditorPage() {
   const youAreHereIcon = icons.find((icon) => isYouAreHereIcon(icon.icon_type, iconDefinitions));
   const planReadingAngle = youAreHereIcon ? youAreHereIcon.rotation : null;
 
-  const previousReadingAngleRef = useRef<number | null>(null);
-  useEffect(() => {
-    const previous = previousReadingAngleRef.current;
-    previousReadingAngleRef.current = planReadingAngle;
+  /**
+   * How far the plan is actually turned on screen. The marker's rotation is the
+   * direction the reader faces, so the sheet has to turn by the opposite angle
+   * for that direction to end up pointing at the top of the page. The manual
+   * ⟲/⟳ steps compose with it rather than replacing it.
+   */
+  const effectivePlanRotation = ((canvasRotation - (planReadingAngle ?? 0)) % 360 + 360) % 360;
 
-    if (planReadingAngle !== null) {
-      setExportPlanRotation(planReadingAngle);
+  // Keep the export's own angle — the compass needle, the render cache key — on
+  // the same value the studio is displaying, so the two can never disagree.
+  useEffect(() => {
+    setExportPlanRotation(effectivePlanRotation);
+  }, [effectivePlanRotation]);
+  const usedIconTypes = Array.from(new Set(icons.map((icon) => icon.icon_type)));
+
+  // ── Sheet mode plumbing ────────────────────────────────────────────────────
+  const sheetActive = sheetTemplate !== "none" && sheetBlocks.length > 0;
+
+  /** Identity-stable so the canvas does not refit on every keystroke. */
+  const sheetProp = useMemo(
+    () => (sheetActive ? { width: SHEET_WIDTH, height: SHEET_HEIGHT, blocks: sheetBlocks } : null),
+    [sheetActive, sheetBlocks]
+  );
+
+  const selectedBlock = useMemo(
+    () => sheetBlocks.find((block) => block.id === selectedBlockId) ?? null,
+    [sheetBlocks, selectedBlockId]
+  );
+
+  const updateSelectedBlock = (patch: Partial<SheetBlock>) => {
+    if (!selectedBlockId) return;
+    setSheetBlocks((blocks) =>
+      blocks.map((block) => (block.id === selectedBlockId ? { ...block, ...patch } : block))
+    );
+  };
+
+  const applySheetTemplate = (template: SheetTemplateKey | "none") => {
+    setSheetTemplate(template);
+    setSelectedBlockId(null);
+    if (template === "none") {
+      setSheetBlocks([]);
       return;
     }
+    setSheetBlocks(
+      createSheetBlocks(template, {
+        // A title the user typed is carried over; an untouched preset is not, so
+        // the template keeps its own regulatory wording.
+        planTitle: isUntouchedExportTitle(exportPlanTitle) ? undefined : exportPlanTitle,
+        siteName: exportSiteName || plan?.building_name || ""
+      })
+    );
+    setSheetPlanPlacement({ scale: 100, offsetX: 0, offsetY: 0 });
+    // Frame the whole page as soon as it appears.
+    window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
+  };
 
-    // The marker drove the orientation and has just been deleted: drop the angle
-    // with it, otherwise the sheet stays turned with nothing explaining why.
-    if (previous !== null) setExportPlanRotation(0);
-  }, [planReadingAngle]);
-  const usedIconTypes = Array.from(new Set(icons.map((icon) => icon.icon_type)));
+  // Logos live as data URLs in the export settings; the sheet needs them decoded.
+  useEffect(() => {
+    let cancelled = false;
+    const decode = async (src: string) => {
+      if (!src) return null;
+      try {
+        return await loadImage(src);
+      } catch {
+        return null;
+      }
+    };
+
+    void Promise.all([decode(exportClientLogo), decode(exportStudioLogo)]).then(([client, studio]) => {
+      if (cancelled) return;
+      setSheetLogoImages({ clientLogo: client, studioLogo: studio });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [exportClientLogo, exportStudioLogo]);
+
+  // Pictogram artwork for the legend rows and for the pictograms dropped on the
+  // sheet itself. Loaded once per icon type, then reused.
+  const sheetPictoTypes = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          sheetBlocks
+            .filter((block) => block.kind === "picto" && block.iconType)
+            .map((block) => block.iconType as IconType)
+        )
+      ),
+    [sheetBlocks]
+  );
+  const usedIconTypesKey = Array.from(new Set([...usedIconTypes, ...sheetPictoTypes])).join("|");
+  useEffect(() => {
+    if (!sheetActive) return;
+    let cancelled = false;
+
+    void Promise.all(
+      usedIconTypesKey.split("|").filter(Boolean).map(async (type) => {
+        const src = getIconImageSource(type as IconType, iconDefinitions);
+        if (!src) return null;
+        try {
+          return { type, image: await loadImage(src) };
+        } catch {
+          return null;
+        }
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      setSheetLegendImages((current) => {
+        const next = { ...current };
+        results.forEach((entry) => {
+          if (entry) next[entry.type] = entry.image;
+        });
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheetActive, usedIconTypesKey, iconDefinitions]);
+
+  const sheetLegendEntries: SheetLegendEntry[] = useMemo(
+    () =>
+      usedIconTypes.map((type) => ({
+        type,
+        label: iconDefinitions[type]?.label || String(type),
+        image: sheetLegendImages[type] ?? null
+      })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [usedIconTypesKey, iconDefinitions, sheetLegendImages]
+  );
+
+  /** A pictogram dropped on the page rather than on the drawing. */
+  const handlePlaceSheetIcon = (type: IconType, x: number, y: number) => {
+    const block = createPictoBlock(type, iconDefinitions[type]?.label || String(type), x, y);
+    setSheetBlocks((blocks) => [...blocks, block]);
+    setSelectedBlockId(block.id);
+    setPlacementIconType(null);
+  };
 
   const handleUpdateSelectedIcon = (field: keyof CanvasIcon, value: any) => {
     if (!selectedIconId) return;
@@ -4457,6 +4607,69 @@ export default function PlanEditorPage() {
     pdf.save(`${plan?.title || "plan"}_evacuation.pdf`);
   };
 
+  /**
+   * Export of the studio sheet. There is nothing to re-draw: the page on screen
+   * *is* the deliverable, so the export is a high-resolution capture of exactly
+   * the sheet rectangle — what you arranged is what you get.
+   */
+  const exportSheet = async (format: "png" | "pdf") => {
+    const stage = getStageInstance();
+    if (!stage) return;
+
+    setSheetExporting(true);
+    // Clear every selection so no handle or highlight is baked into the sheet.
+    setSelectedIconId(null);
+    setSelectedShapeId(null);
+    setSelectedTextId(null);
+    setSelectedBlockId(null);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const previousView = {
+      x: stage.x(),
+      y: stage.y(),
+      scaleX: stage.scaleX(),
+      scaleY: stage.scaleY()
+    };
+
+    try {
+      // The capture is expressed in absolute stage coordinates, so neutralise
+      // the view transform: the exported page must not depend on the zoom.
+      stage.position({ x: 0, y: 0 });
+      stage.scale({ x: 1, y: 1 });
+      stage.draw();
+
+      const dataUrl = stage.toDataURL({
+        x: 0,
+        y: 0,
+        width: SHEET_WIDTH,
+        height: SHEET_HEIGHT,
+        pixelRatio: EXPORT_OUTPUT_SCALE
+      });
+
+      if (format === "png") {
+        const link = document.createElement("a");
+        link.download = `${plan?.title || "plan"}_${sheetTemplate}.png`;
+        link.href = dataUrl;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } else {
+        const paper = EXPORT_PAPER_SIZES[exportPaperFormat];
+        const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: exportPaperFormat });
+        pdf.addImage(dataUrl, "PNG", 0, 0, paper.widthMm, paper.heightMm);
+        pdf.save(`${plan?.title || "plan"}_${sheetTemplate}.pdf`);
+      }
+    } catch (err) {
+      console.error("Sheet export failed:", err);
+      alert("Impossible d'exporter la feuille. Rechargez la page puis réessayez.");
+    } finally {
+      stage.position({ x: previousView.x, y: previousView.y });
+      stage.scale({ x: previousView.scaleX, y: previousView.scaleY });
+      stage.draw();
+      setSheetExporting(false);
+    }
+  };
+
   const triggerExportWithConfirmation = (action: () => Promise<void>) => {
     if (hasUnsavedChanges()) {
       setPendingExportAction(() => action);
@@ -4684,9 +4897,15 @@ export default function PlanEditorPage() {
                     ? "text-neutral-500 cursor-default"
                     : "bg-sky-500/20 text-sky-300 hover:bg-sky-500/40 cursor-pointer"
                 }`}
-                title="Remettre la rotation du plan à 0° (Réinitialiser)"
+                title={
+                  planReadingAngle === null
+                    ? "Remettre la rotation du plan à 0° (Réinitialiser)"
+                    : `Rotation totale ${effectivePlanRotation}° = ${canvasRotation}° manuels ${
+                        planReadingAngle >= 0 ? "−" : "+"
+                      } ${Math.abs(Math.round(planReadingAngle))}° du repère « Vous êtes ici ». Cliquez pour remettre la part manuelle à 0°.`
+                }
               >
-                {canvasRotation}° (0°)
+                {effectivePlanRotation}°{planReadingAngle !== null ? " ↻" : ""}
               </button>
               <button
                 type="button"
@@ -4698,7 +4917,59 @@ export default function PlanEditorPage() {
               </button>
             </div>
 
-            <ExportButtons onOpenExport={openExportTemplate} />
+            {/* Affichage: bare plan, or the printed sheet edited in place */}
+            <div className="flex items-center gap-1 rounded bg-black/25 px-1.5 py-0.5">
+              <Eye className="h-3.5 w-3.5 text-neutral-400" />
+              <span className="text-[10px] font-semibold text-neutral-400">Affichage :</span>
+              <select
+                value={sheetTemplate}
+                onChange={(event) => applySheetTemplate(event.target.value as SheetTemplateKey | "none")}
+                title="Travailler sur le plan seul, ou sur la feuille complète avec ses côtés"
+                className="cursor-pointer rounded bg-transparent px-1 py-0.5 text-[11px] font-semibold text-neutral-200 outline-none hover:bg-white/10"
+              >
+                <option value="none" className="bg-[#2d2d30]">Plan seul</option>
+                {(Object.keys(SHEET_TEMPLATES) as SheetTemplateKey[]).map((key) => (
+                  <option key={key} value={key} className="bg-[#2d2d30]">
+                    Feuille {SHEET_TEMPLATES[key].label}
+                  </option>
+                ))}
+              </select>
+              {sheetActive && (
+                <button
+                  type="button"
+                  onClick={() => applySheetTemplate(sheetTemplate as SheetTemplateKey)}
+                  title="Réinitialiser la mise en page du modèle"
+                  className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+
+            {sheetActive ? (
+              <div className="flex items-center gap-0.5 rounded bg-black/25 p-0.5">
+                <button
+                  onClick={() => void exportSheet("png")}
+                  disabled={sheetExporting}
+                  className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
+                  title="Exporter la feuille affichée en PNG"
+                >
+                  {sheetExporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                  <span>PNG</span>
+                </button>
+                <button
+                  onClick={() => void exportSheet("pdf")}
+                  disabled={sheetExporting}
+                  className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
+                  title={`Exporter la feuille affichée en PDF ${EXPORT_PAPER_SIZES[exportPaperFormat].label}`}
+                >
+                  {sheetExporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}
+                  <span>PDF</span>
+                </button>
+              </div>
+            ) : (
+              <ExportButtons onOpenExport={openExportTemplate} />
+            )}
 
             <span className="h-5 w-px bg-white/10" />
 
@@ -4815,14 +5086,26 @@ export default function PlanEditorPage() {
                   icons={icons}
                   onIconsChange={handleIconsChange}
                   selectedIconId={selectedIconId}
-                  planRotation={canvasRotation}
+                  planRotation={effectivePlanRotation}
                   onSelectIcon={(iconId) => {
                     setSelectedIconId(iconId);
                     if (iconId) {
                       setSelectedShapeId(null);
                       setSelectedTextId(null);
+                      setSelectedBlockId(null);
                     }
                   }}
+                  sheet={sheetProp}
+                  onSheetBlocksChange={setSheetBlocks}
+                  selectedBlockId={selectedBlockId}
+                  onSelectBlock={setSelectedBlockId}
+                  sheetImages={sheetLogoImages}
+                  sheetLegendEntries={sheetLegendEntries}
+                  sheetPictoImages={sheetLegendImages}
+                  onPlaceSheetIcon={handlePlaceSheetIcon}
+                  planReframeMode={sheetReframeMode}
+                  planPlacement={sheetPlanPlacement}
+                  onPlanPlacementChange={setSheetPlanPlacement}
                   zoom={zoom}
                   setZoom={setZoom}
                   mode={mode}
@@ -4845,6 +5128,7 @@ export default function PlanEditorPage() {
                     if (shapeId) {
                       setSelectedIconId(null);
                       setSelectedTextId(null);
+                      setSelectedBlockId(null);
                     }
                   }}
                   shapeTool={shapeTool}
@@ -4859,6 +5143,7 @@ export default function PlanEditorPage() {
                     if (textId) {
                       setSelectedIconId(null);
                       setSelectedShapeId(null);
+                      setSelectedBlockId(null);
                     }
                   }}
                   placementText={placementText}
@@ -4880,7 +5165,252 @@ export default function PlanEditorPage() {
               </span>
             </div>
 
-            {selectedIcon ? (
+            {selectedBlock ? (
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <div className="border-b border-black/40 px-3 py-3">
+                  <p className="truncate text-xs font-semibold text-neutral-100">{selectedBlock.label}</p>
+                  <p className="text-[10px] text-neutral-500">
+                    {selectedBlock.kind === "picto"
+                      ? "Pictogramme libre · glissez-le où vous voulez sur la feuille"
+                      : selectedBlock.kind === "plan"
+                        ? "Fenêtre du plan · glissez pour la déplacer, poignées pour la redimensionner"
+                        : "Bloc de la feuille · glissez à la souris, double-cliquez pour écrire dessus"}
+                  </p>
+                </div>
+
+                <div className="space-y-3 p-3">
+                  {selectedBlock.kind === "plan" ? (
+                    <>
+                      <div className="rounded border border-white/10 bg-black/20 p-2.5">
+                        <p className="text-[10px] leading-relaxed text-neutral-400">
+                          Glissez le plan pour déplacer sa fenêtre sur la feuille. Maintenez{" "}
+                          <kbd className="rounded bg-white/10 px-1 font-semibold text-neutral-200">Alt</kbd> en
+                          glissant — ou activez le bouton ci-dessous — pour recadrer le plan à
+                          l&apos;intérieur du cadre.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSheetReframeMode((active) => !active)}
+                        className={`w-full rounded border py-1.5 text-[11px] font-semibold transition-colors ${
+                          sheetReframeMode
+                            ? "border-emerald-500/40 bg-emerald-500/20 text-emerald-300"
+                            : "border-white/10 text-neutral-300 hover:bg-white/10"
+                        }`}
+                      >
+                        {sheetReframeMode ? "Recadrage actif — glissez le plan" : "Recadrer le plan dans le cadre"}
+                      </button>
+                      <div>
+                        <div className="mb-1 flex justify-between text-[10px] text-neutral-400">
+                          <span>Zoom du plan</span>
+                          <span>{sheetPlanPlacement.scale}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={20}
+                          max={300}
+                          value={sheetPlanPlacement.scale}
+                          onChange={(event) =>
+                            setSheetPlanPlacement((placement) => ({
+                              ...placement,
+                              scale: Number(event.target.value)
+                            }))
+                          }
+                          className="w-full accent-emerald-500"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSheetPlanPlacement({ scale: 100, offsetX: 0, offsetY: 0 })}
+                        className="w-full rounded border border-white/10 py-1.5 text-[11px] font-semibold text-neutral-300 transition-colors hover:bg-white/10"
+                      >
+                        Recentrer le plan dans le cadre
+                      </button>
+                    </>
+                  ) : null}
+
+                  {selectedBlock.kind !== "plan" &&
+                    selectedBlock.kind !== "image" &&
+                    selectedBlock.kind !== "picto" && (
+                    <>
+                      {selectedBlock.title !== undefined && (
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                            Titre du bloc
+                          </span>
+                          <input
+                            value={selectedBlock.title ?? ""}
+                            onChange={(event) => updateSelectedBlock({ title: event.target.value })}
+                            className="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] text-neutral-100 outline-none focus:border-emerald-500"
+                          />
+                        </label>
+                      )}
+
+                      {selectedBlock.kind !== "legend" && (
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                            Texte
+                          </span>
+                          <textarea
+                            value={selectedBlock.text ?? ""}
+                            onChange={(event) => updateSelectedBlock({ text: event.target.value })}
+                            rows={selectedBlock.kind === "band" || selectedBlock.kind === "numbers" ? 2 : 9}
+                            className="w-full resize-y rounded border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] leading-relaxed text-neutral-100 outline-none focus:border-emerald-500"
+                          />
+                        </label>
+                      )}
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                            Taille
+                          </span>
+                          <input
+                            type="number"
+                            min={6}
+                            max={90}
+                            step={0.5}
+                            value={selectedBlock.fontSize ?? 14}
+                            onChange={(event) => updateSelectedBlock({ fontSize: Number(event.target.value) })}
+                            className="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] text-neutral-100 outline-none focus:border-emerald-500"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                            Interligne
+                          </span>
+                          <input
+                            type="number"
+                            min={0.8}
+                            max={3}
+                            step={0.05}
+                            value={selectedBlock.lineHeight ?? 1.3}
+                            onChange={(event) => updateSelectedBlock({ lineHeight: Number(event.target.value) })}
+                            className="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] text-neutral-100 outline-none focus:border-emerald-500"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        {(["left", "center", "right"] as const).map((align) => (
+                          <button
+                            key={align}
+                            type="button"
+                            onClick={() => updateSelectedBlock({ align })}
+                            className={`flex-1 rounded py-1 text-[10px] font-semibold transition-colors ${
+                              (selectedBlock.align ?? "left") === align
+                                ? "bg-emerald-500/20 text-emerald-300"
+                                : "text-neutral-400 hover:bg-white/10"
+                            }`}
+                          >
+                            {align === "left" ? "Gauche" : align === "center" ? "Centre" : "Droite"}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <label className="flex cursor-pointer items-center gap-1.5 text-[10px] font-semibold text-neutral-400">
+                          <input
+                            type="checkbox"
+                            checked={(selectedBlock.fontStyle ?? "normal").includes("bold")}
+                            onChange={(event) =>
+                              updateSelectedBlock({ fontStyle: event.target.checked ? "bold" : "normal" })
+                            }
+                            className="h-3.5 w-3.5 accent-emerald-500"
+                          />
+                          Gras
+                        </label>
+                        <label className="flex cursor-pointer items-center gap-1.5 text-[10px] font-semibold text-neutral-400">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(selectedBlock.uppercase)}
+                            onChange={(event) => updateSelectedBlock({ uppercase: event.target.checked })}
+                            className="h-3.5 w-3.5 accent-emerald-500"
+                          />
+                          Majuscules
+                        </label>
+                      </div>
+                    </>
+                  )}
+
+                  {selectedBlock.kind !== "image" && selectedBlock.kind !== "picto" && (
+                    <div className="grid grid-cols-2 gap-2">
+                      {([
+                        { key: "color" as const, label: "Texte" },
+                        { key: "fill" as const, label: "Fond" },
+                        { key: "stroke" as const, label: "Bordure" },
+                        { key: "titleFill" as const, label: "Fond titre" },
+                        { key: "titleColor" as const, label: "Texte titre" }
+                      ])
+                        .filter((field) =>
+                          field.key === "titleFill" || field.key === "titleColor"
+                            ? Boolean(selectedBlock.title)
+                            : true
+                        )
+                        .map((field) => (
+                          <label key={field.key} className="block">
+                            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                              {field.label}
+                            </span>
+                            <input
+                              type="color"
+                              value={selectedBlock[field.key] || "#000000"}
+                              onChange={(event) => updateSelectedBlock({ [field.key]: event.target.value })}
+                              className="h-7 w-full cursor-pointer rounded border border-white/10 bg-black/30"
+                            />
+                          </label>
+                        ))}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-2 border-t border-white/10 pt-3">
+                    {([
+                      { key: "x" as const, label: "X" },
+                      { key: "y" as const, label: "Y" },
+                      { key: "width" as const, label: "Largeur" },
+                      { key: "height" as const, label: "Hauteur" }
+                    ]).map((field) => (
+                      <label key={field.key} className="block">
+                        <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                          {field.label}
+                        </span>
+                        <input
+                          type="number"
+                          value={Math.round(selectedBlock[field.key])}
+                          onChange={(event) => updateSelectedBlock({ [field.key]: Number(event.target.value) })}
+                          className="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] text-neutral-100 outline-none focus:border-emerald-500"
+                        />
+                      </label>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center justify-between border-t border-white/10 pt-3">
+                    <label className="flex cursor-pointer items-center gap-1.5 text-[10px] font-semibold text-neutral-400">
+                      <input
+                        type="checkbox"
+                        checked={selectedBlock.visible}
+                        onChange={(event) => updateSelectedBlock({ visible: event.target.checked })}
+                        className="h-3.5 w-3.5 accent-emerald-500"
+                      />
+                      Visible
+                    </label>
+                    {selectedBlock.kind !== "plan" && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSheetBlocks((blocks) => blocks.filter((block) => block.id !== selectedBlock.id));
+                          setSelectedBlockId(null);
+                        }}
+                        className="flex cursor-pointer items-center gap-1.5 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] font-semibold text-red-400 transition-colors hover:bg-red-500/20"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        Supprimer
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : selectedIcon ? (
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {/* Selected element identity */}
                 {(() => {
@@ -4919,8 +5449,9 @@ export default function PlanEditorPage() {
                       </span>
                       <p className="mb-2 text-[10px] leading-relaxed text-neutral-400">
                         La rotation de ce repère est la direction du regard du lecteur. Le plan
-                        exporté est tourné d&apos;autant, et les pictogrammes d&apos;équipement sont
-                        automatiquement redressés — seules les flèches directionnelles suivent.
+                        tourne aussitôt à l&apos;écran pour amener cette direction vers le haut de la
+                        feuille, et les pictogrammes d&apos;équipement sont automatiquement redressés
+                        — seules les flèches directionnelles suivent.
                       </p>
                       <div className="mb-2 grid grid-cols-4 gap-1">
                         {[0, 90, 180, 270].map((angle) => (
@@ -5609,6 +6140,60 @@ export default function PlanEditorPage() {
                     </button>
                   </div>
                 </div>
+              </div>
+            ) : sheetActive ? (
+              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                  Blocs de la feuille
+                </p>
+                <div className="space-y-1">
+                  {sheetBlocks.map((block) => (
+                    <div
+                      key={block.id}
+                      className="flex items-center gap-1.5 rounded border border-white/5 bg-black/20 px-2 py-1.5"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBlockId(block.id)}
+                        className="min-w-0 flex-1 truncate text-left text-[11px] text-neutral-300 transition-colors hover:text-white"
+                      >
+                        {block.label}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSheetBlocks((blocks) =>
+                            blocks.map((item) =>
+                              item.id === block.id ? { ...item, visible: !item.visible } : item
+                            )
+                          )
+                        }
+                        title={block.visible ? "Masquer ce bloc" : "Afficher ce bloc"}
+                        className={`shrink-0 rounded p-1 transition-colors hover:bg-white/10 ${
+                          block.visible ? "text-emerald-400" : "text-neutral-600"
+                        }`}
+                      >
+                        <Eye className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const block = createFreeTextBlock(sheetBlocks.length + 1);
+                    setSheetBlocks((blocks) => [...blocks, block]);
+                    setSelectedBlockId(block.id);
+                  }}
+                  className="mt-3 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 py-1.5 text-[11px] font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/20"
+                >
+                  <Type className="h-3.5 w-3.5" />
+                  Ajouter un texte
+                </button>
+                <p className="mt-3 text-[10px] leading-relaxed text-neutral-500">
+                  Cliquez un bloc sur la feuille pour le déplacer, le redimensionner et changer son
+                  texte ou ses couleurs.
+                </p>
               </div>
             ) : (
               <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
