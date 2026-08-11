@@ -1,8 +1,48 @@
+import base64
+import binascii
+import io
+
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import EvacuationPlan, PlanCleaningHistory, PlanIcon, PlanShape, PlanText, UserXaiSettings
+from PIL import Image, UnidentifiedImageError
+from .models import EvacuationPlan, PlanCleaningHistory, PlanIcon, PlanOverlay, PlanShape, PlanText, UserXaiSettings
 
 MAX_IMAGE_DATA_LENGTH = 20 * 1024 * 1024
+MAX_LOGO_DATA_LENGTH = 2 * 1024 * 1024
+MAX_LOGO_SIDE = 2_000
+MAX_LOGO_PIXELS = 4_000_000
+
+
+def validate_logo_data_url(value):
+    if not value:
+        return value
+    allowed_prefixes = (
+        'data:image/png;base64,',
+        'data:image/jpeg;base64,',
+        'data:image/jpg;base64,',
+        'data:image/webp;base64,',
+    )
+    if not value.startswith(allowed_prefixes):
+        raise serializers.ValidationError('Le logo doit être une image PNG, JPEG ou WebP encodée.')
+    try:
+        encoded = value.split(';base64,', 1)[1]
+        image_bytes = base64.b64decode(encoded, validate=True)
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            width, height = image.size
+            if (
+                width <= 0
+                or height <= 0
+                or width > MAX_LOGO_SIDE
+                or height > MAX_LOGO_SIDE
+                or width * height > MAX_LOGO_PIXELS
+            ):
+                raise serializers.ValidationError('Le logo dépasse les dimensions maximales autorisées.')
+            image.verify()
+    except serializers.ValidationError:
+        raise
+    except (binascii.Error, IndexError, UnidentifiedImageError, OSError, ValueError):
+        raise serializers.ValidationError('Le logo est illisible.')
+    return value
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
@@ -32,7 +72,9 @@ class PlanIconSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanIcon
         fields = ['id', 'plan', 'icon_type', 'x', 'y', 'width', 'height', 'rotation', 'label',
-                  'anchor_x', 'anchor_y', 'leader_width', 'framed', 'flip_x', 'flip_y', 'created_at', 'updated_at']
+                  'anchor_x', 'anchor_y', 'leader_width', 'framed', 'flip_x', 'flip_y', 'locked',
+                  'group_id', 'object_group_id',
+                  'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 class PlanShapeSerializer(serializers.ModelSerializer):
@@ -40,7 +82,7 @@ class PlanShapeSerializer(serializers.ModelSerializer):
         model = PlanShape
         fields = ['id', 'plan', 'shape_type', 'x', 'y', 'width', 'height', 'rotation',
                   'stroke_width', 'color', 'fill_color', 'fill_opacity', 'tension',
-                  'control_points', 'points', 'created_at', 'updated_at']
+                  'control_points', 'points', 'locked', 'group_id', 'object_group_id', 'created_at', 'updated_at']
         read_only_fields = ['id', 'plan', 'created_at', 'updated_at']
 
     def validate(self, attrs):
@@ -72,19 +114,139 @@ class PlanTextSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanText
         fields = ['id', 'plan', 'text', 'x', 'y', 'font_size', 'font_family', 'color',
-                  'bold', 'italic', 'background_color', 'rotation', 'created_at', 'updated_at']
+                  'bold', 'italic', 'background_color', 'rotation', 'locked', 'group_id', 'object_group_id', 'created_at', 'updated_at']
         read_only_fields = ['id', 'plan', 'created_at', 'updated_at']
+
+
+class PlanOverlaySerializer(serializers.ModelSerializer):
+    """Read side of a secondary plan: the client only ever needs its URL."""
+
+    image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PlanOverlay
+        fields = ['id', 'image_url', 'x', 'y', 'width', 'height', 'rotation', 'label', 'locked', 'group_id']
+        read_only_fields = fields
+
+    def get_image_url(self, obj):
+        if not obj.image_file:
+            return ""
+        request = self.context.get('request')
+        url = obj.image_file.url
+        return request.build_absolute_uri(url) if request else url
+
+
+class SyncPlanOverlaySerializer(serializers.Serializer):
+    """Write side: either a fresh image, or a reference to one already stored.
+
+    Re-uploading an unchanged plan on every save would rewrite megabytes for
+    nothing, so an untouched overlay travels as its id (`image_ref`) instead.
+    """
+
+    image_data = serializers.CharField(required=False, allow_blank=True, max_length=MAX_IMAGE_DATA_LENGTH)
+    image_ref = serializers.IntegerField(required=False, allow_null=True)
+    overlay_id = serializers.IntegerField(required=False, allow_null=True)
+    x = serializers.FloatField()
+    y = serializers.FloatField()
+    width = serializers.FloatField(min_value=1)
+    height = serializers.FloatField(min_value=1)
+    rotation = serializers.FloatField(required=False, default=0.0)
+    label = serializers.CharField(required=False, allow_blank=True, default='', max_length=255)
+    locked = serializers.BooleanField(required=False, default=False)
+    group_id = serializers.CharField(required=False, allow_blank=True, default='', max_length=64)
+
+    def validate(self, attrs):
+        if not attrs.get('image_data') and not attrs.get('image_ref'):
+            raise serializers.ValidationError(
+                "Chaque plan secondaire doit fournir 'image_data' ou 'image_ref'."
+            )
+        return attrs
+
+
+class SyncPlanIconSerializer(serializers.Serializer):
+    icon_type = serializers.CharField(max_length=100)
+    x = serializers.FloatField()
+    y = serializers.FloatField()
+    width = serializers.FloatField(min_value=1)
+    height = serializers.FloatField(min_value=1)
+    rotation = serializers.FloatField(required=False, default=0.0)
+    label = serializers.CharField(required=False, allow_blank=True, allow_null=True, default='')
+    anchor_x = serializers.FloatField(required=False, allow_null=True)
+    anchor_y = serializers.FloatField(required=False, allow_null=True)
+    leader_width = serializers.FloatField(required=False, min_value=0, default=2.0)
+    framed = serializers.BooleanField(required=False, default=False)
+    flip_x = serializers.BooleanField(required=False, default=False)
+    flip_y = serializers.BooleanField(required=False, default=False)
+    locked = serializers.BooleanField(required=False, default=False)
+    group_id = serializers.CharField(required=False, allow_blank=True, default='', max_length=64)
+    object_group_id = serializers.CharField(required=False, allow_blank=True, default='', max_length=64)
+
+
+class WatermarkConfigSerializer(serializers.Serializer):
+    enabled = serializers.BooleanField(required=False, default=False)
+    text = serializers.CharField(required=False, allow_blank=True, default='BON À TIRER – POUR VALIDATION UNIQUEMENT', max_length=500)
+    client = serializers.CharField(required=False, allow_blank=True, default='', max_length=255)
+    reference = serializers.CharField(required=False, allow_blank=True, default='', max_length=255)
+    date = serializers.CharField(required=False, allow_blank=True, default='', max_length=32)
+    comment = serializers.CharField(required=False, allow_blank=True, default='', max_length=2000)
+    client_logo = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default='',
+        max_length=MAX_LOGO_DATA_LENGTH,
+        validators=[validate_logo_data_url],
+    )
+    creator_logo = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default='',
+        max_length=MAX_LOGO_DATA_LENGTH,
+        validators=[validate_logo_data_url],
+    )
+    show_bat_block = serializers.BooleanField(required=False, default=True)
+    repeat = serializers.BooleanField(required=False, default=True)
+    diagonal = serializers.BooleanField(required=False, default=True)
+    block_x = serializers.FloatField(required=False, min_value=0, max_value=1, default=0.68)
+    block_y = serializers.FloatField(required=False, min_value=0, max_value=1, default=0.62)
+    block_locked = serializers.BooleanField(required=False, default=False)
+
+
+class EditorPlanSettingsSerializer(serializers.Serializer):
+    main_plan_x = serializers.FloatField(required=False, default=0.0)
+    main_plan_y = serializers.FloatField(required=False, default=0.0)
+    main_plan_width = serializers.FloatField(required=False, min_value=0, default=0.0)
+    main_plan_height = serializers.FloatField(required=False, min_value=0, default=0.0)
+    main_plan_locked = serializers.BooleanField(required=False, default=False)
+    main_plan_group_id = serializers.CharField(required=False, allow_blank=True, default='', max_length=64)
+    main_plan_grouping_enabled = serializers.BooleanField(required=False, default=False)
+    watermark = WatermarkConfigSerializer(required=False, default=dict)
+
+
+class SyncEditorSerializer(serializers.Serializer):
+    """Validates the complete visual editor state before any row is changed."""
+
+    icons = SyncPlanIconSerializer(many=True)
+    shapes = PlanShapeSerializer(many=True)
+    texts = PlanTextSerializer(many=True)
+    overlays = SyncPlanOverlaySerializer(many=True)
+    plan_settings = EditorPlanSettingsSerializer()
 
 
 class EvacuationPlanSerializer(serializers.ModelSerializer):
     icons = PlanIconSerializer(many=True, read_only=True)
     shapes = PlanShapeSerializer(many=True, read_only=True)
     texts = PlanTextSerializer(many=True, read_only=True)
+    overlays = PlanOverlaySerializer(many=True, read_only=True)
     user = serializers.PrimaryKeyRelatedField(read_only=True)
 
     class Meta:
         model = EvacuationPlan
-        fields = ['id', 'user', 'title', 'building_name', 'floor_name', 'background_file', 'background_type', 'cleaned_background_file', 'use_cleaned_background', 'icons', 'shapes', 'texts', 'created_at', 'updated_at']
+        fields = ['id', 'user', 'title', 'building_name', 'floor_name', 'background_file',
+                  'background_type', 'cleaned_background_file', 'use_cleaned_background',
+                  'main_plan_x', 'main_plan_y', 'main_plan_width', 'main_plan_height',
+                  'main_plan_locked', 'main_plan_group_id', 'main_plan_grouping_enabled',
+                  'watermark_config', 'icons', 'shapes', 'texts',
+                  'overlays', 'created_at', 'updated_at']
         read_only_fields = ['id', 'user', 'cleaned_background_file', 'created_at', 'updated_at']
 
 

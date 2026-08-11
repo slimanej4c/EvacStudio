@@ -225,6 +225,8 @@ export function SheetBlockNode({
         />
       );
     }
+  } else if (block.kind === "plan") {
+    content = null;
   } else {
     content = (
       <Text

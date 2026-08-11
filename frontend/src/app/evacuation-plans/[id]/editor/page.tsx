@@ -1,14 +1,16 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter, useParams } from "next/navigation";
 import dynamic from "next/dynamic";
-import { ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, FileDown, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw } from "lucide-react";
+import { ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw, Lock, Unlock, Stamp, Group as GroupIcon, Ungroup, BoxSelect } from "lucide-react";
 import { CropModal } from "@/components/CropModal";
+import { PolygonCropModal } from "@/components/PolygonCropModal";
+import { WatermarkModal } from "@/components/WatermarkModal";
 import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource, isYouAreHereIcon, inferPictogramColor } from "@/utils/safetyIcons";
-import { CanvasIcon, CanvasShape, CanvasText, ShapeKind, EraserShape, PlanCanvasHandle, FONT_OPTIONS } from "@/components/PlanCanvas";
+import { CanvasIcon, CanvasShape, CanvasText, CanvasPlanOverlay, CanvasPlanTransform, CanvasMultiSelection, ShapeKind, EraserShape, PlanCanvasHandle, FONT_OPTIONS, MAIN_PLAN_ID } from "@/components/PlanCanvas";
 import { buildApiUrl } from "@/lib/api";
 import {
   SHEET_WIDTH,
@@ -18,10 +20,10 @@ import {
   SheetTemplateKey,
   createSheetBlocks,
   createFreeTextBlock,
-  createPictoBlock,
-  findPlanBlock
+  createPictoBlock
 } from "@/lib/sheetTemplates";
 import type { SheetLegendEntry } from "@/components/SheetBlockNode";
+import { createDefaultWatermarkConfig, normalizeWatermarkConfig, WatermarkConfig } from "@/lib/watermark";
 import jsPDF from "jspdf";
 
 // Dynamically load PlanCanvas with SSR disabled since Konva depends on the DOM
@@ -41,6 +43,14 @@ const ZoomControls = dynamic(() => import("@/components/ZoomControls"), { ssr: f
 const ExportButtons = dynamic(() => import("@/components/ExportButtons"), { ssr: false });
 const IconToolbar = dynamic(() => import("@/components/IconToolbar"), { ssr: false });
 
+// Ceilings a browser canvas can honour. Chrome caps a canvas at 16 384 px a
+// side, and a page that has already allocated a few hundred megabytes of canvas
+// gets *blank* results instead of errors — which is exactly what a second or
+// third large plan used to hit when it was cleaned. Staying well under both
+// keeps every plan readable and leaves room for the ones already on the canvas.
+const MAX_CANVAS_SIDE = 8192;
+const MAX_CANVAS_PIXELS = 24_000_000;
+
 const EXPORT_CANVAS_WIDTH = 1600;
 // A-series paper is 1:√2, so A4 and A3 share one design canvas — only the printed
 // size and the resulting resolution differ between them.
@@ -49,6 +59,10 @@ const EXPORT_PAPER_SIZES = {
   a3: { label: "A3", widthMm: 420, heightMm: 297 }
 } as const;
 type ExportPaperFormat = keyof typeof EXPORT_PAPER_SIZES;
+const EXPORT_PAPER_OPTIONS = (Object.keys(EXPORT_PAPER_SIZES) as ExportPaperFormat[]).map((key) => ({
+  key,
+  label: EXPORT_PAPER_SIZES[key].label
+}));
 const EXPORT_THEMES = {
   nfx08070: {
     label: "NF X08-070 Incendie",
@@ -379,6 +393,22 @@ const EXPORT_RED = "#c8362c";
 const EXPORT_SLATE = "#33475b";
 const EXPORT_OUTPUT_SCALE = 4;
 const EXPORT_STAGE_PIXEL_RATIO = 6;
+// Print resolution of an exported file. What matters is the size on paper, not
+// the pixel count: capturing a large plan at a fixed ratio gave a hundred-
+// megapixel image, and a PDF of several hundred megabytes with it.
+const EXPORT_TARGET_DPI = 300;
+const EXPORT_MAX_PIXEL_RATIO = 6;
+
+/** Longest edge, in pixels, that fills the given paper at the export's dpi. */
+const paperLongEdgePx = (paper: { widthMm: number; heightMm: number }) =>
+  (Math.max(paper.widthMm, paper.heightMm) / 25.4) * EXPORT_TARGET_DPI;
+
+/** Capture ratio that brings a region of that size to the wanted long edge. */
+const fitPixelRatio = (width: number, height: number, targetLongEdgePx: number) => {
+  const longEdge = Math.max(width, height);
+  if (!longEdge) return 1;
+  return Math.min(EXPORT_MAX_PIXEL_RATIO, Math.max(1, targetLongEdgePx / longEdge));
+};
 const EXPORT_PREVIEW_STAGE_PIXEL_RATIO = 2;
 
 const PRESET_COLORS = [
@@ -405,6 +435,14 @@ interface EvacuationPlanBackend {
   background_type: "image" | "pdf";
   cleaned_background_file: string | null;
   use_cleaned_background: boolean;
+  main_plan_x: number;
+  main_plan_y: number;
+  main_plan_width: number;
+  main_plan_height: number;
+  main_plan_locked: boolean;
+  main_plan_group_id?: string;
+  main_plan_grouping_enabled?: boolean;
+  watermark_config?: Partial<WatermarkConfig>;
   icons: Array<{
     id: number;
     icon_type: IconType;
@@ -420,6 +458,9 @@ interface EvacuationPlanBackend {
     framed?: boolean;
     flip_x?: boolean;
     flip_y?: boolean;
+    locked?: boolean;
+    group_id?: string;
+    object_group_id?: string;
   }>;
   shapes?: Array<{
     id: number;
@@ -436,6 +477,9 @@ interface EvacuationPlanBackend {
     tension?: number | null;
     control_points?: Record<number, { x: number; y: number }> | null;
     points?: Array<{ x: number; y: number }> | null;
+    locked?: boolean;
+    group_id?: string;
+    object_group_id?: string;
   }>;
   texts?: Array<{
     id: number;
@@ -449,7 +493,23 @@ interface EvacuationPlanBackend {
     italic: boolean;
     background_color: string | null;
     rotation: number;
+    locked?: boolean;
+    group_id?: string;
+    object_group_id?: string;
   }>;
+  overlays?: Array<{
+    id: number;
+    image_url: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    rotation: number;
+    label: string;
+    locked?: boolean;
+    group_id?: string;
+  }>;
+  overlay_ids?: number[];
 }
 
 interface PlanPictogramBackend {
@@ -531,33 +591,54 @@ export default function PlanEditorPage() {
   const [undoEraseSignal, setUndoEraseSignal] = useState(0);
   const [resetEraseSignal, setResetEraseSignal] = useState(0);
   const [savingErase, setSavingErase] = useState(false);
-  const [clipboardHasIcon, setClipboardHasIcon] = useState(false);
-
-  useEffect(() => {
-    setClipboardHasIcon(Boolean(window.localStorage.getItem(ICON_CLIPBOARD_KEY)));
-  }, []);
-  const [viewportWidth, setViewportWidth] = useState(0);
-
-  // The interface is sized in pixels from the real window width rather than from
-  // percentages resolved by CSS, so its total can never exceed the screen.
-  useEffect(() => {
-    const update = () => setViewportWidth(window.innerWidth);
-    update();
-    window.addEventListener("resize", update);
-    window.addEventListener("orientationchange", update);
-    return () => {
-      window.removeEventListener("resize", update);
-      window.removeEventListener("orientationchange", update);
-    };
-  }, []);
+  const [clipboardHasIcon, setClipboardHasIcon] = useState(() =>
+    typeof window !== "undefined" && Boolean(window.localStorage.getItem(ICON_CLIPBOARD_KEY))
+  );
   const [loading, setLoading] = useState(true);
+  const [planOverlays, setPlanOverlays] = useState<CanvasPlanOverlay[]>([]);
+  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
+  const [areaSelectionMode, setAreaSelectionMode] = useState(false);
+  const [multiSelection, setMultiSelection] = useState<CanvasMultiSelection>({
+    iconIds: [],
+    shapeIds: [],
+    textIds: [],
+  });
+  const [mainPlanTransform, setMainPlanTransform] = useState<CanvasPlanTransform>({
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+  });
+  const [mainPlanLocked, setMainPlanLocked] = useState(false);
+  const [mainPlanGroupId, setMainPlanGroupId] = useState("");
+  const [mainPlanGroupingEnabled, setMainPlanGroupingEnabled] = useState(false);
+  const [watermarkConfig, setWatermarkConfig] = useState<WatermarkConfig>(() =>
+    createDefaultWatermarkConfig()
+  );
+  const [watermarkDraft, setWatermarkDraft] = useState<WatermarkConfig>(() =>
+    createDefaultWatermarkConfig()
+  );
+  const [watermarkModalOpen, setWatermarkModalOpen] = useState(false);
+  const [selectedBatBlock, setSelectedBatBlock] = useState(false);
 
   // ── Undo / Redo History Stack (up to 50 steps) ───────────────────────────
   const MAX_HISTORY_STEPS = 50;
   const [history, setHistory] = useState<
-    Array<{ icons: CanvasIcon[]; shapes: CanvasShape[]; texts: CanvasText[] }>
+    Array<{
+      icons: CanvasIcon[];
+      shapes: CanvasShape[];
+      texts: CanvasText[];
+      overlays: CanvasPlanOverlay[];
+      mainPlanTransform: CanvasPlanTransform;
+      mainPlanLocked: boolean;
+      mainPlanGroupId: string;
+      mainPlanGroupingEnabled: boolean;
+      watermark: WatermarkConfig;
+      signature: string;
+    }>
   >([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const historyIndexRef = useRef<number>(-1);
   const isHistoryActionRef = useRef<boolean>(false);
 
   useEffect(() => {
@@ -567,55 +648,92 @@ export default function PlanEditorPage() {
       return;
     }
 
+    const comparableOverlays = planOverlays.map(({ tempId, url, x, y, width, height, rotation, label, locked, group_id }) => ({
+      tempId, url, x, y, width, height, rotation, label, locked, group_id,
+    }));
+    const signature = JSON.stringify({
+      icons,
+      shapes,
+      texts,
+      overlays: comparableOverlays,
+      mainPlanTransform,
+      mainPlanLocked,
+      mainPlanGroupId,
+      mainPlanGroupingEnabled,
+      watermark: watermarkConfig,
+    });
     const currentSnapshot = {
-      icons: JSON.parse(JSON.stringify(icons)),
-      shapes: JSON.parse(JSON.stringify(shapes)),
-      texts: JSON.parse(JSON.stringify(texts)),
+      icons,
+      shapes,
+      texts,
+      overlays: planOverlays,
+      mainPlanTransform,
+      mainPlanLocked,
+      mainPlanGroupId,
+      mainPlanGroupingEnabled,
+      watermark: watermarkConfig,
+      signature,
     };
 
-    setHistory((prev) => {
-      if (historyIndex >= 0 && prev[historyIndex]) {
-        const last = prev[historyIndex];
-        if (
-          JSON.stringify(last.icons) === JSON.stringify(icons) &&
-          JSON.stringify(last.shapes) === JSON.stringify(shapes) &&
-          JSON.stringify(last.texts) === JSON.stringify(texts)
-        ) {
-          return prev;
+    const timer = window.setTimeout(() => {
+      setHistory((previous) => {
+        const currentIndex = historyIndexRef.current;
+        if (currentIndex >= 0 && previous[currentIndex]?.signature === signature) {
+          return previous;
         }
-      }
 
-      const validHistory = prev.slice(0, historyIndex + 1);
-      const newHistory = [...validHistory, currentSnapshot];
-      if (newHistory.length > MAX_HISTORY_STEPS) {
-        newHistory.shift();
-        setHistoryIndex(newHistory.length - 1);
-      } else {
-        setHistoryIndex(newHistory.length - 1);
-      }
-      return newHistory;
-    });
-  }, [icons, shapes, texts, loading]);
+        const validHistory = previous.slice(0, currentIndex + 1);
+        const nextHistory = [...validHistory, currentSnapshot].slice(-MAX_HISTORY_STEPS);
+        const nextIndex = nextHistory.length - 1;
+        historyIndexRef.current = nextIndex;
+        setHistoryIndex(nextIndex);
+        return nextHistory;
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [icons, shapes, texts, planOverlays, mainPlanTransform, mainPlanLocked, mainPlanGroupId, mainPlanGroupingEnabled, watermarkConfig, loading]);
 
-  const handleUndo = () => {
+  const handleUndo = useCallback(() => {
     if (historyIndex <= 0 || !history[historyIndex - 1]) return;
     const target = history[historyIndex - 1];
     isHistoryActionRef.current = true;
-    setIcons(JSON.parse(JSON.stringify(target.icons)));
-    setShapes(JSON.parse(JSON.stringify(target.shapes)));
-    setTexts(JSON.parse(JSON.stringify(target.texts)));
-    setHistoryIndex(historyIndex - 1);
-  };
+    setIcons(target.icons);
+    setShapes(target.shapes);
+    setTexts(target.texts);
+    setPlanOverlays(target.overlays);
+    setMainPlanTransform(target.mainPlanTransform);
+    setMainPlanLocked(target.mainPlanLocked);
+    setMainPlanGroupId(target.mainPlanGroupId);
+    setMainPlanGroupingEnabled(target.mainPlanGroupingEnabled);
+    setWatermarkConfig(target.watermark);
+    setAreaSelectionMode(false);
+    setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+    setSelectedOverlayId(null);
+    setSelectedBatBlock(false);
+    historyIndexRef.current = historyIndex - 1;
+    setHistoryIndex(historyIndexRef.current);
+  }, [history, historyIndex]);
 
-  const handleRedo = () => {
+  const handleRedo = useCallback(() => {
     if (historyIndex < 0 || historyIndex >= history.length - 1 || !history[historyIndex + 1]) return;
     const target = history[historyIndex + 1];
     isHistoryActionRef.current = true;
-    setIcons(JSON.parse(JSON.stringify(target.icons)));
-    setShapes(JSON.parse(JSON.stringify(target.shapes)));
-    setTexts(JSON.parse(JSON.stringify(target.texts)));
-    setHistoryIndex(historyIndex + 1);
-  };
+    setIcons(target.icons);
+    setShapes(target.shapes);
+    setTexts(target.texts);
+    setPlanOverlays(target.overlays);
+    setMainPlanTransform(target.mainPlanTransform);
+    setMainPlanLocked(target.mainPlanLocked);
+    setMainPlanGroupId(target.mainPlanGroupId);
+    setMainPlanGroupingEnabled(target.mainPlanGroupingEnabled);
+    setWatermarkConfig(target.watermark);
+    setAreaSelectionMode(false);
+    setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+    setSelectedOverlayId(null);
+    setSelectedBatBlock(false);
+    historyIndexRef.current = historyIndex + 1;
+    setHistoryIndex(historyIndexRef.current);
+  }, [history, historyIndex]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -645,7 +763,7 @@ export default function PlanEditorPage() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [history, historyIndex]);
+  }, [handleUndo, handleRedo]);
   const [saving, setSaving] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [cleaningText, setCleaningText] = useState("Traitement OpenCV en cours...");
@@ -670,6 +788,8 @@ export default function PlanEditorPage() {
   const [grokPreset, setGrokPreset] = useState<"evacuation" | "autocad">("evacuation");
   const [changingBackground, setChangingBackground] = useState(false);
   const [cropModalOpen, setCropModalOpen] = useState(false);
+  const [polygonCropModalOpen, setPolygonCropModalOpen] = useState(false);
+  const [polygonCropMainUrl, setPolygonCropMainUrl] = useState("");
   const [cropping, setCropping] = useState(false);
   const changePlanInputRef = useRef<HTMLInputElement>(null);
 
@@ -678,32 +798,14 @@ export default function PlanEditorPage() {
     setSaveStatus("Rognage et repositionnement des éléments...");
 
     const bgDims = planCanvasRef.current?.getBackgroundDimensions() || { width: 0, height: 0 };
-    const shiftX = crop.x * bgDims.width;
-    const shiftY = crop.y * bgDims.height;
-
-    // Shift icons, shapes, and texts so they maintain their exact building positions relative to cropped origin
-    const shiftedIcons = icons.map((icon) => ({
-      ...icon,
-      x: Math.round(icon.x - shiftX),
-      y: Math.round(icon.y - shiftY),
-      anchor_x: icon.anchor_x != null ? Math.round(icon.anchor_x - shiftX) : icon.anchor_x,
-      anchor_y: icon.anchor_y != null ? Math.round(icon.anchor_y - shiftY) : icon.anchor_y,
-    }));
-
-    const shiftedShapes = shapes.map((shape) => ({
-      ...shape,
-      x: Math.round(shape.x - shiftX),
-      y: Math.round(shape.y - shiftY),
-      points: shape.points
-        ? shape.points.map((pt) => ({ x: Math.round(pt.x - shiftX), y: Math.round(pt.y - shiftY) }))
-        : shape.points,
-    }));
-
-    const shiftedTexts = texts.map((text) => ({
-      ...text,
-      x: Math.round(text.x - shiftX),
-      y: Math.round(text.y - shiftY),
-    }));
+    const displayedWidth = mainPlanTransform.width > 0 ? mainPlanTransform.width : bgDims.width;
+    const displayedHeight = mainPlanTransform.height > 0 ? mainPlanTransform.height : bgDims.height;
+    const croppedTransform: CanvasPlanTransform = {
+      x: mainPlanTransform.x + crop.x * displayedWidth,
+      y: mainPlanTransform.y + crop.y * displayedHeight,
+      width: Math.max(1, crop.width * displayedWidth),
+      height: Math.max(1, crop.height * displayedHeight),
+    };
 
     try {
       const res = await fetch(buildApiUrl(`/api/plans/${id}/crop/`), {
@@ -713,63 +815,12 @@ export default function PlanEditorPage() {
       });
 
       if (res.ok) {
-        const updatedPlan = await res.json();
+        const updatedPlan: EvacuationPlanBackend = await res.json();
         setPlan(updatedPlan);
-        setIcons(shiftedIcons);
-        setShapes(shiftedShapes);
-        setTexts(shiftedTexts);
+        setMainPlanTransform(croppedTransform);
         setCropModalOpen(false);
-        setSaveStatus("Plan rogné et éléments conservés avec succès !");
+        setSaveStatus("Plan rogné, éléments conservés — sauvegardez le projet");
         window.setTimeout(() => setSaveStatus(""), 3500);
-
-        // Sync shifted element positions to DB
-        void fetch(buildApiUrl(`/api/plans/${id}/sync-icons/`), {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
-          body: JSON.stringify(shiftedIcons),
-        });
-
-        void fetch(buildApiUrl(`/api/plans/${id}/sync-shapes/`), {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
-          body: JSON.stringify(
-            shiftedShapes.map((shape) => ({
-              shape_type: shape.shape_type,
-              x: shape.x,
-              y: shape.y,
-              width: shape.width,
-              height: shape.height,
-              rotation: shape.rotation,
-              stroke_width: shape.stroke_width,
-              color: shape.color,
-              fill_color: shape.fill_color ?? null,
-              fill_opacity: shape.fill_opacity ?? null,
-              tension: shape.tension ?? null,
-              control_points: shape.control_points ?? {},
-              points: shape.points || null,
-            }))
-          ),
-        });
-
-        void fetch(buildApiUrl(`/api/plans/${id}/sync-texts/`), {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
-          body: JSON.stringify(
-            shiftedTexts.map((t) => ({
-              text: t.text,
-              x: t.x,
-              y: t.y,
-              font_size: t.font_size,
-              font_family: t.font_family,
-              color: t.color,
-              bold: t.bold,
-              italic: t.italic,
-              background_color: t.background_color,
-              rotation: t.rotation,
-            }))
-          ),
-        });
-
         void fetchCleaningHistory();
       } else {
         const data = await res.json();
@@ -834,6 +885,10 @@ export default function PlanEditorPage() {
   const [sheetBlocks, setSheetBlocks] = useState<SheetBlock[]>([]);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [sheetPlanPlacement, setSheetPlanPlacement] = useState({ scale: 100, offsetX: 0, offsetY: 0 });
+  const [keepPlanRatio, setKeepPlanRatio] = useState<boolean>(true);
+  const [selectedCleanTargetId, setSelectedCleanTargetId] = useState<string>(MAIN_PLAN_ID);
+  const planOverlayInputRef = useRef<HTMLInputElement>(null);
+  const [importingOverlays, setImportingOverlays] = useState(false);
   const [sheetReframeMode, setSheetReframeMode] = useState(false);
   const [sheetLogoImages, setSheetLogoImages] = useState<Record<string, HTMLImageElement | null>>({});
   const [sheetLegendImages, setSheetLegendImages] = useState<Record<string, HTMLImageElement>>({});
@@ -930,18 +985,6 @@ export default function PlanEditorPage() {
   const RIGHT_DOCK_WIDTH = 224;
   const leftDockWidth = leftDockOpen ? LEFT_DOCK_WIDTH : 0;
   const rightDockWidth = rightDockOpen ? RIGHT_DOCK_WIDTH : 0;
-  const canvasColumnWidth = viewportWidth
-    ? Math.max(
-        160,
-        Math.round((viewportWidth - leftDockWidth - rightDockWidth) * (canvasWidthPercent / 100))
-      )
-    : 0;
-  // Total interface width: docks + workspace. Clamped to the viewport so the
-  // fixed container can never exceed the window (no horizontal scroll, no
-  // inert backdrop on the right when the min-width floor kicks in).
-  const interfaceWidth = viewportWidth
-    ? Math.min(viewportWidth, leftDockWidth + canvasColumnWidth + rightDockWidth)
-    : 0;
 
   const getPlanAuthHeaders = (): Record<string, string> => {
     const authToken = token || (typeof window !== "undefined" ? localStorage.getItem("token") : null);
@@ -1070,6 +1113,9 @@ export default function PlanEditorPage() {
             framed: icon.framed ?? false,
             flip_x: icon.flip_x ?? false,
             flip_y: icon.flip_y ?? false,
+            locked: icon.locked ?? false,
+            group_id: icon.group_id || "",
+            object_group_id: icon.object_group_id || "",
           }));
           setIcons(canvasIcons);
 
@@ -1089,6 +1135,9 @@ export default function PlanEditorPage() {
             tension: shape.tension ?? undefined,
             control_points: shape.control_points ?? undefined,
             points: shape.points || undefined,
+            locked: shape.locked ?? false,
+            group_id: shape.group_id || "",
+            object_group_id: shape.object_group_id || "",
           }));
           setShapes(canvasShapes);
 
@@ -1105,20 +1154,63 @@ export default function PlanEditorPage() {
             italic: t.italic,
             background_color: t.background_color ?? null,
             rotation: t.rotation,
+            locked: t.locked ?? false,
+            group_id: t.group_id || "",
+            object_group_id: t.object_group_id || "",
           }));
           setTexts(canvasTexts);
 
+          const canvasOverlays: CanvasPlanOverlay[] = (data.overlays || []).map((overlay) => ({
+            tempId: `plan-overlay-${overlay.id}`,
+            serverId: overlay.id,
+            url: overlay.image_url,
+            x: overlay.x,
+            y: overlay.y,
+            width: overlay.width,
+            height: overlay.height,
+            rotation: overlay.rotation,
+            label: overlay.label || "",
+            locked: overlay.locked ?? false,
+            group_id: overlay.group_id || "",
+            imageChanged: false,
+          }));
+          setPlanOverlays(canvasOverlays);
+
+          const loadedMainPlanTransform: CanvasPlanTransform = {
+            x: data.main_plan_x || 0,
+            y: data.main_plan_y || 0,
+            width: data.main_plan_width || 0,
+            height: data.main_plan_height || 0,
+          };
+          const loadedWatermark = normalizeWatermarkConfig(data.watermark_config);
+          setMainPlanTransform(loadedMainPlanTransform);
+          setMainPlanLocked(Boolean(data.main_plan_locked));
+          setMainPlanGroupId(data.main_plan_group_id || "");
+          setMainPlanGroupingEnabled(Boolean(data.main_plan_grouping_enabled));
+          setWatermarkConfig(loadedWatermark);
+          setWatermarkDraft(loadedWatermark);
+
           // Baseline for the unsaved-changes guard: the freshly loaded state.
+          // The very same fields as buildEditableSnapshot, or the editor would
+          // report unsaved changes before the user has touched anything.
           setSavedSnapshot(JSON.stringify({
-            icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y }) => ({
-              icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y,
+            icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, group_id, object_group_id }) => ({
+              icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, group_id, object_group_id,
             })),
-            shapes: canvasShapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color }) => ({
-              shape_type, x, y, width, height, rotation, stroke_width, color,
+            shapes: canvasShapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, group_id, object_group_id }) => ({
+              shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, group_id, object_group_id,
             })),
-            texts: canvasTexts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation }) => ({
-              text, x, y, font_size, font_family, color, bold, italic, background_color, rotation,
+            texts: canvasTexts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, group_id, object_group_id }) => ({
+              text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, group_id, object_group_id,
             })),
+            overlays: canvasOverlays.map(({ url, x, y, width, height, rotation, label, locked, group_id }) => ({
+              url, x, y, width, height, rotation, label, locked, group_id,
+            })),
+            mainPlanTransform: loadedMainPlanTransform,
+            mainPlanLocked: Boolean(data.main_plan_locked),
+            mainPlanGroupId: data.main_plan_group_id || "",
+            mainPlanGroupingEnabled: Boolean(data.main_plan_grouping_enabled),
+            watermark: loadedWatermark,
           }));
         } else if (res.status === 401 || res.status === 403) {
           router.push("/login");
@@ -1193,7 +1285,7 @@ export default function PlanEditorPage() {
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
-  }, [icons, shapes, texts, savedSnapshot]);
+  }, [icons, shapes, texts, planOverlays, mainPlanTransform, mainPlanLocked, mainPlanGroupId, mainPlanGroupingEnabled, watermarkConfig, savedSnapshot]);
 
   useEffect(() => {
     if (!placementIconType) return;
@@ -1403,6 +1495,7 @@ export default function PlanEditorPage() {
 
   const handleDeleteSelectedText = () => {
     if (!selectedTextId) return;
+    if (texts.find((text) => text.tempId === selectedTextId)?.locked) return;
     setTexts((current) => current.filter((t) => t.tempId !== selectedTextId));
     setSelectedTextId(null);
   };
@@ -1412,97 +1505,433 @@ export default function PlanEditorPage() {
   // tempId/id) so a deep-equality check detects any real change.
   const buildEditableSnapshot = () =>
     JSON.stringify({
-      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y }) => ({
-        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y,
+      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, group_id, object_group_id }) => ({
+        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, group_id, object_group_id,
       })),
-      shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color }) => ({
-        shape_type, x, y, width, height, rotation, stroke_width, color,
+      shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, group_id, object_group_id }) => ({
+        shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, group_id, object_group_id,
       })),
-      texts: texts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation }) => ({
-        text, x, y, font_size, font_family, color, bold, italic, background_color, rotation,
+      texts: texts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, group_id, object_group_id }) => ({
+        text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, group_id, object_group_id,
       })),
+      overlays: planOverlays.map(({ url, x, y, width, height, rotation, label, locked, group_id }) => ({
+        url, x, y, width, height, rotation, label, locked, group_id,
+      })),
+      mainPlanTransform,
+      mainPlanLocked,
+      mainPlanGroupId,
+      mainPlanGroupingEnabled,
+      watermark: watermarkConfig,
     });
 
   const hasUnsavedChanges = () => buildEditableSnapshot() !== savedSnapshot;
+
+  /**
+   * Draws an image onto a canvas, fitted inside what the browser can actually
+   * hold. Past roughly 16k pixels a side — or a few tens of megapixels in total
+   * across the page — a canvas comes back *blank* instead of failing, which is
+   * how a big scanned plan used to come back as an empty white sheet.
+   */
+  const drawImageToCanvas = (img: HTMLImageElement, background?: string) => {
+    const naturalWidth = img.naturalWidth || img.width;
+    const naturalHeight = img.naturalHeight || img.height;
+    if (!naturalWidth || !naturalHeight) throw new Error("Image vide");
+
+    const scale = Math.min(
+      1,
+      MAX_CANVAS_SIDE / Math.max(naturalWidth, naturalHeight),
+      Math.sqrt(MAX_CANVAS_PIXELS / (naturalWidth * naturalHeight))
+    );
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(naturalHeight * scale));
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Contexte canvas indisponible");
+
+    if (background) {
+      // Flatten transparency: a lasso-cut plan is transparent outside its
+      // outline, and OpenCV reads those pixels as black without this.
+      ctx.fillStyle = background;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  };
+
+  /** Frees the canvas memory at once instead of waiting for the collector. */
+  const releaseCanvas = (canvas: HTMLCanvasElement) => {
+    canvas.width = 0;
+    canvas.height = 0;
+  };
+
+  const loadImage = (source: string): Promise<HTMLImageElement> =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Image illisible"));
+      img.src = source;
+    });
+
+  /**
+   * Any image the browser can load -> a base64 data URL the API accepts.
+   * `background` flattens transparency; without it the alpha channel is kept.
+   */
+  const toDataUrl = async (source: string, background?: string): Promise<string> => {
+    if (source.startsWith("data:") && !background) return source;
+
+    const img = await loadImage(source);
+    const canvas = drawImageToCanvas(img, background);
+    try {
+      return canvas.toDataURL("image/png");
+    } finally {
+      releaseCanvas(canvas);
+    }
+  };
+
+  const shapesPayload = (list: CanvasShape[]) =>
+    list.map((shape) => ({
+      shape_type: shape.shape_type,
+      x: shape.x,
+      y: shape.y,
+      width: shape.width,
+      height: shape.height,
+      rotation: shape.rotation,
+      stroke_width: shape.stroke_width,
+      color: shape.color,
+      fill_color: shape.fill_color ?? null,
+      fill_opacity: shape.fill_opacity ?? null,
+      tension: shape.tension ?? null,
+      control_points: shape.control_points ?? {},
+      points: shape.points || null,
+      locked: shape.locked ?? false,
+      group_id: shape.group_id || "",
+      object_group_id: shape.object_group_id || "",
+    }));
+
+  const textsPayload = (list: CanvasText[]) =>
+    list.map((t) => ({
+      text: t.text,
+      x: t.x,
+      y: t.y,
+      font_size: t.font_size,
+      font_family: t.font_family,
+      color: t.color,
+      bold: t.bold,
+      italic: t.italic,
+      background_color: t.background_color,
+      rotation: t.rotation,
+      locked: t.locked ?? false,
+      group_id: t.group_id || "",
+      object_group_id: t.object_group_id || "",
+    }));
+
+  const iconsPayload = (list: CanvasIcon[]) =>
+    list.map((icon) => ({
+      icon_type: icon.icon_type,
+      x: icon.x,
+      y: icon.y,
+      width: icon.width,
+      height: icon.height,
+      rotation: icon.rotation,
+      label: icon.label || "",
+      anchor_x: icon.anchor_x ?? null,
+      anchor_y: icon.anchor_y ?? null,
+      leader_width: icon.leader_width ?? 2,
+      framed: icon.framed ?? false,
+      flip_x: icon.flip_x ?? false,
+      flip_y: icon.flip_y ?? false,
+      locked: icon.locked ?? false,
+      group_id: icon.group_id || "",
+      object_group_id: icon.object_group_id || "",
+    }));
+
+  /**
+   * Secondary plans already stored travel as their id, so an unchanged plan is
+   * not re-uploaded — only the ones that were imported, cropped or cleaned
+   * carry their pixels.
+   */
+  const overlaysPayload = async (list: CanvasPlanOverlay[]) =>
+    Promise.all(
+      list.map(async (overlay) => {
+        const geometry = {
+          x: overlay.x,
+          y: overlay.y,
+          width: overlay.width,
+          height: overlay.height,
+          rotation: overlay.rotation,
+          label: overlay.label || "",
+          locked: overlay.locked ?? false,
+          group_id: overlay.group_id || "",
+        };
+        if (overlay.serverId && !overlay.imageChanged) {
+          return { ...geometry, image_ref: overlay.serverId };
+        }
+        return {
+          ...geometry,
+          overlay_id: overlay.serverId,
+          image_data: await toDataUrl(overlay.url),
+        };
+      })
+    );
+
+  /**
+   * A failed call is not always JSON: Django answers an oversized or malformed
+   * request with an HTML page, and swallowing that leaves the user with a
+   * message that says nothing. Report whatever the server actually said.
+   */
+  const describeApiError = async (res: Response) => {
+    const body = await res.text().catch(() => "");
+    try {
+      const parsed = JSON.parse(body);
+      const detail = parsed?.error || parsed?.detail;
+      if (detail) return String(detail);
+    } catch {
+      // not JSON — fall through to the raw text below
+    }
+    const stripped = body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    return stripped ? `${res.status} — ${stripped.slice(0, 200)}` : `HTTP ${res.status}`;
+  };
+
+  const postJson = (path: string, payload: unknown) =>
+    fetch(buildApiUrl(path), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
+      body: JSON.stringify(payload),
+    });
+
+  /** Pushes the annotation layers to the API. Returns false if any call failed. */
+  const syncPlanContent = async (
+    nextIcons: CanvasIcon[],
+    nextShapes: CanvasShape[],
+    nextTexts: CanvasText[]
+  ) => {
+    const [iconsRes, shapesRes, textsRes] = await Promise.all([
+      postJson(`/api/plans/${id}/sync-icons/`, iconsPayload(nextIcons)),
+      postJson(`/api/plans/${id}/sync-shapes/`, shapesPayload(nextShapes)),
+      postJson(`/api/plans/${id}/sync-texts/`, textsPayload(nextTexts)),
+    ]);
+    return iconsRes.ok && shapesRes.ok && textsRes.ok;
+  };
+
+  /**
+   * A lasso cut of the main plan replaces the background for good, exactly like
+   * the eraser's retouches: keeping it in the browser only would lose it at the
+   * next reload. The pictograms are shifted by the cut's origin so they stay on
+   * their equipment.
+   */
+  const handleCropMainPlan = async (croppedDataUrl: string, origin: { x: number; y: number }) => {
+    setCropping(true);
+    setSaveStatus("Rognage et repositionnement des éléments...");
+
+    try {
+      const originalDimensions = planCanvasRef.current?.getBackgroundDimensions() || { width: 0, height: 0 };
+      const croppedImage = await loadImage(croppedDataUrl);
+      const displayedWidth = mainPlanTransform.width > 0 ? mainPlanTransform.width : originalDimensions.width;
+      const displayedHeight = mainPlanTransform.height > 0 ? mainPlanTransform.height : originalDimensions.height;
+      const scaleX = displayedWidth / Math.max(1, originalDimensions.width);
+      const scaleY = displayedHeight / Math.max(1, originalDimensions.height);
+      const croppedTransform: CanvasPlanTransform = {
+        x: mainPlanTransform.x + origin.x * scaleX,
+        y: mainPlanTransform.y + origin.y * scaleY,
+        width: Math.max(1, (croppedImage.naturalWidth || croppedImage.width) * scaleX),
+        height: Math.max(1, (croppedImage.naturalHeight || croppedImage.height) * scaleY),
+      };
+
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/apply-manual-edit/`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
+        body: JSON.stringify({ image_data: croppedDataUrl }),
+      });
+
+      if (!res.ok) {
+        const message = await res.json().catch(() => null);
+        alert(message?.error || "Impossible d'enregistrer le plan rogné.");
+        return;
+      }
+
+      setPlan(await res.json());
+      setMainPlanTransform(croppedTransform);
+      setSaveStatus("Plan principal rogné, éléments conservés — sauvegardez le projet");
+      window.setTimeout(() => setSaveStatus(""), 3500);
+    } catch (err) {
+      console.error("Polygon crop failed:", err);
+      alert("Impossible de joindre le serveur pour enregistrer le rognage.");
+    } finally {
+      setCropping(false);
+    }
+  };
+
+  const handleCropSecondaryPlan = async (
+    overlayId: string,
+    croppedDataUrl: string,
+    origin: { x: number; y: number }
+  ) => {
+    const target = planOverlays.find((overlay) => overlay.tempId === overlayId);
+    if (!target) return;
+    const [sourceImage, croppedImage] = await Promise.all([
+      loadImage(target.url),
+      loadImage(croppedDataUrl),
+    ]);
+    const scaleX = target.width / Math.max(1, sourceImage.naturalWidth || sourceImage.width);
+    const scaleY = target.height / Math.max(1, sourceImage.naturalHeight || sourceImage.height);
+    const localX = origin.x * scaleX;
+    const localY = origin.y * scaleY;
+    const radians = (target.rotation * Math.PI) / 180;
+    const translatedX = localX * Math.cos(radians) - localY * Math.sin(radians);
+    const translatedY = localX * Math.sin(radians) + localY * Math.cos(radians);
+
+    setPlanOverlays((current) =>
+      current.map((overlay) =>
+        overlay.tempId === overlayId
+          ? {
+              ...overlay,
+              url: croppedDataUrl,
+              x: overlay.x + translatedX,
+              y: overlay.y + translatedY,
+              width: Math.max(1, (croppedImage.naturalWidth || croppedImage.width) * scaleX),
+              height: Math.max(1, (croppedImage.naturalHeight || croppedImage.height) * scaleY),
+              imageChanged: true,
+            }
+          : overlay
+      )
+    );
+    setSaveStatus("Plan secondaire rogné avec succès !");
+    window.setTimeout(() => setSaveStatus(""), 3500);
+  };
+
+  const openPolygonCrop = () => {
+    const renderedBackground = planCanvasRef.current?.getBackgroundDataUrl();
+    setPolygonCropMainUrl(
+      renderedBackground ||
+      ((plan?.use_cleaned_background && plan.cleaned_background_file)
+        ? plan.cleaned_background_file
+        : plan?.background_file || "")
+    );
+    setPolygonCropModalOpen(true);
+  };
 
   const handleSave = async () => {
     setSaving(true);
     setSaveStatus("Sauvegarde...");
     try {
-      // Sync icons to DB
-      const res = await fetch(buildApiUrl(`/api/plans/${id}/sync-icons/`), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getPlanAuthHeaders(),
+      const response = await postJson(`/api/plans/${id}/sync-editor/`, {
+        icons: iconsPayload(icons),
+        shapes: shapesPayload(shapes),
+        texts: textsPayload(texts),
+        overlays: await overlaysPayload(planOverlays),
+        plan_settings: {
+          main_plan_x: mainPlanTransform.x,
+          main_plan_y: mainPlanTransform.y,
+          main_plan_width: mainPlanTransform.width,
+          main_plan_height: mainPlanTransform.height,
+          main_plan_locked: mainPlanLocked,
+          main_plan_group_id: mainPlanGroupId,
+          main_plan_grouping_enabled: mainPlanGroupingEnabled,
+          watermark: watermarkConfig,
         },
-        body: JSON.stringify(icons),
       });
 
-      const shapesRes = await fetch(buildApiUrl(`/api/plans/${id}/sync-shapes/`), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getPlanAuthHeaders(),
-        },
-        body: JSON.stringify(
-          shapes.map((shape) => ({
-            shape_type: shape.shape_type,
-            x: shape.x,
-            y: shape.y,
-            width: shape.width,
-            height: shape.height,
-            rotation: shape.rotation,
-            stroke_width: shape.stroke_width,
-            color: shape.color,
-            fill_color: shape.fill_color ?? null,
-            fill_opacity: shape.fill_opacity ?? null,
-            tension: shape.tension ?? null,
-            control_points: shape.control_points ?? {},
-            points: shape.points || null,
-          }))
-        ),
-      });
-
-      const textsRes = await fetch(buildApiUrl(`/api/plans/${id}/sync-texts/`), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getPlanAuthHeaders(),
-        },
-        body: JSON.stringify(
-          texts.map((t) => ({
-            text: t.text,
-            x: t.x,
-            y: t.y,
-            font_size: t.font_size,
-            font_family: t.font_family,
-            color: t.color,
-            bold: t.bold,
-            italic: t.italic,
-            background_color: t.background_color,
-            rotation: t.rotation,
-          }))
-        ),
-      });
-
-      if (res.ok && shapesRes.ok && textsRes.ok) {
-        setSaveStatus("Sauvegardé !");
-        setTimeout(() => setSaveStatus(""), 2000);
-        // Refresh the baseline so the just-saved state is no longer "unsaved".
-        setSavedSnapshot(buildEditableSnapshot());
-      } else {
+      if (!response.ok) {
         setSaveStatus("Erreur");
+        alert(`Sauvegarde impossible : ${await describeApiError(response)}`);
+        return false;
       }
+
+      const savedPlan: EvacuationPlanBackend = await response.json();
+      setPlan(savedPlan);
+      setPlanOverlays((current) =>
+        current.map((overlay, index) => ({
+          ...overlay,
+          serverId: savedPlan.overlay_ids?.[index] ?? overlay.serverId,
+          imageChanged: false,
+        }))
+      );
+      setSaveStatus("Sauvegardé !");
+      setTimeout(() => setSaveStatus(""), 2000);
+      setSavedSnapshot(buildEditableSnapshot());
+      return true;
     } catch (err) {
       console.error(err);
       setSaveStatus("Erreur");
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
+  /** True when the cleaning dialog is aimed at a secondary plan, not the main one. */
+  const cleanTargetIsOverlay = planOverlays.some((overlay) => overlay.tempId === selectedCleanTargetId);
+
+  /** Swaps a secondary plan's artwork, releasing the image it replaces. */
+  const replaceOverlayImage = (tempId: string, url: string) => {
+    setPlanOverlays((prev) =>
+      prev.map((overlay) => {
+        if (overlay.tempId !== tempId) return overlay;
+        if (overlay.url.startsWith("blob:")) URL.revokeObjectURL(overlay.url);
+        // The pixels changed, so the stored copy is stale: the next save
+        // uploads this one instead of pointing at the old file.
+        return { ...overlay, url, imageChanged: true };
+      })
+    );
+  };
+
+  /**
+   * Cleans the plan picked in the cleaning dialog when it is a secondary one.
+   * Returns false when the target is the main plan, which the caller handles.
+   */
+  const cleanSelectedOverlay = async (method: "plan" | "walls") => {
+    const target = planOverlays.find((overlay) => overlay.tempId === selectedCleanTargetId);
+    if (!target) return false;
+
+    setCleaning(true);
+    setCleaningText(
+      method === "walls"
+        ? "Extraction des murs du plan secondaire..."
+        : "Nettoyage OpenCV du plan secondaire..."
+    );
+    try {
+      // An imported plan is still a blob: URL in the browser, and the API only
+      // reads base64 — hand it the pixels, not the link. On white, because a
+      // lasso-cut plan is transparent outside its outline and OpenCV would
+      // otherwise read that as solid black.
+      const imageData = await toDataUrl(target.url, "#ffffff");
+      const res = await postJson(`/api/plans/${id}/clean-image-data/`, {
+        image_data: imageData,
+        method,
+      });
+
+      if (!res.ok) {
+        alert(`Erreur lors du nettoyage du plan secondaire : ${await describeApiError(res)}`);
+        return true;
+      }
+
+      const data = await res.json();
+      if (!data?.cleaned_image_data) {
+        alert("Le serveur n'a renvoyé aucune image nettoyée pour ce plan.");
+        return true;
+      }
+      replaceOverlayImage(target.tempId, data.cleaned_image_data);
+      setSaveStatus(
+        method === "walls"
+          ? "Murs du plan secondaire extraits avec succès !"
+          : "Plan secondaire nettoyé avec succès !"
+      );
+      window.setTimeout(() => setSaveStatus(""), 3500);
+    } catch (err) {
+      console.error(err);
+      alert("Erreur lors du nettoyage du plan secondaire.");
+    } finally {
+      setCleaning(false);
+    }
+    return true;
+  };
+
   const handleCleanPlan = async () => {
+    if (await cleanSelectedOverlay("plan")) return;
+
     setCleaning(true);
     setCleaningText("Nettoyage OpenCV du plan...");
     try {
@@ -1527,6 +1956,8 @@ export default function PlanEditorPage() {
   };
 
   const handleCleanWalls = async () => {
+    if (await cleanSelectedOverlay("walls")) return;
+
     setCleaning(true);
     setCleaningText("Extraction des murs uniquement...");
     try {
@@ -1714,7 +2145,13 @@ export default function PlanEditorPage() {
   }, []);
 
   const launchGrokCleaning = async () => {
+    const targetOverlay = planOverlays.find((overlay) => overlay.tempId === selectedCleanTargetId);
+    if (targetOverlay) {
+      setGrokError("Le traitement Grok est disponible uniquement pour le plan principal. Utilisez le nettoyage local pour un plan secondaire.");
+      return;
+    }
     if (!xaiHasSavedKey) return;
+
     setGrokCleaning(true);
     setGrokError("");
     setGrokJob(null);
@@ -1873,6 +2310,7 @@ export default function PlanEditorPage() {
 
   const handleDeleteSelectedShape = () => {
     if (!selectedShapeId) return;
+    if (selectedShape?.locked) return;
     setShapes((prev) => prev.filter((s) => s.tempId !== selectedShapeId));
     setSelectedShapeId(null);
   };
@@ -1919,8 +2357,404 @@ export default function PlanEditorPage() {
     );
   };
 
+  const selectedOverlay = selectedOverlayId && selectedOverlayId !== MAIN_PLAN_ID
+    ? planOverlays.find((overlay) => overlay.tempId === selectedOverlayId) ?? null
+    : null;
+  const multiSelectionCount =
+    multiSelection.iconIds.length + multiSelection.shapeIds.length + multiSelection.textIds.length;
+  const selectedMultiObjectGroupIds = Array.from(new Set([
+    ...icons.filter((icon) => multiSelection.iconIds.includes(icon.tempId)).map((icon) => icon.object_group_id || ""),
+    ...shapes.filter((shape) => multiSelection.shapeIds.includes(shape.tempId)).map((shape) => shape.object_group_id || ""),
+    ...texts.filter((text) => multiSelection.textIds.includes(text.tempId)).map((text) => text.object_group_id || ""),
+  ].filter(Boolean)));
+  const sharedObjectGroupId = multiSelectionCount > 0 && selectedMultiObjectGroupIds.length === 1
+    ? selectedMultiObjectGroupIds[0]
+    : "";
+
+  const activateAreaSelection = () => {
+    const next = !areaSelectionMode;
+    setAreaSelectionMode(next);
+    setMode("select");
+    setPlacementIconType(null);
+    setPlacementText(false);
+    setShapeTool(null);
+    if (next) {
+      setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+      setSelectedIconId(null);
+      setSelectedShapeId(null);
+      setSelectedTextId(null);
+      setSelectedOverlayId(null);
+      setSelectedBlockId(null);
+      setSelectedBatBlock(false);
+      setSaveStatus("Tracez un rectangle autour des objets à sélectionner");
+    } else {
+      setSaveStatus("");
+    }
+  };
+
+  const handleAreaSelectionComplete = (count: number) => {
+    setAreaSelectionMode(false);
+    setSaveStatus(
+      count > 0
+        ? `${count} objet${count > 1 ? "s" : ""} sélectionné${count > 1 ? "s" : ""}`
+        : "Aucun objet dans la zone"
+    );
+    window.setTimeout(() => setSaveStatus(""), 2800);
+  };
+
+  const handleGroupMultiSelection = () => {
+    if (multiSelectionCount < 2) return;
+    const groupId = sharedObjectGroupId || (
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? `object-group-${crypto.randomUUID()}`
+        : `object-group-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+    );
+    const iconIds = new Set(multiSelection.iconIds);
+    const shapeIds = new Set(multiSelection.shapeIds);
+    const textIds = new Set(multiSelection.textIds);
+    setIcons((current) => current.map((icon) =>
+      iconIds.has(icon.tempId) ? { ...icon, object_group_id: groupId } : icon
+    ));
+    setShapes((current) => current.map((shape) =>
+      shapeIds.has(shape.tempId) ? { ...shape, object_group_id: groupId } : shape
+    ));
+    setTexts((current) => current.map((text) =>
+      textIds.has(text.tempId) ? { ...text, object_group_id: groupId } : text
+    ));
+    setSaveStatus(`${multiSelectionCount} objets regroupés`);
+    window.setTimeout(() => setSaveStatus(""), 2500);
+  };
+
+  const handleUngroupMultiSelection = () => {
+    if (!selectedMultiObjectGroupIds.length) return;
+    const groupIds = new Set(selectedMultiObjectGroupIds);
+    setIcons((current) => current.map((icon) =>
+      icon.object_group_id && groupIds.has(icon.object_group_id) ? { ...icon, object_group_id: "" } : icon
+    ));
+    setShapes((current) => current.map((shape) =>
+      shape.object_group_id && groupIds.has(shape.object_group_id) ? { ...shape, object_group_id: "" } : shape
+    ));
+    setTexts((current) => current.map((text) =>
+      text.object_group_id && groupIds.has(text.object_group_id) ? { ...text, object_group_id: "" } : text
+    ));
+    setSaveStatus("Groupe d’objets dissocié");
+    window.setTimeout(() => setSaveStatus(""), 2500);
+  };
+
+  const selectedPlanGroupId = selectedOverlayId === MAIN_PLAN_ID
+    ? mainPlanGroupId
+    : selectedOverlay?.group_id || "";
+
+  const pointInsidePlan = (
+    point: { x: number; y: number },
+    target: { x: number; y: number; width: number; height: number; rotation: number }
+  ) => {
+    const radians = (-target.rotation * Math.PI) / 180;
+    const dx = point.x - target.x;
+    const dy = point.y - target.y;
+    const localX = dx * Math.cos(radians) - dy * Math.sin(radians);
+    const localY = dx * Math.sin(radians) + dy * Math.cos(radians);
+    return localX >= 0 && localY >= 0 && localX <= target.width && localY <= target.height;
+  };
+
+  const handleGroupSelectedPlan = () => {
+    if (!selectedOverlayId) return;
+    const natural = planCanvasRef.current?.getBackgroundDimensions() || { width: 0, height: 0 };
+    const target = selectedOverlayId === MAIN_PLAN_ID
+      ? {
+          x: mainPlanTransform.x,
+          y: mainPlanTransform.y,
+          width: mainPlanTransform.width || natural.width,
+          height: mainPlanTransform.height || natural.height,
+          rotation: 0,
+        }
+      : selectedOverlay;
+    if (!target || target.width <= 0 || target.height <= 0) {
+      setSaveStatus("Dimensions du plan indisponibles");
+      window.setTimeout(() => setSaveStatus(""), 2500);
+      return;
+    }
+
+    const groupId = selectedPlanGroupId || (
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? `plan-group-${crypto.randomUUID()}`
+        : `plan-group-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+    );
+    let groupedCount = 0;
+    const assignGroup = <T extends { group_id?: string }>(item: T, center: { x: number; y: number }): T => {
+      if (pointInsidePlan(center, target)) {
+        groupedCount += 1;
+        return { ...item, group_id: groupId };
+      }
+      return item.group_id === groupId ? { ...item, group_id: "" } : item;
+    };
+
+    const groupedIcons = icons.map((icon) => assignGroup(icon, {
+      x: icon.x + icon.width / 2,
+      y: icon.y + icon.height / 2,
+    }));
+    const groupedShapes = shapes.map((shape) => {
+      const center = shape.points?.length
+        ? {
+            x: shape.points.reduce((total, point) => total + point.x, 0) / shape.points.length,
+            y: shape.points.reduce((total, point) => total + point.y, 0) / shape.points.length,
+          }
+        : { x: shape.x + shape.width / 2, y: shape.y + shape.height / 2 };
+      return assignGroup(shape, center);
+    });
+    const groupedTexts = texts.map((text) => assignGroup(text, { x: text.x, y: text.y }));
+    setIcons(groupedIcons);
+    setShapes(groupedShapes);
+    setTexts(groupedTexts);
+
+    if (selectedOverlayId === MAIN_PLAN_ID) {
+      setMainPlanGroupId(groupId);
+      setMainPlanGroupingEnabled(true);
+    } else {
+      setPlanOverlays((current) => current.map((overlay) =>
+        overlay.tempId === selectedOverlayId ? { ...overlay, group_id: groupId } : overlay
+      ));
+    }
+    setSaveStatus(`${groupedCount} élément${groupedCount > 1 ? "s" : ""} regroupé${groupedCount > 1 ? "s" : ""} avec le plan`);
+    window.setTimeout(() => setSaveStatus(""), 3000);
+  };
+
+  const handleUngroupSelectedPlan = () => {
+    if (!selectedOverlayId || !selectedPlanGroupId) return;
+    const groupId = selectedPlanGroupId;
+    setIcons((current) => current.map((icon) => icon.group_id === groupId ? { ...icon, group_id: "" } : icon));
+    setShapes((current) => current.map((shape) => shape.group_id === groupId ? { ...shape, group_id: "" } : shape));
+    setTexts((current) => current.map((text) => text.group_id === groupId ? { ...text, group_id: "" } : text));
+    if (selectedOverlayId === MAIN_PLAN_ID) {
+      setMainPlanGroupId("");
+      // Explicitly managed + empty means that the plan now moves independently.
+      setMainPlanGroupingEnabled(true);
+    } else {
+      setPlanOverlays((current) => current.map((overlay) =>
+        overlay.tempId === selectedOverlayId ? { ...overlay, group_id: "" } : overlay
+      ));
+    }
+    setSaveStatus("Plan dissocié de ses éléments");
+    window.setTimeout(() => setSaveStatus(""), 2500);
+  };
+
+  const hasLockableSelection = Boolean(
+    selectedIcon ||
+    selectedText ||
+    selectedShape ||
+    selectedBlock ||
+    selectedOverlay ||
+    selectedOverlayId === MAIN_PLAN_ID ||
+    selectedBatBlock
+  );
+  const selectedObjectLocked = Boolean(
+    selectedIcon?.locked ||
+    selectedText?.locked ||
+    selectedShape?.locked ||
+    selectedBlock?.locked ||
+    selectedOverlay?.locked ||
+    (selectedOverlayId === MAIN_PLAN_ID && mainPlanLocked) ||
+    (selectedBatBlock && watermarkConfig.block_locked)
+  );
+
+  const toggleSelectedObjectLock = () => {
+    const locked = !selectedObjectLocked;
+    if (selectedBatBlock) {
+      setWatermarkConfig((current) => ({ ...current, block_locked: locked }));
+    } else if (selectedOverlayId === MAIN_PLAN_ID) {
+      setMainPlanLocked(locked);
+    } else if (selectedOverlay) {
+      setPlanOverlays((current) =>
+        current.map((overlay) => overlay.tempId === selectedOverlay.tempId ? { ...overlay, locked } : overlay)
+      );
+    } else if (selectedBlock) {
+      updateSelectedBlock({ locked });
+    } else if (selectedIcon) {
+      setIcons((current) =>
+        current.map((icon) => icon.tempId === selectedIcon.tempId ? { ...icon, locked } : icon)
+      );
+    } else if (selectedText) {
+      setTexts((current) =>
+        current.map((text) => text.tempId === selectedText.tempId ? { ...text, locked } : text)
+      );
+    } else if (selectedShape) {
+      setShapes((current) =>
+        current.map((shape) => shape.tempId === selectedShape.tempId ? { ...shape, locked } : shape)
+      );
+    }
+  };
+
+  const openWatermarkSettings = () => {
+    const today = new Date().toLocaleDateString("en-CA");
+    setWatermarkDraft({
+      ...watermarkConfig,
+      date: watermarkConfig.date || today,
+      client_logo: watermarkConfig.client_logo || exportClientLogo,
+      creator_logo: watermarkConfig.creator_logo || exportStudioLogo,
+    });
+    setWatermarkModalOpen(true);
+  };
+
+  const applyWatermarkSettings = () => {
+    setWatermarkConfig({ ...watermarkDraft, enabled: true });
+    setWatermarkModalOpen(false);
+  };
+
+  const disableWatermark = () => {
+    setWatermarkConfig((current) => ({ ...current, enabled: false }));
+    setSelectedBatBlock(false);
+  };
+
+  const fileAsDataUrl = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error(`Impossible de lire ${file.name}`));
+      reader.readAsDataURL(file);
+    });
+
+  const importOverlayFile = async (file: File) => {
+    if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+      const pdfjs = await import("pdfjs-dist");
+      pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+        "pdfjs-dist/build/pdf.worker.min.mjs",
+        import.meta.url
+      ).toString();
+      const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+      const pageCount = Math.min(pdf.numPages, 20);
+      const pages: Array<{ url: string; width: number; height: number; label: string }> = [];
+
+      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+        const page = await pdf.getPage(pageNumber);
+        const baseViewport = page.getViewport({ scale: 1 });
+        const renderScale = Math.min(
+          2.5,
+          MAX_CANVAS_SIDE / Math.max(baseViewport.width, baseViewport.height),
+          Math.sqrt(MAX_CANVAS_PIXELS / (baseViewport.width * baseViewport.height))
+        );
+        const viewport = page.getViewport({ scale: Math.max(0.1, renderScale) });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(viewport.width));
+        canvas.height = Math.max(1, Math.round(viewport.height));
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("Canvas PDF indisponible");
+        await page.render({ canvas, canvasContext: context, viewport }).promise;
+        pages.push({
+          url: canvas.toDataURL("image/png"),
+          width: baseViewport.width,
+          height: baseViewport.height,
+          label: pdf.numPages > 1 ? `${file.name} — page ${pageNumber}` : file.name,
+        });
+        releaseCanvas(canvas);
+      }
+      if (pdf.numPages > pageCount) {
+        alert(`Le PDF ${file.name} contient ${pdf.numPages} pages. Les 20 premières ont été importées.`);
+      }
+      return pages;
+    }
+
+    // Rasterize every browser-supported image to a bounded PNG. This gives the
+    // persistence endpoint one predictable format (including for SVG/GIF/WebP)
+    // and prevents an enormous source image from reaching the server unchanged.
+    const sourceUrl = await fileAsDataUrl(file);
+    const image = await loadImage(sourceUrl);
+    const width = image.naturalWidth || image.width;
+    const height = image.naturalHeight || image.height;
+    const canvas = drawImageToCanvas(image);
+    try {
+      return [{ url: canvas.toDataURL("image/png"), width, height, label: file.name }];
+    } finally {
+      releaseCanvas(canvas);
+    }
+  };
+
+  const handleAddPlanOverlayFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (!files.length) return;
+
+    setImportingOverlays(true);
+    setSaveStatus("Import des plans...");
+    try {
+      const imported: Array<{ url: string; width: number; height: number; label: string }> = [];
+      for (const file of files) {
+        imported.push(...await importOverlayFile(file));
+      }
+      const baseCount = planOverlays.length;
+      const newOverlays: CanvasPlanOverlay[] = imported.map((item, index) => {
+        const aspect = item.width / Math.max(1, item.height);
+        const initialWidth = 450;
+        return {
+          tempId: `plan-overlay-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
+          url: item.url,
+          x: 120 + (baseCount + index) * 40,
+          y: 120 + (baseCount + index) * 40,
+          width: initialWidth,
+          height: Math.max(40, Math.round(initialWidth / aspect)),
+          rotation: 0,
+          label: item.label,
+          locked: false,
+          imageChanged: true,
+        };
+      });
+      setPlanOverlays((current) => [...current, ...newOverlays]);
+      setSelectedOverlayId(newOverlays.at(-1)?.tempId ?? null);
+      setSaveStatus(`${newOverlays.length} plan${newOverlays.length > 1 ? "s" : ""} importé${newOverlays.length > 1 ? "s" : ""}`);
+      window.setTimeout(() => setSaveStatus(""), 3000);
+    } catch (error) {
+      console.error("Plan overlay import failed:", error);
+      alert(error instanceof Error ? error.message : "Impossible d’importer les plans sélectionnés.");
+      setSaveStatus("Erreur d’import");
+    } finally {
+      setImportingOverlays(false);
+    }
+  };
+
+  /** Returns true when a secondary plan was actually removed. */
+  const handleDeleteSelectedOverlay = () => {
+    if (!selectedOverlayId || selectedOverlayId === MAIN_PLAN_ID) return false;
+    if (planOverlays.find((overlay) => overlay.tempId === selectedOverlayId)?.locked) return false;
+    setPlanOverlays((overlays) =>
+      overlays.filter((item) => {
+        if (item.tempId !== selectedOverlayId) return true;
+        if (item.url.startsWith("blob:")) URL.revokeObjectURL(item.url);
+        return false;
+      })
+    );
+    if (selectedCleanTargetId === selectedOverlayId) setSelectedCleanTargetId(MAIN_PLAN_ID);
+    setSelectedOverlayId(null);
+    return true;
+  };
+
+  // Suppr./Retour arrière removes the selected secondary plan. Its own listener,
+  // so it always sees the current selection instead of the first render's.
+  useEffect(() => {
+    if (!selectedOverlayId || selectedOverlayId === MAIN_PLAN_ID) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      handleDeleteSelectedOverlay();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  });
+
   const applySheetTemplate = (template: SheetTemplateKey | "none") => {
     setSheetTemplate(template);
+    setAreaSelectionMode(false);
+    setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
     setSelectedBlockId(null);
     if (template === "none") {
       setSheetBlocks([]);
@@ -2045,6 +2879,7 @@ export default function PlanEditorPage() {
 
   const handleDeleteSelected = () => {
     if (!selectedIconId) return;
+    if (selectedIcon?.locked) return;
     setIcons(icons.filter((i) => i.tempId !== selectedIconId));
     setSelectedIconId(null);
   };
@@ -2211,20 +3046,17 @@ export default function PlanEditorPage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   });
 
-  const openExportTemplate = (format: "png" | "pdf") => {
-    setExportFormat(format);
+  /**
+   * The sheet's own settings: the site name and the logos the studio template
+   * draws. The export no longer goes through this dialog — it captures the
+   * studio directly — but these fields still feed the sheet, so they keep a
+   * way in of their own.
+   */
+  const openSheetSettings = () => {
     setExportSiteName((current) => current || plan?.building_name || "");
-
-    const action = async () => {
-      setExportModalOpen(true);
-    };
-
-    if (hasUnsavedChanges()) {
-      setPendingExportAction(() => action);
-      setExportSaveConfirmOpen(true);
-    } else {
-      void action();
-    }
+    setExportClientLogo((current) => current || watermarkConfig.client_logo);
+    setExportStudioLogo((current) => current || watermarkConfig.creator_logo);
+    setExportModalOpen(true);
   };
 
   const drawWrappedText = (
@@ -2284,16 +3116,6 @@ export default function PlanEditorPage() {
 
     if (line) lines.push(line);
     return lines;
-  };
-
-  const loadImage = (src: string) => {
-    return new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = new window.Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => resolve(img);
-      img.onerror = reject;
-      img.src = src;
-    });
   };
 
   // Longest edge used when hunting for the plan's bounding box. Scanning the full
@@ -2507,7 +3329,7 @@ export default function PlanEditorPage() {
     context.restore();
   };
 
-  const getStageDataUrl = async (pixelRatio: number, silent = false) => {
+  const getStageDataUrl = async (pixelRatio: number, silent = false, targetLongEdgePx?: number) => {
     const stage = getStageInstance();
     if (!stage) return null;
 
@@ -2539,12 +3361,18 @@ export default function PlanEditorPage() {
           // The sheet turns with the scene, so its axis-aligned bounding box —
           // not its own width/height — is what has to be captured.
           const bounds = backgroundNode.getClientRect({ relativeTo: stage, skipShadow: true });
+          // A plan is captured for a sheet of paper, not for its own sake: a
+          // fixed ratio on a large drawing produced a hundred-megapixel image
+          // (and a PDF to match). Aim at the print resolution instead.
+          const ratio = targetLongEdgePx
+            ? fitPixelRatio(bounds.width, bounds.height, targetLongEdgePx)
+            : pixelRatio;
           return stage.toDataURL({
             x: bounds.x,
             y: bounds.y,
             width: bounds.width,
             height: bounds.height,
-            pixelRatio
+            pixelRatio: ratio
           });
         } finally {
           stage.position({ x: previousView.x, y: previousView.y });
@@ -4541,88 +5369,14 @@ export default function PlanEditorPage() {
     }
   };
 
-  // Export functions
   const getStageInstance = () => {
-    const stageContainer = document.querySelector(".konvajs-content");
-    if (!stageContainer) return null;
-    // @ts-ignore
-    return window.Konva.stages[0];
+    return planCanvasRef.current?.getStage() ?? null;
   };
 
-  const executeExportPngAction = async () => {
+  /** Capture of the studio sheet, exactly as laid out, at the print resolution. */
+  const captureSheetImage = (targetLongEdgePx: number) => {
     const stage = getStageInstance();
-    if (!stage) return;
-    
-    // Temporarily deselect transformer to get a clean screenshot
-    setSelectedIconId(null);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    let dataUrl = "";
-    try {
-      dataUrl = stage.toDataURL({ pixelRatio: EXPORT_STAGE_PIXEL_RATIO });
-    } catch (err) {
-      console.error("PNG export failed:", err);
-      alert("Impossible d'exporter le PNG. Rechargez la page puis réessayez pour recharger le fond de plan avec les permissions d'export.");
-      return;
-    }
-
-    const link = document.createElement("a");
-    link.download = `${plan?.title || "plan"}_evacuation.png`;
-    link.href = dataUrl;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const executeExportPdfAction = async () => {
-    const stage = getStageInstance();
-    if (!stage) return;
-
-    // Temporarily deselect transformer to get a clean screenshot
-    setSelectedIconId(null);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    let dataUrl = "";
-    try {
-      dataUrl = stage.toDataURL({ pixelRatio: EXPORT_STAGE_PIXEL_RATIO });
-    } catch (err) {
-      console.error("PDF export failed:", err);
-      alert("Impossible d'exporter le PDF. Rechargez la page puis réessayez pour recharger le fond de plan avec les permissions d'export.");
-      return;
-    }
-    
-    // Get actual stage sizing
-    const width = stage.width();
-    const height = stage.height();
-
-    // Determine layout: landscape vs portrait
-    const orientation = width > height ? "l" : "p";
-    const pdf = new jsPDF({
-      orientation: orientation,
-      unit: "px",
-      format: [width, height]
-    });
-
-    pdf.addImage(dataUrl, "PNG", 0, 0, width, height);
-    pdf.save(`${plan?.title || "plan"}_evacuation.pdf`);
-  };
-
-  /**
-   * Export of the studio sheet. There is nothing to re-draw: the page on screen
-   * *is* the deliverable, so the export is a high-resolution capture of exactly
-   * the sheet rectangle — what you arranged is what you get.
-   */
-  const exportSheet = async (format: "png" | "pdf") => {
-    const stage = getStageInstance();
-    if (!stage) return;
-
-    setSheetExporting(true);
-    // Clear every selection so no handle or highlight is baked into the sheet.
-    setSelectedIconId(null);
-    setSelectedShapeId(null);
-    setSelectedTextId(null);
-    setSelectedBlockId(null);
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    if (!stage) return null;
 
     const previousView = {
       x: stage.x(),
@@ -4638,50 +5392,127 @@ export default function PlanEditorPage() {
       stage.scale({ x: 1, y: 1 });
       stage.draw();
 
-      const dataUrl = stage.toDataURL({
+      return stage.toDataURL({
         x: 0,
         y: 0,
         width: SHEET_WIDTH,
         height: SHEET_HEIGHT,
-        pixelRatio: EXPORT_OUTPUT_SCALE
+        pixelRatio: fitPixelRatio(SHEET_WIDTH, SHEET_HEIGHT, targetLongEdgePx)
       });
-
-      if (format === "png") {
-        const link = document.createElement("a");
-        link.download = `${plan?.title || "plan"}_${sheetTemplate}.png`;
-        link.href = dataUrl;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      } else {
-        const paper = EXPORT_PAPER_SIZES[exportPaperFormat];
-        const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: exportPaperFormat });
-        pdf.addImage(dataUrl, "PNG", 0, 0, paper.widthMm, paper.heightMm);
-        pdf.save(`${plan?.title || "plan"}_${sheetTemplate}.pdf`);
-      }
-    } catch (err) {
-      console.error("Sheet export failed:", err);
-      alert("Impossible d'exporter la feuille. Rechargez la page puis réessayez.");
     } finally {
       stage.position({ x: previousView.x, y: previousView.y });
       stage.scale({ x: previousView.scaleX, y: previousView.scaleY });
       stage.draw();
+    }
+  };
+
+  /**
+   * The one export: what the studio shows *is* the deliverable, so nothing is
+   * re-composed elsewhere. On a template it captures the sheet; on a bare plan
+   * it captures the plan and everything placed around it — never the viewport,
+   * so the zoom and the scroll position have no say in the result.
+   */
+  const convertDataUrlToJpeg = async (dataUrl: string) => {
+    const image = await loadImage(dataUrl);
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth || image.width;
+    canvas.height = image.naturalHeight || image.height;
+    const context = canvas.getContext("2d");
+    if (!context) return dataUrl;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0);
+    const jpeg = canvas.toDataURL("image/jpeg", 0.94);
+    releaseCanvas(canvas);
+    return jpeg;
+  };
+
+  const exportStudio = async (format: "png" | "jpeg" | "pdf") => {
+    const stage = getStageInstance();
+    if (!stage) return;
+
+    setSheetExporting(true);
+    // Clear every selection so no handle or highlight is baked into the export.
+    setSelectedIconId(null);
+    setSelectedShapeId(null);
+    setSelectedTextId(null);
+    setSelectedBlockId(null);
+    setSelectedOverlayId(null);
+    setSelectedBatBlock(false);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    try {
+      // The output is sized for the paper it is going on, so a big drawing no
+      // longer means a gigantic file — it means a sharp one at 300 dpi.
+      const paper = EXPORT_PAPER_SIZES[exportPaperFormat];
+      const targetLongEdgePx = paperLongEdgePx(paper);
+
+      const dataUrl = sheetActive
+        ? captureSheetImage(targetLongEdgePx)
+        : await getStageDataUrl(EXPORT_STAGE_PIXEL_RATIO, false, targetLongEdgePx);
+      if (!dataUrl) return;
+
+      const suffix = sheetActive ? sheetTemplate : "plan";
+      const filename = `${plan?.title || "plan"}_${suffix}`;
+
+      if (format === "png" || format === "jpeg") {
+        const downloadDataUrl = format === "jpeg" ? await convertDataUrlToJpeg(dataUrl) : dataUrl;
+        const link = document.createElement("a");
+        link.download = `${filename}.${format === "jpeg" ? "jpg" : "png"}`;
+        link.href = downloadDataUrl;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      }
+
+      if (sheetActive) {
+        // A template is drawn at the paper's own proportions: it fills the page.
+        const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: exportPaperFormat });
+        // "FAST" is deflate: a plan is mostly white, and storing the image raw
+        // is what turned a perfectly ordinary sheet into hundreds of megabytes.
+        pdf.addImage(dataUrl, "PNG", 0, 0, paper.widthMm, paper.heightMm, undefined, "FAST");
+        pdf.save(`${filename}.pdf`);
+        return;
+      }
+
+      // A bare plan has whatever shape the building has, so the page follows it
+      // and the drawing is centred inside, with a margin to keep it printable.
+      const image = await loadImage(dataUrl);
+      const landscape = image.width >= image.height;
+      const pageWidth = landscape ? paper.widthMm : paper.heightMm;
+      const pageHeight = landscape ? paper.heightMm : paper.widthMm;
+      const margin = 8;
+      const scale = Math.min(
+        (pageWidth - margin * 2) / image.width,
+        (pageHeight - margin * 2) / image.height
+      );
+      const drawWidth = image.width * scale;
+      const drawHeight = image.height * scale;
+
+      const pdf = new jsPDF({
+        orientation: landscape ? "landscape" : "portrait",
+        unit: "mm",
+        format: exportPaperFormat
+      });
+      pdf.addImage(
+        dataUrl,
+        "PNG",
+        (pageWidth - drawWidth) / 2,
+        (pageHeight - drawHeight) / 2,
+        drawWidth,
+        drawHeight,
+        undefined,
+        "FAST"
+      );
+      pdf.save(`${filename}.pdf`);
+    } catch (err) {
+      console.error("Studio export failed:", err);
+      alert("Impossible d'exporter. Rechargez la page puis réessayez.");
+    } finally {
       setSheetExporting(false);
     }
   };
-
-  const triggerExportWithConfirmation = (action: () => Promise<void>) => {
-    if (hasUnsavedChanges()) {
-      setPendingExportAction(() => action);
-      setExportSaveConfirmOpen(true);
-    } else {
-      void action();
-    }
-  };
-
-  const handleExportTemplate = () => triggerExportWithConfirmation(executeExportTemplateAction);
-  const handleExportPng = () => triggerExportWithConfirmation(executeExportPngAction);
-  const handleExportPdf = () => triggerExportWithConfirmation(executeExportPdfAction);
 
   if (loading) {
     return (
@@ -4784,8 +5615,7 @@ export default function PlanEditorPage() {
 
   // Save the current edits then leave the editor.
   const handleSaveAndLeave = async () => {
-    await handleSave();
-    router.push("/evacuation-plans");
+    if (await handleSave()) router.push("/evacuation-plans");
   };
 
   return (
@@ -4796,19 +5626,15 @@ export default function PlanEditorPage() {
       <div
         style={{
           position: "fixed",
-          top: 0,
-          left: 0,
-          bottom: 0,
-          height: "100vh",
-          width: interfaceWidth ? `${interfaceWidth}px` : "100vw",
-          maxWidth: "100vw",
+          inset: 0,
+          boxSizing: "border-box",
           overflow: "hidden"
         }}
-        className="flex flex-col bg-[#1b1b1d] text-neutral-200"
+        className="studio-shell flex min-h-0 min-w-0 flex-col bg-[#1b1b1d] text-neutral-200"
       >
         {/* ───────────────── Top bar ───────────────── */}
-        <header className="flex h-11 shrink-0 items-center justify-between gap-4 overflow-hidden border-b border-black/50 bg-[#2d2d30] px-2">
-          <div className="flex min-w-0 items-center gap-2">
+        <header className="flex min-h-16 w-full max-w-full min-w-0 shrink-0 items-center justify-between gap-2 overflow-hidden border-b border-black/50 bg-[#2d2d30] px-2 py-0.5">
+          <div className="flex w-56 min-w-[200px] shrink-0 items-center gap-2">
             <button
               type="button"
               onClick={() => {
@@ -4852,7 +5678,8 @@ export default function PlanEditorPage() {
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center gap-1.5">
+          <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 overflow-hidden">
+            <div className="flex min-h-7 min-w-0 items-center gap-1.5 whitespace-nowrap overflow-x-auto no-scrollbar scroll-smooth [&>*]:shrink-0">
             {/* Undo / Redo */}
             <div className="flex items-center gap-0.5 rounded bg-black/25 p-0.5">
               <button
@@ -4944,32 +5771,63 @@ export default function PlanEditorPage() {
                   <RefreshCw className="h-3 w-3" />
                 </button>
               )}
+              <button
+                type="button"
+                onClick={openSheetSettings}
+                title="Réglages de la feuille : nom du site, titre et logos"
+                className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+              >
+                <Settings className="h-3 w-3" />
+              </button>
             </div>
 
-            {sheetActive ? (
-              <div className="flex items-center gap-0.5 rounded bg-black/25 p-0.5">
-                <button
-                  onClick={() => void exportSheet("png")}
-                  disabled={sheetExporting}
-                  className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
-                  title="Exporter la feuille affichée en PNG"
-                >
-                  {sheetExporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                  <span>PNG</span>
-                </button>
-                <button
-                  onClick={() => void exportSheet("pdf")}
-                  disabled={sheetExporting}
-                  className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
-                  title={`Exporter la feuille affichée en PDF ${EXPORT_PAPER_SIZES[exportPaperFormat].label}`}
-                >
-                  {sheetExporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}
-                  <span>PDF</span>
-                </button>
-              </div>
-            ) : (
-              <ExportButtons onOpenExport={openExportTemplate} />
+            <button
+              type="button"
+              onClick={openWatermarkSettings}
+              title="Configurer la version filigranée et le bloc Bon à tirer"
+              className={`flex cursor-pointer items-center gap-1.5 rounded border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+                watermarkConfig.enabled
+                  ? "border-red-500/50 bg-red-950/70 text-red-100 hover:bg-red-900/80"
+                  : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
+              }`}
+            >
+              <Stamp className={`h-3.5 w-3.5 ${watermarkConfig.enabled ? "text-red-400" : "text-neutral-400"}`} />
+              <span>{watermarkConfig.enabled ? "Version filigranée active" : "Version filigranée"}</span>
+            </button>
+            {watermarkConfig.enabled && (
+              <button
+                type="button"
+                onClick={disableWatermark}
+                title="Retirer uniquement le filigrane et le bloc BAT"
+                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1.5 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+              >
+                <X className="h-3 w-3" />
+                Désactiver
+              </button>
             )}
+
+            {/* One export, for both modes: it always captures the studio. */}
+            <ExportButtons
+              onExport={(format) => void exportStudio(format)}
+              exporting={sheetExporting}
+              paperFormat={exportPaperFormat}
+              paperOptions={EXPORT_PAPER_OPTIONS}
+              onPaperFormatChange={(key) => setExportPaperFormat(key as ExportPaperFormat)}
+            />
+
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              title="Sauvegarder le projet"
+              className="flex cursor-pointer items-center gap-1.5 rounded bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-40"
+            >
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+              <span>{saveStatus || "Sauvegarder"}</span>
+            </button>
+
+            </div>
+
+            <div className="flex min-h-7 min-w-0 items-center gap-1.5 whitespace-nowrap overflow-x-auto no-scrollbar [&>*]:shrink-0">
 
             <span className="h-5 w-px bg-white/10" />
 
@@ -4981,10 +5839,19 @@ export default function PlanEditorPage() {
               className="hidden"
             />
 
+            <input
+              type="file"
+              ref={planOverlayInputRef}
+              accept="image/*,application/pdf"
+              multiple
+              onChange={handleAddPlanOverlayFile}
+              className="hidden"
+            />
+
             <button
               onClick={() => changePlanInputRef.current?.click()}
               disabled={changingBackground || cleaning || grokCleaning}
-              title="Importer un autre plan d'arrière-plan (Image ou PDF)"
+              title="Importer un autre plan d'arrière-plan principal (Image ou PDF)"
               className="flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
             >
               {changingBackground ? (
@@ -4996,9 +5863,160 @@ export default function PlanEditorPage() {
             </button>
 
             <button
-              onClick={() => setCropModalOpen(true)}
+              onClick={() => planOverlayInputRef.current?.click()}
+              disabled={importingOverlays}
+              title="Insérer une ou plusieurs images/PDF sur le canvas (chaque page PDF devient un plan manipulable)"
+              className="flex cursor-pointer items-center gap-1.5 rounded border border-sky-600/40 bg-sky-950/60 px-2.5 py-1.5 text-[11px] font-semibold text-sky-200 transition-colors hover:bg-sky-900/80 hover:text-white"
+            >
+              {importingOverlays ? <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" /> : <FileUp className="h-3.5 w-3.5 text-sky-400" />}
+              <span>{importingOverlays ? "Import..." : "+ Insérer des plans"}</span>
+            </button>
+
+            {selectedOverlayId && selectedOverlayId !== MAIN_PLAN_ID && (
+              <button
+                onClick={() => {
+                  setSelectedCleanTargetId(selectedOverlayId);
+                  setCleanModalOpen(true);
+                }}
+                disabled={cleaning || grokCleaning}
+                title="Nettoyer directement le plan secondaire actuellement sélectionné"
+                className="flex cursor-pointer items-center gap-1.5 rounded border border-emerald-600/40 bg-emerald-950/60 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-200 transition-colors hover:bg-emerald-900/80 hover:text-white"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
+                <span>Nettoyer ce plan</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={activateAreaSelection}
+              disabled={sheetActive}
+              title={sheetActive
+                ? "La sélection par zone est disponible dans l’affichage Plan seul"
+                : "Tracer un rectangle avec la souris pour sélectionner plusieurs pictogrammes, formes et textes"}
+              className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
+                areaSelectionMode
+                  ? "border-sky-400 bg-sky-900/80 text-sky-100"
+                  : multiSelectionCount > 0
+                    ? "border-sky-600/50 bg-sky-950/70 text-sky-200 hover:bg-sky-900/80"
+                    : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
+              }`}
+            >
+              <BoxSelect className="h-3.5 w-3.5" />
+              <span>{areaSelectionMode ? "Tracez la zone…" : multiSelectionCount > 0 ? `${multiSelectionCount} sélectionnés` : "Sélection par zone"}</span>
+            </button>
+
+            {multiSelectionCount >= 2 && (
+              <button
+                type="button"
+                onClick={handleGroupMultiSelection}
+                title="Créer un groupe indépendant avec les objets sélectionnés"
+                className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+                  sharedObjectGroupId
+                    ? "border-violet-500/50 bg-violet-950/70 text-violet-200 hover:bg-violet-900/80"
+                    : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <GroupIcon className="h-3.5 w-3.5" />
+                <span>{sharedObjectGroupId ? "Mettre à jour le groupe d’objets" : "Regrouper la sélection"}</span>
+              </button>
+            )}
+            {multiSelectionCount > 0 && selectedMultiObjectGroupIds.length > 0 && (
+              <button
+                type="button"
+                onClick={handleUngroupMultiSelection}
+                title="Dissocier le groupe d’objets sans supprimer ses éléments"
+                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1.5 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+              >
+                <Ungroup className="h-3.5 w-3.5" />
+                <span>Dissocier les objets</span>
+              </button>
+            )}
+
+            {selectedOverlayId && (
+              <button
+                type="button"
+                onClick={handleGroupSelectedPlan}
+                title="Associer au plan sélectionné les pictogrammes, zones et textes placés visuellement dessus"
+                className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+                  selectedPlanGroupId
+                    ? "border-indigo-500/50 bg-indigo-950/70 text-indigo-200 hover:bg-indigo-900/80"
+                    : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <GroupIcon className="h-3.5 w-3.5" />
+                <span>{selectedPlanGroupId ? "Mettre à jour le groupe" : "Regrouper avec le plan"}</span>
+              </button>
+            )}
+            {selectedOverlayId && selectedPlanGroupId && (
+              <button
+                type="button"
+                onClick={handleUngroupSelectedPlan}
+                title="Dissocier uniquement les éléments regroupés, sans les supprimer"
+                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1.5 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+              >
+                <Ungroup className="h-3.5 w-3.5" />
+                <span>Dissocier</span>
+              </button>
+            )}
+
+            {hasLockableSelection && (
+              <button
+                type="button"
+                onClick={toggleSelectedObjectLock}
+                title={selectedObjectLocked ? "Déverrouiller l’objet sélectionné" : "Verrouiller l’objet sélectionné pour éviter un déplacement accidentel"}
+                className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+                  selectedObjectLocked
+                    ? "border-amber-500/50 bg-amber-950/70 text-amber-200 hover:bg-amber-900/80"
+                    : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                {selectedObjectLocked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+                <span>{selectedObjectLocked ? "Objet verrouillé" : "Verrouiller l’objet"}</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => setKeepPlanRatio((prev) => !prev)}
+              title={
+                keepPlanRatio
+                  ? "Mode d'agrandissement actuel : Proportions réelles conservées (🔒 Garder ratio). Cliquer pour passer en Déformation libre."
+                  : "Mode d'agrandissement actuel : Déformation libre (🔓 Déformer). Cliquer pour verrouiller les proportions réelles."
+              }
+              className={`flex cursor-pointer items-center gap-1.5 rounded border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+                keepPlanRatio
+                  ? "border-emerald-600/40 bg-emerald-950/60 text-emerald-200 hover:bg-emerald-900/80"
+                  : "border-amber-600/40 bg-amber-950/60 text-amber-200 hover:bg-amber-900/80"
+              }`}
+            >
+              {keepPlanRatio ? (
+                <>
+                  <Lock className="h-3.5 w-3.5 text-emerald-400" />
+                  <span>Proportions réelles (🔒 Garder)</span>
+                </>
+              ) : (
+                <>
+                  <Unlock className="h-3.5 w-3.5 text-amber-400" />
+                  <span>Déformation libre (🔓 Déformer)</span>
+                </>
+              )}
+            </button>
+
+            {selectedOverlayId && selectedOverlayId !== MAIN_PLAN_ID && (
+              <button
+                onClick={handleDeleteSelectedOverlay}
+                title="Supprimer le plan secondaire sélectionné"
+                className="flex cursor-pointer items-center gap-1.5 rounded border border-red-600/40 bg-red-950/60 px-2 py-1 text-[11px] font-semibold text-red-200 transition-colors hover:bg-red-900/80 hover:text-white"
+              >
+                <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                <span>Supprimer plan</span>
+              </button>
+            )}
+
+            <button
+              onClick={openPolygonCrop}
               disabled={cropping || changingBackground || cleaning || grokCleaning}
-              title="Rogner / Croper le plan d'arrière-plan avec une sélection"
+              title="Rogner / Croper le plan avec un tracé libre au crayon/lasso ou un cadre"
               className="flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
             >
               {cropping ? (
@@ -5010,8 +6028,12 @@ export default function PlanEditorPage() {
             </button>
 
             <button
-              onClick={() => setCleanModalOpen(true)}
+              onClick={() => {
+                setSelectedCleanTargetId(selectedOverlayId || "main");
+                setCleanModalOpen(true);
+              }}
               disabled={cleaning || grokCleaning}
+              title="Nettoyer le plan sélectionné"
               className="flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
             >
               {cleaning || grokCleaning ? (
@@ -5034,23 +6056,16 @@ export default function PlanEditorPage() {
               </button>
             )}
 
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="flex cursor-pointer items-center gap-1.5 rounded bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-40"
-            >
-              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-              <span>{saveStatus || "Sauvegarder"}</span>
-            </button>
+            </div>
           </div>
         </header>
 
         {/* ───────────────── Workspace: left rail | canvas | right rail ───────────────── */}
-        <div className="flex min-h-0 flex-1" style={{ minWidth: 0 }}>
+        <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden">
           {/* Left dock — fixed width, never scrolls the page */}
           <aside
-            style={{ width: leftDockOpen ? 208 : 0, minWidth: 0, flex: "0 0 auto" }}
-            className="overflow-hidden border-r border-black/50"
+            style={{ width: leftDockOpen ? 208 : 0, minWidth: leftDockOpen ? 208 : 0, flex: leftDockOpen ? "0 0 208px" : "0 0 0px" }}
+            className="shrink-0 overflow-hidden border-r border-black/50"
           >
             <IconToolbar
               onAddIcon={handleAddIcon}
@@ -5063,13 +6078,19 @@ export default function PlanEditorPage() {
             />
           </aside>
 
-          {/* Canvas — the only fluid region. Its width can be reduced from the
-              status bar; the surplus stays as inert backdrop on either side. */}
+          {/* Canvas — the only fluid region. At 100% CSS flex gives it exactly
+              the space left after the two fixed docks, without relying on a
+              JavaScript copy of the browser width. */}
           <div
             className="relative"
             style={
-              canvasColumnWidth
-                ? { width: `${canvasColumnWidth}px`, flex: "0 0 auto", minWidth: 0, overflow: "hidden" }
+              canvasWidthPercent < 100
+                ? {
+                    width: `max(160px, calc((100% - ${leftDockWidth + rightDockWidth}px) * ${canvasWidthPercent / 100}))`,
+                    flex: "0 0 auto",
+                    minWidth: 0,
+                    overflow: "hidden"
+                  }
                 : { flex: "1 1 0%", minWidth: 0, overflow: "hidden" }
             }
           >
@@ -5090,6 +6111,8 @@ export default function PlanEditorPage() {
                   onSelectIcon={(iconId) => {
                     setSelectedIconId(iconId);
                     if (iconId) {
+                      setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+                      setSelectedBatBlock(false);
                       setSelectedShapeId(null);
                       setSelectedTextId(null);
                       setSelectedBlockId(null);
@@ -5098,7 +6121,13 @@ export default function PlanEditorPage() {
                   sheet={sheetProp}
                   onSheetBlocksChange={setSheetBlocks}
                   selectedBlockId={selectedBlockId}
-                  onSelectBlock={setSelectedBlockId}
+                  onSelectBlock={(blockId) => {
+                    setSelectedBlockId(blockId);
+                    if (blockId) {
+                      setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+                      setSelectedBatBlock(false);
+                    }
+                  }}
                   sheetImages={sheetLogoImages}
                   sheetLegendEntries={sheetLegendEntries}
                   sheetPictoImages={sheetLegendImages}
@@ -5106,6 +6135,37 @@ export default function PlanEditorPage() {
                   planReframeMode={sheetReframeMode}
                   planPlacement={sheetPlanPlacement}
                   onPlanPlacementChange={setSheetPlanPlacement}
+                  mainPlanTransform={mainPlanTransform}
+                  onMainPlanTransformChange={setMainPlanTransform}
+                  mainPlanLocked={mainPlanLocked}
+                  mainPlanGroupId={mainPlanGroupId}
+                  mainPlanGroupingEnabled={mainPlanGroupingEnabled}
+                  areaSelectionMode={areaSelectionMode}
+                  multiSelection={multiSelection}
+                  onMultiSelectionChange={setMultiSelection}
+                  onAreaSelectionComplete={handleAreaSelectionComplete}
+                  planOverlays={planOverlays}
+                  onPlanOverlaysChange={setPlanOverlays}
+                  selectedOverlayId={selectedOverlayId}
+                  onSelectOverlay={(overlayId) => {
+                    setSelectedOverlayId(overlayId);
+                    if (overlayId) {
+                      setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+                      setSelectedBatBlock(false);
+                      setSelectedIconId(null);
+                      setSelectedShapeId(null);
+                      setSelectedTextId(null);
+                      setSelectedBlockId(null);
+                    }
+                  }}
+                  keepPlanRatio={keepPlanRatio}
+                  watermark={watermarkConfig}
+                  onWatermarkChange={setWatermarkConfig}
+                  selectedBatBlock={selectedBatBlock}
+                  onSelectBatBlock={(selected) => {
+                    setSelectedBatBlock(selected);
+                    if (selected) setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+                  }}
                   zoom={zoom}
                   setZoom={setZoom}
                   mode={mode}
@@ -5126,6 +6186,8 @@ export default function PlanEditorPage() {
                   onSelectShape={(shapeId) => {
                     setSelectedShapeId(shapeId);
                     if (shapeId) {
+                      setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+                      setSelectedBatBlock(false);
                       setSelectedIconId(null);
                       setSelectedTextId(null);
                       setSelectedBlockId(null);
@@ -5141,6 +6203,8 @@ export default function PlanEditorPage() {
                   onSelectText={(textId) => {
                     setSelectedTextId(textId);
                     if (textId) {
+                      setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+                      setSelectedBatBlock(false);
                       setSelectedIconId(null);
                       setSelectedShapeId(null);
                       setSelectedBlockId(null);
@@ -5155,8 +6219,8 @@ export default function PlanEditorPage() {
 
           {/* Right dock — kept narrow so the plan keeps the maximum area */}
           <aside
-            style={{ width: rightDockOpen ? 224 : 0, minWidth: 0, flex: "0 0 auto" }}
-            className="flex flex-col overflow-hidden border-l border-black/50 bg-[#252527]"
+            style={{ width: rightDockOpen ? 224 : 0, minWidth: rightDockOpen ? 224 : 0, flex: rightDockOpen ? "0 0 224px" : "0 0 0px" }}
+            className="shrink-0 flex flex-col overflow-hidden border-l border-black/50 bg-[#252527]"
           >
             <div className="flex h-9 shrink-0 items-center gap-2 border-b border-black/40 px-3">
               <Settings className="h-3.5 w-3.5 text-neutral-500" />
@@ -5166,7 +6230,7 @@ export default function PlanEditorPage() {
             </div>
 
             {selectedBlock ? (
-              <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
                 <div className="border-b border-black/40 px-3 py-3">
                   <p className="truncate text-xs font-semibold text-neutral-100">{selectedBlock.label}</p>
                   <p className="text-[10px] text-neutral-500">
@@ -5411,7 +6475,7 @@ export default function PlanEditorPage() {
                 </div>
               </div>
             ) : selectedIcon ? (
-              <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
                 {/* Selected element identity */}
                 {(() => {
                   const definition = iconDefinitions[selectedIcon.icon_type];
@@ -5713,7 +6777,7 @@ export default function PlanEditorPage() {
                 </div>
               </div>
             ) : selectedText ? (
-              <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
                 {/* Text identity */}
                 <div className="flex items-center gap-3 border-b border-black/40 px-3 py-3">
                   <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded border border-white/10 bg-emerald-500/10 p-1.5 text-emerald-300">
@@ -5929,7 +6993,7 @@ export default function PlanEditorPage() {
                 </div>
               </div>
             ) : selectedShape ? (
-              <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
                 {/* Shape identity */}
                 <div className="flex items-center gap-3 border-b border-black/40 px-3 py-3">
                   <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded border border-white/10 bg-sky-500/10 p-1.5 text-sky-400">
@@ -6142,7 +7206,7 @@ export default function PlanEditorPage() {
                 </div>
               </div>
             ) : sheetActive ? (
-              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3">
                 <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
                   Blocs de la feuille
                 </p>
@@ -6217,7 +7281,7 @@ export default function PlanEditorPage() {
         </div>
 
         {/* ───────────────── Bottom status bar ───────────────── */}
-        <footer className="flex h-8 shrink-0 items-center justify-between gap-4 overflow-hidden border-t border-black/50 bg-[#2d2d30] px-2">
+        <footer className="flex h-8 w-full min-w-0 shrink-0 items-center justify-between gap-4 overflow-hidden border-t border-black/50 bg-[#2d2d30] px-2">
           <div className="flex min-w-0 shrink items-center gap-3">
             <ZoomControls
               zoom={zoom}
@@ -6447,6 +7511,46 @@ export default function PlanEditorPage() {
               </div>
 
               <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+                {planOverlays.length > 0 && (
+                  <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-sky-950">Plan concerné par le nettoyage</h3>
+                    <p className="mt-0.5 text-xs text-sky-700">Sélectionnez le plan spécifique sur lequel appliquer le nettoyage :</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedCleanTargetId(MAIN_PLAN_ID)}
+                        className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                          selectedCleanTargetId === MAIN_PLAN_ID
+                            ? "bg-sky-600 text-white shadow-sm"
+                            : "bg-white text-slate-700 border border-slate-200 hover:bg-sky-100/50"
+                        }`}
+                      >
+                        <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                        Plan principal ({plan?.building_name || "Arrière-plan"})
+                      </button>
+
+                      {planOverlays.map((overlay, index) => (
+                        <button
+                          key={overlay.tempId}
+                          type="button"
+                          onClick={() => {
+                            setSelectedCleanTargetId(overlay.tempId);
+                            if (cleanMethod === "grok") setCleanMethod("local_plan");
+                          }}
+                          className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                            selectedCleanTargetId === overlay.tempId
+                              ? "bg-sky-600 text-white shadow-sm"
+                              : "bg-white text-slate-700 border border-slate-200 hover:bg-sky-100/50"
+                          }`}
+                        >
+                          <span className="h-2 w-2 rounded-full bg-sky-400" />
+                          Plan secondaire {index + 1} ({overlay.label || `Plan #${index + 1}`})
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid gap-3 sm:grid-cols-3">
                   {/* ── Option 1 : nettoyage local du plan ── */}
                   <button
@@ -6494,10 +7598,13 @@ export default function PlanEditorPage() {
                   <button
                     type="button"
                     onClick={() => setCleanMethod("grok")}
+                    disabled={cleanTargetIsOverlay}
                     className={`rounded-xl border p-4 text-left transition-colors ${
                       cleanMethod === "grok"
                         ? "border-safety-green bg-green-50 text-slate-950 shadow-sm"
-                        : "border-slate-200 bg-white text-slate-600 hover:border-green-200 hover:bg-green-50/50"
+                        : cleanTargetIsOverlay
+                          ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 opacity-70"
+                          : "border-slate-200 bg-white text-slate-600 hover:border-green-200 hover:bg-green-50/50"
                     }`}
                   >
                     <div className="flex items-center gap-3">
@@ -6508,7 +7615,11 @@ export default function PlanEditorPage() {
                       </span>
                       <span className="text-sm font-bold">Vider avec l&apos;IA (Grok)</span>
                     </div>
-                    <p className="mt-2 text-xs leading-5 text-slate-500">Transforme un plan d&apos;évacuation existant en base architecturale vide, prête à recevoir une nouvelle signalétique.</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      {cleanTargetIsOverlay
+                        ? "Disponible pour le plan principal uniquement."
+                        : "Transforme un plan d’évacuation existant en base architecturale vide, prête à recevoir une nouvelle signalétique."}
+                    </p>
                   </button>
                 </div>
 
@@ -6780,13 +7891,13 @@ export default function PlanEditorPage() {
                     <button
                       type="button"
                       onClick={() => void launchGrokCleaning()}
-                      disabled={grokCleaning || !xaiHasSavedKey}
+                      disabled={grokCleaning || (!xaiHasSavedKey && !cleanTargetIsOverlay)}
                       className="inline-flex items-center justify-center gap-2 rounded-xl bg-safety-green px-4 py-2.5 text-xs font-semibold text-white shadow-lg shadow-safety-green/20 transition-colors hover:bg-green-600 disabled:opacity-50"
                     >
                       {grokCleaning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                       Vider le plan avec l&apos;IA
                     </button>
-                    {!xaiHasSavedKey && !xaiKeyConfigOpen && (
+                    {!xaiHasSavedKey && !xaiKeyConfigOpen && !cleanTargetIsOverlay && (
                       <p className="text-[11px] text-slate-500">
                         Configurez d&apos;abord votre clé API xAI pour activer cette option.
                       </p>
@@ -6847,8 +7958,8 @@ export default function PlanEditorPage() {
             <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
               <div className="shrink-0 flex items-center justify-between border-b border-slate-200 px-5 py-4">
                 <div>
-                  <h2 className="text-lg font-bold text-slate-950">Template d'export evacuation</h2>
-                  <p className="text-xs text-slate-500">Le plan sera placé au centre avec les consignes et informations autour.</p>
+                  <h2 className="text-lg font-bold text-slate-950">Réglages de la feuille</h2>
+                  <p className="text-xs text-slate-500">Nom du site, titre et logos utilisés par la feuille du studio. L&apos;export, lui, reprend exactement ce qu&apos;affiche le studio.</p>
                 </div>
                 <button
                   onClick={() => setExportModalOpen(false)}
@@ -7863,63 +8974,17 @@ export default function PlanEditorPage() {
                   </div>
 
                   <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center justify-end gap-3 border-t border-slate-200 bg-white/95 px-1 pt-3 pb-1 backdrop-blur">
-                    <div className="mr-auto flex items-center gap-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Format
-                        </span>
-                        <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
-                          {(Object.keys(EXPORT_PAPER_SIZES) as ExportPaperFormat[]).map((key) => (
-                            <button
-                              key={key}
-                              type="button"
-                              onClick={() => setExportPaperFormat(key)}
-                              className={`cursor-pointer rounded px-3 py-1.5 text-xs font-bold transition-colors ${
-                                exportPaperFormat === key
-                                  ? "bg-safety-green text-white"
-                                  : "text-slate-600 hover:bg-slate-200"
-                              }`}
-                            >
-                              {EXPORT_PAPER_SIZES[key].label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <span className="text-[11px] leading-tight text-slate-500">
-                        {EXPORT_PAPER_SIZES[exportPaperFormat].widthMm} ×{" "}
-                        {EXPORT_PAPER_SIZES[exportPaperFormat].heightMm} mm &middot; paysage
-                        <br />
-                        {EXPORT_CANVAS_WIDTH * EXPORT_OUTPUT_SCALE} ×{" "}
-                        {EXPORT_CANVAS_HEIGHT * EXPORT_OUTPUT_SCALE} px &middot;{" "}
-                        {Math.round(
-                          (EXPORT_CANVAS_WIDTH * EXPORT_OUTPUT_SCALE) /
-                            (EXPORT_PAPER_SIZES[exportPaperFormat].widthMm / 25.4)
-                        )}{" "}
-                        dpi
-                      </span>
-                    </div>
+                    <p className="mr-auto text-[11px] leading-tight text-slate-500">
+                      Le format du fichier et le format papier se choisissent
+                      <br />
+                      dans le bouton <span className="font-semibold text-slate-700">Export</span> de la barre du studio.
+                    </p>
                     <button
                       onClick={() => setExportModalOpen(false)}
-                      disabled={exporting || previewing}
-                      className="rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-800 disabled:opacity-50"
+                      className="flex items-center justify-center space-x-2 rounded-xl bg-safety-green px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-safety-green/10 hover:bg-green-600"
                     >
-                      Annuler
-                    </button>
-                    <button
-                      onClick={handlePreviewPdf}
-                      disabled={exporting || previewing}
-                      className="flex items-center justify-center space-x-2 rounded-xl border border-emerald-700 bg-emerald-950/50 px-4 py-2.5 text-sm font-semibold text-emerald-100 hover:bg-emerald-900 disabled:opacity-50"
-                    >
-                      {previewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
-                      <span>{previewing ? "Prévisualisation..." : "Prévisualiser PDF"}</span>
-                    </button>
-                    <button
-                      onClick={handleExportTemplate}
-                      disabled={exporting || previewing}
-                      className="flex items-center justify-center space-x-2 rounded-xl bg-safety-green px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-safety-green/10 hover:bg-green-600 disabled:opacity-50"
-                    >
-                      {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : exportFormat === "pdf" ? <FileDown className="h-4 w-4" /> : <Download className="h-4 w-4" />}
-                      <span>{exporting ? "Generation..." : `Exporter ${exportFormat.toUpperCase()}`}</span>
+                      <Check className="h-4 w-4" />
+                      <span>Terminé</span>
                     </button>
                   </div>
                 </div>
@@ -8029,8 +9094,7 @@ export default function PlanEditorPage() {
                   onClick={async () => {
                     setExportSaveConfirmOpen(false);
                     if (pendingExportAction) {
-                      await handleSave();
-                      await pendingExportAction();
+                      if (await handleSave()) await pendingExportAction();
                       setPendingExportAction(null);
                     }
                   }}
@@ -8070,7 +9134,15 @@ export default function PlanEditorPage() {
           </div>
         )}
 
-        {/* Crop Modal */}
+        <WatermarkModal
+          open={watermarkModalOpen}
+          value={watermarkDraft}
+          onChange={setWatermarkDraft}
+          onApply={applyWatermarkSettings}
+          onCancel={() => setWatermarkModalOpen(false)}
+        />
+
+        {/* Classic Crop Modal */}
         <CropModal
           isOpen={cropModalOpen}
           onClose={() => setCropModalOpen(false)}
@@ -8078,6 +9150,20 @@ export default function PlanEditorPage() {
           onApplyCrop={handleApplyCrop}
           loading={cropping}
         />
+
+        {/* Freehand Polygonal / Lasso Crop Modal */}
+        {polygonCropModalOpen && (
+          <PolygonCropModal
+            isOpen
+            onClose={() => setPolygonCropModalOpen(false)}
+            mainBackgroundUrl={polygonCropMainUrl || backgroundUrl || ""}
+            planOverlays={planOverlays}
+            selectedOverlayId={selectedOverlayId}
+            buildingName={plan?.building_name || "Plan principal"}
+            onCropMainPlan={handleCropMainPlan}
+            onCropSecondaryPlan={handleCropSecondaryPlan}
+          />
+        )}
       </div>
     </ProtectedRoute>
   );

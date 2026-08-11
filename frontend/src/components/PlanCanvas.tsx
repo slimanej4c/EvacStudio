@@ -1,10 +1,12 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback, useImperativeHandle } from "react";
+import type Konva from "konva";
 import { Stage, Layer, Image as KonvaImage, Transformer, Group, Rect, Text, Line, Ellipse, Circle, Path } from "react-konva";
 import { SheetBlock, findPlanBlock } from "@/lib/sheetTemplates";
 import SheetBlockNode, { SheetLegendEntry } from "@/components/SheetBlockNode";
 import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource, getIconLeaderColor, isDirectionalIcon, isYouAreHereIcon } from "@/utils/safetyIcons";
+import { WatermarkConfig } from "@/lib/watermark";
 
 export interface CanvasIcon {
   id?: number;
@@ -27,6 +29,11 @@ export interface CanvasIcon {
   flip_x?: boolean;
   /** When true, the pictogram artwork is mirrored vertically. */
   flip_y?: boolean;
+  locked?: boolean;
+  /** Stable association with a plan; empty means the object is independent. */
+  group_id?: string;
+  /** Independent group created from an area/multi-selection. */
+  object_group_id?: string;
 }
 
 export type EraserShape = "square" | "circle";
@@ -88,6 +95,9 @@ export interface CanvasShape {
   control_points?: Record<number, ShapePoint>;
   /** Absolute plan coordinates for polygon_zone shapes. */
   points?: ShapePoint[];
+  locked?: boolean;
+  group_id?: string;
+  object_group_id?: string;
 }
 
 /** Web-safe fonts offered for plan text annotations. */
@@ -116,6 +126,43 @@ export interface CanvasText {
   /** Optional background color behind the text; null/undefined means transparent. */
   background_color?: string | null;
   rotation: number;
+  locked?: boolean;
+  group_id?: string;
+  object_group_id?: string;
+}
+
+/** The id the main plan answers to when it is selected like any other plan. */
+export const MAIN_PLAN_ID = "main_plan";
+export const BAT_BLOCK_ID = "bat_approval_block";
+
+export interface CanvasPlanTransform {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface CanvasPlanOverlay {
+  tempId: string;
+  /** Primary key once the overlay has been saved; absent while it is local. */
+  serverId?: number;
+  url: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  label?: string;
+  locked?: boolean;
+  group_id?: string;
+  /** The pixels changed locally and must replace the stored file on save. */
+  imageChanged?: boolean;
+}
+
+export interface CanvasMultiSelection {
+  iconIds: string[];
+  shapeIds: string[];
+  textIds: string[];
 }
 
 interface PlanCanvasProps {
@@ -168,6 +215,7 @@ interface PlanCanvasProps {
   placementText?: boolean;
   onPlaceText?: (x: number, y: number) => void;
 
+
   // ── Sheet mode ────────────────────────────────────────────────────────────
   /**
    * When set, the studio stops showing the bare plan and shows the printed
@@ -203,21 +251,48 @@ interface PlanCanvasProps {
   /** How the plan sits inside its window: zoom in %, then a nudge in sheet units. */
   planPlacement?: { scale: number; offsetX: number; offsetY: number };
   onPlanPlacementChange?: (placement: { scale: number; offsetX: number; offsetY: number }) => void;
+  /** Floating secondary plan overlays on the canvas. */
+  planOverlays?: CanvasPlanOverlay[];
+  onPlanOverlaysChange?: (overlays: CanvasPlanOverlay[]) => void;
+  selectedOverlayId?: string | null;
+  onSelectOverlay?: (id: string | null) => void;
+  /** Whether to lock aspect ratio during plan resizing. */
+  keepPlanRatio?: boolean;
+  mainPlanTransform: CanvasPlanTransform;
+  onMainPlanTransformChange: (transform: CanvasPlanTransform) => void;
+  mainPlanLocked?: boolean;
+  mainPlanGroupId?: string;
+  /** False preserves the legacy behaviour where every annotation follows. */
+  mainPlanGroupingEnabled?: boolean;
+  /** One-shot rectangle selection tool for icons, shapes and text. */
+  areaSelectionMode?: boolean;
+  multiSelection?: CanvasMultiSelection;
+  onMultiSelectionChange?: (selection: CanvasMultiSelection) => void;
+  onAreaSelectionComplete?: (count: number) => void;
+  watermark: WatermarkConfig;
+  onWatermarkChange: (config: WatermarkConfig) => void;
+  selectedBatBlock?: boolean;
+  onSelectBatBlock?: (selected: boolean) => void;
 }
 
 export interface PlanCanvasHandle {
+  /** Live Konva stage used by the editor and by the unified export path. */
+  getStage: () => Konva.Stage | null;
   /** The background with the eraser strokes baked in, for saving or exporting. */
   getEditedBackground: () => HTMLCanvasElement | null;
   /** Get the current background image width and height in pixels. */
   getBackgroundDimensions: () => { width: number; height: number };
+  /** Raster source currently shown, including PDF rendering/eraser edits. */
+  getBackgroundDataUrl: () => string | null;
 }
 
 // Share of the workspace the plan occupies when fitted, leaving a margin around it.
 const FIT_VIEWPORT_RATIO = 0.75;
 
 /**
- * Where a leader line must stop: on the pictogram's box edge, on the anchor's
- * side. Running it to the centre would draw a stroke straight across the symbol.
+ * Where a leader line must stop. It enters the pictogram box just enough to
+ * bridge transparent margins in PNG/SVG artwork. The pictogram is rendered on
+ * top of the line, so the overlap stays hidden while the join remains seamless.
  */
 function leaderEndpoint(icon: CanvasIcon, anchorX: number, anchorY: number) {
   const centreX = icon.x + icon.width / 2;
@@ -242,7 +317,22 @@ function leaderEndpoint(icon: CanvasIcon, anchorX: number, anchorY: number) {
   }
 
   const clamped = Math.min(Math.max(entry, 0), 1);
-  return { x: anchorX + dx * clamped, y: anchorY + dy * clamped };
+  const distance = Math.hypot(dx, dy);
+  const edgeDistance = distance * clamped;
+  const remainingDistance = Math.max(0, distance - edgeDistance);
+  const smallestSide = Math.min(icon.width, icon.height);
+  const desiredOverlap = Math.max(
+    4,
+    smallestSide * 0.18,
+    (icon.leader_width ?? 2) * 1.5
+  );
+  const overlap = Math.min(remainingDistance, desiredOverlap, smallestSide * 0.3);
+  const endDistance = edgeDistance + overlap;
+
+  return {
+    x: anchorX + (dx / distance) * endDistance,
+    y: anchorY + (dy / distance) * endDistance,
+  };
 }
 
 /**
@@ -276,6 +366,29 @@ function iconArtworkRotation(
     default:
       return -planRotation;
   }
+}
+
+function rotatedBoxBounds(box: { x: number; y: number; width: number; height: number; rotation: number }) {
+  const radians = (box.rotation * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const corners = [
+    { x: 0, y: 0 },
+    { x: box.width, y: 0 },
+    { x: box.width, y: box.height },
+    { x: 0, y: box.height },
+  ].map((point) => ({
+    x: box.x + point.x * cos - point.y * sin,
+    y: box.y + point.x * sin + point.y * cos,
+  }));
+  const xs = corners.map((point) => point.x);
+  const ys = corners.map((point) => point.y);
+  return {
+    left: Math.min(...xs),
+    top: Math.min(...ys),
+    right: Math.max(...xs),
+    bottom: Math.max(...ys),
+  };
 }
 
 // Global PDF.js loading helper (client-side only)
@@ -337,14 +450,128 @@ function PlanCanvas({
   planReframeMode = false,
   planPlacement = { scale: 100, offsetX: 0, offsetY: 0 },
   onPlanPlacementChange,
+  planOverlays = [],
+  onPlanOverlaysChange,
+  selectedOverlayId = null,
+  onSelectOverlay,
+  keepPlanRatio = true,
+  mainPlanTransform: storedMainPlanTransform,
+  onMainPlanTransformChange,
+  mainPlanLocked = false,
+  mainPlanGroupId = "",
+  mainPlanGroupingEnabled = false,
+  areaSelectionMode = false,
+  multiSelection = { iconIds: [], shapeIds: [], textIds: [] },
+  onMultiSelectionChange,
+  onAreaSelectionComplete,
+  watermark,
+  onWatermarkChange,
+  selectedBatBlock = false,
+  onSelectBatBlock,
   canvasRef
 }: PlanCanvasProps & { canvasRef?: React.Ref<PlanCanvasHandle> }) {
-  const stageRef = useRef<any>(null);
+  const stageRef = useRef<Konva.Stage | null>(null);
   const transformerRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [bgImage, setBgImage] = useState<HTMLImageElement | null>(null);
+  const [overlayImages, setOverlayImages] = useState<Record<string, HTMLImageElement>>({});
+  const [batLogoImages, setBatLogoImages] = useState<{
+    client: HTMLImageElement | null;
+    creator: HTMLImageElement | null;
+  }>({ client: null, creator: null });
+  // What each entry of overlayImages was loaded from, so a re-render does not
+  // reload artwork that has not changed. Kept in a ref: reading the state here
+  // would capture a stale map every time the effect re-runs.
+  const overlaySourcesRef = useRef<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const decodeLogo = (source: string) =>
+      new Promise<HTMLImageElement | null>((resolve) => {
+        if (!source) {
+          resolve(null);
+          return;
+        }
+        const image = new window.Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => resolve(null);
+        image.src = source;
+      });
+
+    void Promise.all([
+      decodeLogo(watermark.client_logo),
+      decodeLogo(watermark.creator_logo),
+    ]).then(([client, creator]) => {
+      if (!cancelled) setBatLogoImages({ client, creator });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [watermark.client_logo, watermark.creator_logo]);
+
+  useEffect(() => {
+    if (!planOverlays || planOverlays.length === 0) {
+      overlaySourcesRef.current = {};
+      setOverlayImages((previous) => (Object.keys(previous).length ? {} : previous));
+      return;
+    }
+
+    const live = new Set(planOverlays.map((overlay) => overlay.tempId));
+
+    planOverlays.forEach((overlay) => {
+      if (!overlay.url || overlaySourcesRef.current[overlay.tempId] === overlay.url) return;
+      overlaySourcesRef.current[overlay.tempId] = overlay.url;
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      // A cleaned or cropped plan is a multi-megabyte data URL and takes a
+      // moment to decode. The load is deliberately not cancelled when the list
+      // changes meanwhile — dropping it would leave the plan showing its old
+      // artwork for good, since its source is already recorded as loaded.
+      // What matters is only that it is still the artwork this plan wants.
+      img.onload = () => {
+        if (overlaySourcesRef.current[overlay.tempId] !== overlay.url) return;
+        setOverlayImages((prev) => ({ ...prev, [overlay.tempId]: img }));
+      };
+      img.onerror = () => {
+        if (overlaySourcesRef.current[overlay.tempId] === overlay.url) {
+          // Let a later render try again rather than freeze on a failed load.
+          delete overlaySourcesRef.current[overlay.tempId];
+        }
+      };
+      img.src = overlay.url;
+    });
+
+    // Drop the artwork of overlays that were removed.
+    Object.keys(overlaySourcesRef.current).forEach((tempId) => {
+      if (!live.has(tempId)) delete overlaySourcesRef.current[tempId];
+    });
+    setOverlayImages((prev) => {
+      const stale = Object.keys(prev).filter((tempId) => !live.has(tempId));
+      if (!stale.length) return prev;
+      const next = { ...prev };
+      stale.forEach((tempId) => delete next[tempId]);
+      return next;
+    });
+  }, [planOverlays]);
   const [imageSize, setImageSize] = useState({ width: 800, height: 600 });
+  // Width/height equal to zero is the persisted marker for "natural size".
+  // As soon as the user manipulates the plan, the resolved dimensions are sent
+  // back to the page and become part of the project save/history.
+  const mainPlanTransform: CanvasPlanTransform = {
+    x: storedMainPlanTransform.x,
+    y: storedMainPlanTransform.y,
+    width: storedMainPlanTransform.width > 0 ? storedMainPlanTransform.width : imageSize.width,
+    height: storedMainPlanTransform.height > 0 ? storedMainPlanTransform.height : imageSize.height,
+  };
+  const setMainPlanTransform = (
+    update: CanvasPlanTransform | ((previous: CanvasPlanTransform) => CanvasPlanTransform)
+  ) => {
+    onMainPlanTransformChange(
+      typeof update === "function" ? update(mainPlanTransform) : update
+    );
+  };
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
   const [iconImages, setIconImages] = useState<Record<string, HTMLImageElement>>({});
   // The stage is sized from its container, never from the window: the workspace
@@ -368,11 +595,33 @@ function PlanCanvas({
   useImperativeHandle(
     canvasRef,
     () => ({
+      getStage: () => stageRef.current,
       getEditedBackground: () => editedBackground,
       getBackgroundDimensions: () => ({
         width: bgImage?.naturalWidth || bgImage?.width || 0,
         height: bgImage?.naturalHeight || bgImage?.height || 0,
       }),
+      getBackgroundDataUrl: () => {
+        if (editedBackground) return editedBackground.toDataURL("image/png");
+        if (!bgImage) return null;
+        if (bgImage.src.startsWith("data:image/")) return bgImage.src;
+        const canvas = document.createElement("canvas");
+        canvas.width = bgImage.naturalWidth || bgImage.width;
+        canvas.height = bgImage.naturalHeight || bgImage.height;
+        const context = canvas.getContext("2d");
+        if (!context) return null;
+        context.drawImage(bgImage, 0, 0);
+        try {
+          const dataUrl = canvas.toDataURL("image/png");
+          canvas.width = 0;
+          canvas.height = 0;
+          return dataUrl;
+        } catch {
+          canvas.width = 0;
+          canvas.height = 0;
+          return null;
+        }
+      },
     }),
     [editedBackground, bgImage]
   );
@@ -407,6 +656,84 @@ function PlanCanvas({
   const draftOriginRef = useRef<{ x: number; y: number } | null>(null);
   const [draftPolygonPoints, setDraftPolygonPoints] = useState<ShapePoint[]>([]);
   const [polygonCursor, setPolygonCursor] = useState<ShapePoint | null>(null);
+  const [marqueeRect, setMarqueeRect] = useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const marqueeRectRef = useRef<typeof marqueeRect>(null);
+  const marqueeOriginRef = useRef<ShapePoint | null>(null);
+
+  const setMarquee = (rect: typeof marqueeRect) => {
+    marqueeRectRef.current = rect;
+    setMarqueeRect(rect);
+  };
+
+  const translateContent = (
+    dx: number,
+    dy: number,
+    selection?: CanvasMultiSelection,
+    objectGroupId?: string
+  ) => {
+    if (!dx && !dy) return;
+    const iconIds = new Set(selection?.iconIds || []);
+    const shapeIds = new Set(selection?.shapeIds || []);
+    const textIds = new Set(selection?.textIds || []);
+    const selectedById = Boolean(selection);
+
+    onIconsChange(
+      icons.map((icon) => {
+        const matches = selectedById
+          ? iconIds.has(icon.tempId)
+          : Boolean(objectGroupId && icon.object_group_id === objectGroupId);
+        if (!matches || icon.locked) return icon;
+        return {
+          ...icon,
+          x: icon.x + dx,
+          y: icon.y + dy,
+          anchor_x: icon.anchor_x != null ? icon.anchor_x + dx : icon.anchor_x,
+          anchor_y: icon.anchor_y != null ? icon.anchor_y + dy : icon.anchor_y,
+        };
+      })
+    );
+    onShapesChange?.(
+      shapes.map((shape) => {
+        const matches = selectedById
+          ? shapeIds.has(shape.tempId)
+          : Boolean(objectGroupId && shape.object_group_id === objectGroupId);
+        if (!matches || shape.locked) return shape;
+        return {
+          ...shape,
+          x: shape.x + dx,
+          y: shape.y + dy,
+          points: shape.points?.map((point) => ({ x: point.x + dx, y: point.y + dy })) ?? shape.points,
+          control_points: shape.control_points
+            ? Object.fromEntries(
+                Object.entries(shape.control_points).map(([key, point]) => [
+                  Number(key),
+                  { x: point.x + dx, y: point.y + dy },
+                ])
+              )
+            : shape.control_points,
+        };
+      })
+    );
+    onTextsChange?.(
+      texts.map((text) => {
+        const matches = selectedById
+          ? textIds.has(text.tempId)
+          : Boolean(objectGroupId && text.object_group_id === objectGroupId);
+        return matches && !text.locked ? { ...text, x: text.x + dx, y: text.y + dy } : text;
+      })
+    );
+  };
+
+  const moveObjectGroup = (objectGroupId: string | undefined, dx: number, dy: number) => {
+    if (!objectGroupId) return false;
+    translateContent(dx, dy, undefined, objectGroupId);
+    return true;
+  };
 
   const setDraft = (shape: CanvasShape | null) => {
     draftShapeRef.current = shape;
@@ -527,6 +854,7 @@ function PlanCanvas({
   const movePolygonPoints = (tempId: string, deltaX: number, deltaY: number) => {
     const shape = shapes.find((item) => item.tempId === tempId);
     if (!shape?.points?.length) return;
+    if (moveObjectGroup(shape.object_group_id, deltaX, deltaY)) return;
 
     const movedPoints = shape.points.map((point) => ({
       x: point.x + deltaX,
@@ -618,7 +946,7 @@ function PlanCanvas({
             shadowColor="#000000"
             shadowBlur={3}
             shadowOpacity={0.3}
-            draggable={mode === "select" && !shapeTool}
+            draggable={mode === "select" && !shapeTool && !shape.locked}
             onMouseEnter={(e: any) => {
               const stage = e.target.getStage();
               if (stage) stage.container().style.cursor = "pointer";
@@ -635,6 +963,7 @@ function PlanCanvas({
             }}
             onDblClick={(e: any) => {
               e.cancelBubble = true;
+              if (shape.locked) return;
               updatePolygonControlPoint(shape.tempId, index, null, null);
             }}
             onDragStart={(e: any) => {
@@ -674,7 +1003,7 @@ function PlanCanvas({
           shadowColor="#000000"
           shadowBlur={4}
           shadowOpacity={0.3}
-          draggable={mode === "select" && !shapeTool}
+          draggable={mode === "select" && !shapeTool && !shape.locked}
           onMouseEnter={(e: any) => {
             const stage = e.target.getStage();
             if (stage) stage.container().style.cursor = "grab";
@@ -807,7 +1136,8 @@ function PlanCanvas({
             lineJoin="round"
             lineCap="round"
             hitStrokeWidth={Math.max(16, shape.stroke_width + 10)}
-            draggable={!options.isDraft && mode === "select" && !shapeTool && options.isSelected}
+            listening={!areaSelectionMode}
+            draggable={!areaSelectionMode && !options.isDraft && mode === "select" && !shapeTool && options.isSelected && !shape.locked}
             onClick={() => !options.isDraft && onSelectShape?.(shape.tempId)}
             onTap={() => !options.isDraft && onSelectShape?.(shape.tempId)}
             onDragEnd={(e: any) => {
@@ -830,7 +1160,8 @@ function PlanCanvas({
             lineJoin="round"
             lineCap="round"
             hitStrokeWidth={Math.max(16, shape.stroke_width + 10)}
-            draggable={!options.isDraft && mode === "select" && !shapeTool && options.isSelected}
+            listening={!areaSelectionMode}
+            draggable={!areaSelectionMode && !options.isDraft && mode === "select" && !shapeTool && options.isSelected && !shape.locked}
             onClick={() => !options.isDraft && onSelectShape?.(shape.tempId)}
             onTap={() => !options.isDraft && onSelectShape?.(shape.tempId)}
             onDragEnd={(e: any) => {
@@ -877,15 +1208,241 @@ function PlanCanvas({
     );
   };
 
+  const selectMainPlan = () => {
+    if (sheet) return;
+    onSelectBatBlock?.(false);
+    onSelectIcon(null);
+    onSelectShape?.(null);
+    onSelectText?.(null);
+    onSelectBlock?.(null);
+    onSelectOverlay?.(MAIN_PLAN_ID);
+  };
+
+  const selectPlanOverlay = (tempId: string) => {
+    onSelectBatBlock?.(false);
+    onSelectIcon(null);
+    onSelectShape?.(null);
+    onSelectText?.(null);
+    onSelectBlock?.(null);
+    onSelectOverlay?.(tempId);
+  };
+
+  /**
+   * Carries everything drawn on the plan along when the plan itself is moved or
+   * resized. A pictogram, a zone or a label marks a real spot in the building:
+   * leaving them where they were would silently move every piece of equipment.
+   */
+  const moveMainPlanContent = ({
+    dx,
+    dy,
+    scaleX,
+    scaleY,
+    originX,
+    originY
+  }: {
+    dx: number;
+    dy: number;
+    scaleX: number;
+    scaleY: number;
+    originX: number;
+    originY: number;
+  }) => {
+    if (!dx && !dy && scaleX === 1 && scaleY === 1) return;
+
+    const mapX = (x: number) => originX + dx + (x - originX) * scaleX;
+    const mapY = (y: number) => originY + dy + (y - originY) * scaleY;
+    // Pictograms, labels and strokes must not be squashed, so their own size
+    // follows the average of the two axes rather than each one.
+    const sizeScale = (scaleX + scaleY) / 2;
+    const belongsToMainPlan = (groupId?: string) =>
+      !mainPlanGroupingEnabled || Boolean(mainPlanGroupId && groupId === mainPlanGroupId);
+
+    if (icons.length) {
+      onIconsChange(
+        icons.map((icon) => belongsToMainPlan(icon.group_id) ? ({
+            ...icon,
+            x: mapX(icon.x),
+            y: mapY(icon.y),
+            width: icon.width * sizeScale,
+            height: icon.height * sizeScale,
+            anchor_x: icon.anchor_x != null ? mapX(icon.anchor_x) : icon.anchor_x,
+            anchor_y: icon.anchor_y != null ? mapY(icon.anchor_y) : icon.anchor_y
+          }) : icon)
+      );
+    }
+
+    if (shapes.length && onShapesChange) {
+      onShapesChange(
+        shapes.map((shape) => belongsToMainPlan(shape.group_id) ? ({
+            ...shape,
+            x: mapX(shape.x),
+            y: mapY(shape.y),
+            width: shape.width * scaleX,
+            height: shape.height * scaleY,
+            stroke_width: shape.stroke_width * sizeScale,
+            points: shape.points?.map((point) => ({ x: mapX(point.x), y: mapY(point.y) })) ?? shape.points,
+            control_points: shape.control_points
+              ? Object.fromEntries(
+                  Object.entries(shape.control_points).map(([key, point]) => [
+                    Number(key),
+                    { x: mapX(point.x), y: mapY(point.y) }
+                  ])
+                )
+              : shape.control_points
+          }) : shape)
+      );
+    }
+
+    if (texts.length && onTextsChange) {
+      onTextsChange(
+        texts.map((text) => belongsToMainPlan(text.group_id) ? ({
+            ...text,
+            x: mapX(text.x),
+            y: mapY(text.y),
+            font_size: text.font_size * sizeScale
+          }) : text)
+      );
+    }
+  };
+
+  /**
+   * Applies a secondary plan's move/resize/rotation to the annotations attached
+   * to it. Positions follow the plan's local coordinate system while a
+   * pictogram's own rotation is deliberately preserved: in particular, the
+   * “Vous êtes ici” angle remains the source of the reading orientation.
+   */
+  const moveOverlayGroupedContent = (
+    previous: CanvasPlanOverlay,
+    next: CanvasPlanOverlay
+  ) => {
+    if (!previous.group_id) return;
+
+    const scaleX = next.width / Math.max(1, previous.width);
+    const scaleY = next.height / Math.max(1, previous.height);
+    const sizeScale = (Math.abs(scaleX) + Math.abs(scaleY)) / 2;
+    const previousRadians = (-previous.rotation * Math.PI) / 180;
+    const nextRadians = (next.rotation * Math.PI) / 180;
+    const rotationDelta = next.rotation - previous.rotation;
+    const transformPoint = (point: ShapePoint): ShapePoint => {
+      const translatedX = point.x - previous.x;
+      const translatedY = point.y - previous.y;
+      const localX = translatedX * Math.cos(previousRadians) - translatedY * Math.sin(previousRadians);
+      const localY = translatedX * Math.sin(previousRadians) + translatedY * Math.cos(previousRadians);
+      const scaledX = localX * scaleX;
+      const scaledY = localY * scaleY;
+      return {
+        x: next.x + scaledX * Math.cos(nextRadians) - scaledY * Math.sin(nextRadians),
+        y: next.y + scaledX * Math.sin(nextRadians) + scaledY * Math.cos(nextRadians),
+      };
+    };
+    const belongs = (groupId?: string) => groupId === previous.group_id;
+
+    if (icons.length) {
+      onIconsChange(
+        icons.map((icon) => {
+          if (!belongs(icon.group_id)) return icon;
+          const center = transformPoint({ x: icon.x + icon.width / 2, y: icon.y + icon.height / 2 });
+          const width = icon.width * sizeScale;
+          const height = icon.height * sizeScale;
+          const anchor = icon.anchor_x != null && icon.anchor_y != null
+            ? transformPoint({ x: icon.anchor_x, y: icon.anchor_y })
+            : null;
+          return {
+            ...icon,
+            x: center.x - width / 2,
+            y: center.y - height / 2,
+            width,
+            height,
+            anchor_x: anchor?.x ?? icon.anchor_x,
+            anchor_y: anchor?.y ?? icon.anchor_y,
+          };
+        })
+      );
+    }
+
+    if (shapes.length && onShapesChange) {
+      onShapesChange(
+        shapes.map((shape) => {
+          if (!belongs(shape.group_id)) return shape;
+          const transformedPoints = shape.points?.map(transformPoint);
+          if (isPolygonShape(shape.shape_type) && transformedPoints?.length) {
+            return {
+              ...shape,
+              ...boundsFromPoints(transformedPoints),
+              stroke_width: shape.stroke_width * sizeScale,
+              points: transformedPoints,
+              control_points: shape.control_points
+                ? Object.fromEntries(
+                    Object.entries(shape.control_points).map(([key, point]) => [Number(key), transformPoint(point)])
+                  )
+                : shape.control_points,
+            };
+          }
+          if (shape.shape_type === "circle") {
+            const center = transformPoint({
+              x: shape.x + shape.width / 2,
+              y: shape.y + shape.height / 2,
+            });
+            const width = shape.width * Math.abs(scaleX);
+            const height = shape.height * Math.abs(scaleY);
+            return {
+              ...shape,
+              x: center.x - width / 2,
+              y: center.y - height / 2,
+              width,
+              height,
+              rotation: shape.rotation + rotationDelta,
+              stroke_width: shape.stroke_width * sizeScale,
+            };
+          }
+          const origin = transformPoint({ x: shape.x, y: shape.y });
+          return {
+            ...shape,
+            x: origin.x,
+            y: origin.y,
+            width: shape.width * scaleX,
+            height: shape.height * scaleY,
+            rotation: shape.rotation + rotationDelta,
+            stroke_width: shape.stroke_width * sizeScale,
+            points: transformedPoints ?? shape.points,
+            control_points: shape.control_points
+              ? Object.fromEntries(
+                  Object.entries(shape.control_points).map(([key, point]) => [Number(key), transformPoint(point)])
+                )
+              : shape.control_points,
+          };
+        })
+      );
+    }
+
+    if (texts.length && onTextsChange) {
+      onTextsChange(
+        texts.map((text) => {
+          if (!belongs(text.group_id)) return text;
+          const position = transformPoint({ x: text.x, y: text.y });
+          return {
+            ...text,
+            x: position.x,
+            y: position.y,
+            font_size: text.font_size * sizeScale,
+            rotation: text.rotation + rotationDelta,
+          };
+        })
+      );
+    }
+  };
+
   // The white sheet is not the plan image: it is the plan *plus* anything placed
   // outside it. An assembly point often sits well away from the building, so the
   // sheet has to grow to hold it — and the export follows this rectangle.
   const SHEET_MARGIN = 28;
   const contentBounds = React.useMemo(() => {
-    let minX = 0;
-    let minY = 0;
-    let maxX = imageSize.width;
-    let maxY = imageSize.height;
+    // The plan may have been moved or resized on the canvas, so the sheet
+    // follows where it actually sits, not where its image would be at rest.
+    let minX = mainPlanTransform.x;
+    let minY = mainPlanTransform.y;
+    let maxX = mainPlanTransform.x + mainPlanTransform.width;
+    let maxY = mainPlanTransform.y + mainPlanTransform.height;
 
     icons.forEach((icon) => {
       minX = Math.min(minX, icon.x - SHEET_MARGIN);
@@ -937,8 +1494,55 @@ function PlanCanvas({
       maxY = Math.max(maxY, t.y + h + SHEET_MARGIN);
     });
 
+    planOverlays.forEach((overlay) => {
+      const bounds = rotatedBoxBounds(overlay);
+      minX = Math.min(minX, bounds.left - SHEET_MARGIN);
+      minY = Math.min(minY, bounds.top - SHEET_MARGIN);
+      maxX = Math.max(maxX, bounds.right + SHEET_MARGIN);
+      maxY = Math.max(maxY, bounds.bottom + SHEET_MARGIN);
+    });
+
     return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-  }, [icons, shapes, texts, imageSize]);
+  }, [icons, shapes, texts, planOverlays, mainPlanTransform]);
+
+  const selectedContentBounds = React.useMemo(() => {
+    const iconIds = new Set(multiSelection.iconIds);
+    const shapeIds = new Set(multiSelection.shapeIds);
+    const textIds = new Set(multiSelection.textIds);
+    const boxes: Array<{ left: number; top: number; right: number; bottom: number }> = [];
+
+    icons.filter((icon) => iconIds.has(icon.tempId)).forEach((icon) => {
+      boxes.push({ left: icon.x, top: icon.y, right: icon.x + icon.width, bottom: icon.y + icon.height });
+    });
+    shapes.filter((shape) => shapeIds.has(shape.tempId)).forEach((shape) => {
+      const bounds = isPolygonShape(shape.shape_type) && shape.points?.length
+        ? boundsFromPoints(shape.points)
+        : {
+            x: Math.min(shape.x, shape.x + shape.width),
+            y: Math.min(shape.y, shape.y + shape.height),
+            width: Math.abs(shape.width),
+            height: Math.abs(shape.height),
+          };
+      boxes.push({
+        left: bounds.x,
+        top: bounds.y,
+        right: bounds.x + bounds.width,
+        bottom: bounds.y + bounds.height,
+      });
+    });
+    texts.filter((text) => textIds.has(text.tempId)).forEach((text) => {
+      const width = Math.max(20, text.text.length * text.font_size * 0.55);
+      const height = Math.max(text.font_size * 1.3, text.text.split("\n").length * text.font_size * 1.3);
+      boxes.push({ left: text.x, top: text.y, right: text.x + width, bottom: text.y + height });
+    });
+
+    if (!boxes.length) return null;
+    const left = Math.min(...boxes.map((box) => box.left));
+    const top = Math.min(...boxes.map((box) => box.top));
+    const right = Math.max(...boxes.map((box) => box.right));
+    const bottom = Math.max(...boxes.map((box) => box.bottom));
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  }, [icons, shapes, texts, multiSelection.iconIds, multiSelection.shapeIds, multiSelection.textIds]);
 
   // ── Sheet mode geometry ───────────────────────────────────────────────────
   const planBlock = React.useMemo(() => (sheet ? findPlanBlock(sheet.blocks) : null), [sheet]);
@@ -1098,11 +1702,117 @@ function PlanCanvas({
     return (placement || stage).getAbsoluteTransform().copy().invert().point(pointer);
   };
 
+  /** Pointer in the unrotated coordinate system shared by annotations. */
+  const pointerInSceneCoords = (stage: any) => {
+    const pointer = stage?.getPointerPosition();
+    if (!stage || !pointer) return null;
+    const scene = stage.findOne(".planScene");
+    return (scene || stage).getAbsoluteTransform().copy().invert().point(pointer);
+  };
+
+  const beginAreaSelection = (stage: any) => {
+    if (!areaSelectionMode || sheet) return false;
+    const point = pointerInSceneCoords(stage);
+    if (!point) return false;
+    marqueeOriginRef.current = point;
+    setMarquee({ x: point.x, y: point.y, width: 0, height: 0 });
+    onSelectIcon(null);
+    onSelectShape?.(null);
+    onSelectText?.(null);
+    onSelectBlock?.(null);
+    onSelectOverlay?.(null);
+    onSelectBatBlock?.(false);
+    onMultiSelectionChange?.({ iconIds: [], shapeIds: [], textIds: [] });
+    return true;
+  };
+
+  const extendAreaSelection = (stage: any) => {
+    const origin = marqueeOriginRef.current;
+    if (!areaSelectionMode || !origin) return;
+    const point = pointerInSceneCoords(stage);
+    if (!point) return;
+    setMarquee({
+      x: Math.min(origin.x, point.x),
+      y: Math.min(origin.y, point.y),
+      width: Math.abs(point.x - origin.x),
+      height: Math.abs(point.y - origin.y),
+    });
+  };
+
+  const finishAreaSelection = () => {
+    if (!areaSelectionMode || !marqueeOriginRef.current) return;
+    const rect = marqueeRectRef.current;
+    marqueeOriginRef.current = null;
+    setMarquee(null);
+    if (!rect || rect.width < 3 || rect.height < 3) {
+      onAreaSelectionComplete?.(0);
+      return;
+    }
+    const inside = (point: ShapePoint) =>
+      point.x >= rect.x && point.y >= rect.y &&
+      point.x <= rect.x + rect.width && point.y <= rect.y + rect.height;
+    const selection: CanvasMultiSelection = {
+      iconIds: icons
+        .filter((icon) => !icon.locked && inside({
+          x: icon.x + icon.width / 2,
+          y: icon.y + icon.height / 2,
+        }))
+        .map((icon) => icon.tempId),
+      shapeIds: shapes
+        .filter((shape) => {
+          if (shape.locked) return false;
+          const center = shape.points?.length
+            ? {
+                x: shape.points.reduce((sum, point) => sum + point.x, 0) / shape.points.length,
+                y: shape.points.reduce((sum, point) => sum + point.y, 0) / shape.points.length,
+              }
+            : { x: shape.x + shape.width / 2, y: shape.y + shape.height / 2 };
+          return inside(center);
+        })
+        .map((shape) => shape.tempId),
+      textIds: texts
+        .filter((text) => !text.locked && inside({ x: text.x, y: text.y }))
+        .map((text) => text.tempId),
+    };
+    const count = selection.iconIds.length + selection.shapeIds.length + selection.textIds.length;
+    onMultiSelectionChange?.(selection);
+    onAreaSelectionComplete?.(count);
+  };
+
+  /**
+   * Pointer -> pixels of the plan image itself. The eraser paints onto a copy
+   * of that image, so a click has to be read through the plan's own transform:
+   * once the plan has been moved or resized on the canvas, its coordinates are
+   * no longer the scene's. Strokes are stored at the image's natural size, so
+   * they stay put whatever the plan does afterwards.
+   */
+  const pointerInBackgroundCoords = (stage: any) => {
+    const pointer = stage?.getPointerPosition();
+    if (!stage || !pointer) return null;
+
+    const planNode = stage.findOne("." + MAIN_PLAN_ID);
+    if (!planNode) return pointerInPlanCoords(stage);
+
+    const local = planNode.getAbsoluteTransform().copy().invert().point(pointer);
+    return {
+      x: local.x * (imageSize.width / Math.max(1, mainPlanTransform.width)),
+      y: local.y * (imageSize.height / Math.max(1, mainPlanTransform.height))
+    };
+  };
+
+  /** Brush size in plan-image pixels, so it looks constant on screen. */
+  const eraserSizeInBackground = () =>
+    eraserSize * (imageSize.width / Math.max(1, mainPlanTransform.width));
+
   const beginEraseStroke = (stage: any) => {
-    const point = pointerInPlanCoords(stage);
+    const point = pointerInBackgroundCoords(stage);
     if (!point || !editedBackground) return;
 
-    activeStrokeRef.current = { points: [point.x, point.y], size: eraserSize, shape: eraserShape };
+    activeStrokeRef.current = {
+      points: [point.x, point.y],
+      size: eraserSizeInBackground(),
+      shape: eraserShape
+    };
     const context = editedBackground.getContext("2d");
     if (context) paintStroke(context, activeStrokeRef.current, canvasScale);
     layerRef.current?.batchDraw();
@@ -1112,7 +1822,7 @@ function PlanCanvas({
     const stroke = activeStrokeRef.current;
     if (!stroke || !editedBackground) return;
 
-    const point = pointerInPlanCoords(stage);
+    const point = pointerInBackgroundCoords(stage);
     if (!point) return;
 
     const previousLength = stroke.points.length;
@@ -1379,11 +2089,34 @@ function PlanCanvas({
       const selectedShape = selectedShapeId
         ? shapes.find((shape) => shape.tempId === selectedShapeId)
         : null;
+      const selectedIcon = selectedIconId
+        ? icons.find((icon) => icon.tempId === selectedIconId)
+        : null;
+      const selectedText = selectedTextId
+        ? texts.find((text) => text.tempId === selectedTextId)
+        : null;
+      const selectedOverlay = selectedOverlayId && selectedOverlayId !== MAIN_PLAN_ID
+        ? planOverlays.find((overlay) => overlay.tempId === selectedOverlayId)
+        : null;
+      const selectedBlock = selectedBlockId
+        ? sheet?.blocks.find((block) => block.id === selectedBlockId)
+        : null;
+      const selectionLocked = Boolean(
+        selectedIcon?.locked ||
+        selectedShape?.locked ||
+        selectedText?.locked ||
+        selectedOverlay?.locked ||
+        selectedBlock?.locked ||
+        (selectedOverlayId === MAIN_PLAN_ID && mainPlanLocked)
+      );
       const activeId =
-        selectedIconId ||
-        selectedTextId ||
-        (isPolygonShape(selectedShape?.shape_type) ? null : selectedShapeId) ||
-        selectedBlockId;
+        selectionLocked || selectedBatBlock
+          ? null
+          : selectedIconId ||
+            selectedTextId ||
+            (isPolygonShape(selectedShape?.shape_type) ? null : selectedShapeId) ||
+            selectedBlockId ||
+            selectedOverlayId;
       if (activeId) {
         const selectedNode = stage.findOne("." + activeId);
         if (selectedNode) {
@@ -1395,7 +2128,7 @@ function PlanCanvas({
       transformerRef.current.nodes([]);
       transformerRef.current.getLayer().batchDraw();
     }
-  }, [selectedIconId, selectedShapeId, selectedTextId, selectedBlockId, icons, shapes, texts, sheet]);
+  }, [selectedIconId, selectedShapeId, selectedTextId, selectedBlockId, selectedOverlayId, selectedBatBlock, icons, shapes, texts, sheet, planOverlays, mainPlanLocked]);
 
   // Keyboard shortcut to delete the selected icon or shape
   useEffect(() => {
@@ -1424,13 +2157,28 @@ function PlanCanvas({
 
       if (e.key !== "Delete" && e.key !== "Backspace") return;
 
+      const multiCount = multiSelection.iconIds.length + multiSelection.shapeIds.length + multiSelection.textIds.length;
+      if (multiCount > 0) {
+        const iconIds = new Set(multiSelection.iconIds);
+        const shapeIds = new Set(multiSelection.shapeIds);
+        const textIds = new Set(multiSelection.textIds);
+        onIconsChange(icons.filter((icon) => !iconIds.has(icon.tempId) || Boolean(icon.locked)));
+        onShapesChange?.(shapes.filter((shape) => !shapeIds.has(shape.tempId) || Boolean(shape.locked)));
+        onTextsChange?.(texts.filter((text) => !textIds.has(text.tempId) || Boolean(text.locked)));
+        onMultiSelectionChange?.({ iconIds: [], shapeIds: [], textIds: [] });
+        return;
+      }
+
       if (selectedIconId) {
+        if (icons.find((icon) => icon.tempId === selectedIconId)?.locked) return;
         onIconsChange(icons.filter((icon) => icon.tempId !== selectedIconId));
         onSelectIcon(null);
       } else if (selectedShapeId) {
+        if (shapes.find((shape) => shape.tempId === selectedShapeId)?.locked) return;
         onShapesChange?.(shapes.filter((shape) => shape.tempId !== selectedShapeId));
         onSelectShape?.(null);
       } else if (selectedTextId) {
+        if (texts.find((text) => text.tempId === selectedTextId)?.locked) return;
         onTextsChange?.(texts.filter((t) => t.tempId !== selectedTextId));
         onSelectText?.(null);
       }
@@ -1439,9 +2187,11 @@ function PlanCanvas({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [selectedIconId, selectedShapeId, selectedTextId, icons, shapes, texts, onIconsChange, onSelectIcon, onShapesChange, onSelectShape, onTextsChange, onSelectText, shapeTool, draftPolygonPoints]);
+  }, [selectedIconId, selectedShapeId, selectedTextId, multiSelection, icons, shapes, texts, onIconsChange, onSelectIcon, onShapesChange, onSelectShape, onTextsChange, onSelectText, onMultiSelectionChange, shapeTool, draftPolygonPoints]);
 
   const handleStageMouseDown = (e: any) => {
+    if (beginAreaSelection(e.target.getStage())) return;
+
     if (mode === "erase") {
       beginEraseStroke(e.target.getStage());
       return;
@@ -1504,9 +2254,15 @@ function PlanCanvas({
       onSelectIcon(null);
       onSelectShape?.(null);
       onSelectText?.(null);
+      onSelectOverlay?.(null);
       onSelectBlock?.(planBlock.id);
+      onSelectBatBlock?.(false);
       return;
     }
+
+    // Off the sheet the plan is a selectable object of its own: its group has
+    // already picked it on this very click, so leave the selection alone.
+    if (!sheet && e.target.name() === "bgImage") return;
 
     // Clicked on stage background -> deselect
     if (e.target === e.target.getStage() || e.target.name() === "bgImage" || e.target.name() === "sheetPaper") {
@@ -1514,6 +2270,8 @@ function PlanCanvas({
       onSelectShape?.(null);
       onSelectText?.(null);
       onSelectBlock?.(null);
+      onSelectOverlay?.(null);
+      onSelectBatBlock?.(false);
       return;
     }
   };
@@ -1576,6 +2334,47 @@ function PlanCanvas({
     }));
   };
 
+  const approvalSurface = sheet
+    ? { x: 0, y: 0, width: sheet.width, height: sheet.height }
+    : contentBounds;
+  const approvalCentre = {
+    x: approvalSurface.x + approvalSurface.width / 2,
+    y: approvalSurface.y + approvalSurface.height / 2,
+  };
+  const watermarkFontSize = Math.max(22, Math.min(64, approvalSurface.width / 15));
+  const watermarkPositions = watermark.repeat
+    ? Array.from({ length: 12 }, (_, index) => ({
+        x: approvalSurface.x + approvalSurface.width * ((index % 3) + 0.5) / 3,
+        y: approvalSurface.y + approvalSurface.height * (Math.floor(index / 3) + 0.5) / 4,
+      }))
+    : [approvalCentre];
+  const hasBatLogos = Boolean(batLogoImages.client || batLogoImages.creator);
+  const batWidth = Math.min(
+    approvalSurface.width,
+    420,
+    Math.max(270, approvalSurface.width * 0.28)
+  );
+  const batHeight = Math.min(
+    approvalSurface.height,
+    hasBatLogos ? 350 : 290,
+    Math.max(hasBatLogos ? 310 : 220, approvalSurface.height * (hasBatLogos ? 0.38 : 0.28))
+  );
+  const batInfoY = hasBatLogos ? 106 : 50;
+  const batTravelX = Math.max(0, approvalSurface.width - batWidth);
+  const batTravelY = Math.max(0, approvalSurface.height - batHeight);
+  const batX = approvalSurface.x + watermark.block_x * batTravelX;
+  const batY = approvalSurface.y + watermark.block_y * batTravelY;
+
+  const selectBatBlock = (event: { cancelBubble: boolean }) => {
+    event.cancelBubble = true;
+    onSelectIcon(null);
+    onSelectShape?.(null);
+    onSelectText?.(null);
+    onSelectBlock?.(null);
+    onSelectOverlay?.(null);
+    onSelectBatBlock?.(true);
+  };
+
   return (
     <div
       ref={containerRef}
@@ -1588,6 +2387,7 @@ function PlanCanvas({
         backgroundPosition: "0 0, 8px 8px"
       }}
     >
+      {stageSize.width > 0 && stageSize.height > 0 && (
       <Stage
         ref={stageRef}
         width={stageSize.width}
@@ -1603,24 +2403,29 @@ function PlanCanvas({
           if (isPolygonTool(shapeTool)) finishPolygonDraft();
         }}
         onMouseMove={(e: any) => {
-          if (mode === "erase") extendEraseStroke(e.target.getStage());
+          if (areaSelectionMode) extendAreaSelection(e.target.getStage());
+          else if (mode === "erase") extendEraseStroke(e.target.getStage());
           else if (isPolygonTool(shapeTool)) updatePolygonCursor(e.target.getStage());
           else if (shapeTool) extendShape(e.target.getStage());
         }}
         onTouchMove={(e: any) => {
-          if (mode === "erase") extendEraseStroke(e.target.getStage());
+          if (areaSelectionMode) extendAreaSelection(e.target.getStage());
+          else if (mode === "erase") extendEraseStroke(e.target.getStage());
           else if (isPolygonTool(shapeTool)) updatePolygonCursor(e.target.getStage());
           else if (shapeTool) extendShape(e.target.getStage());
         }}
         onMouseUp={() => {
+          finishAreaSelection();
           finishEraseStroke();
           if (!isPolygonTool(shapeTool)) finishShape();
         }}
         onTouchEnd={() => {
+          finishAreaSelection();
           finishEraseStroke();
           if (!isPolygonTool(shapeTool)) finishShape();
         }}
         onMouseLeave={() => {
+          finishAreaSelection();
           finishEraseStroke();
           if (!isPolygonTool(shapeTool)) finishShape();
           if (isPolygonTool(shapeTool)) setPolygonCursor(null);
@@ -1631,7 +2436,7 @@ function PlanCanvas({
           cursor:
             mode === "erase"
               ? "cell"
-              : isPolygonTool(shapeTool) || placementIconType || placementText
+              : areaSelectionMode || isPolygonTool(shapeTool) || placementIconType || placementText
                 ? "crosshair"
                 : mode === "pan"
                   ? "grab"
@@ -1668,6 +2473,7 @@ function PlanCanvas({
               fill={planBlock.fill || "#ffffff"}
               cornerRadius={planBlock.cornerRadius ?? 0}
               onTransformEnd={(event: any) => {
+                if (planBlock.locked) return;
                 const node = event.target;
                 const scaleX = Math.abs(node.scaleX());
                 const scaleY = Math.abs(node.scaleY());
@@ -1683,6 +2489,8 @@ function PlanCanvas({
             />
           )}
 
+
+
           {/* The plan window: clips the plan to the frame, and drags it — with
               its content — across the sheet. Holding Alt reframes the plan
               inside the window instead of moving the window. */}
@@ -1695,7 +2503,7 @@ function PlanCanvas({
                   }
                 : undefined
             }
-            draggable={Boolean(sheet) && mode === "select" && planBlockSelected}
+            draggable={Boolean(sheet) && mode === "select" && planBlockSelected && !planBlock?.locked}
             onDragEnd={(event: any) => {
               if (!sheet || !planBlock) return;
               const node = event.target;
@@ -1716,7 +2524,7 @@ function PlanCanvas({
               y={sheet ? planTransform.y : 0}
               scaleX={sheet ? planTransform.scale : 1}
               scaleY={sheet ? planTransform.scale : 1}
-              draggable={Boolean(sheet) && mode === "select" && planBlockSelected}
+              draggable={Boolean(sheet) && mode === "select" && planBlockSelected && !planBlock?.locked}
               onDragStart={(event: any) => {
                 // Both the window and the plan inside it are draggable, and Konva
                 // always picks the innermost one. Alt is the switch: without it,
@@ -1767,15 +2575,149 @@ function PlanCanvas({
             />
           )}
 
-          {/* Background plan — the eraser's working copy once one exists */}
+          {/* Background plan — draggable and resizable, and everything drawn on
+              it follows: a pictogram marks a real place in the building, so it
+              cannot stay behind when the plan moves under it. */}
           {bgImage && (
-            <KonvaImage
-              image={editedBackground || bgImage}
-              width={imageSize.width}
-              height={imageSize.height}
-              name="bgImage"
-            />
+            <Group
+              id={MAIN_PLAN_ID}
+              name={MAIN_PLAN_ID}
+              x={mainPlanTransform.x}
+              y={mainPlanTransform.y}
+              width={mainPlanTransform.width}
+              height={mainPlanTransform.height}
+              listening={!areaSelectionMode}
+              draggable={!areaSelectionMode && !sheet && mode === "select" && !shapeTool && !mainPlanLocked}
+              onMouseDown={selectMainPlan}
+              onTouchStart={selectMainPlan}
+              onClick={selectMainPlan}
+              onTap={selectMainPlan}
+              onDragEnd={(e: any) => {
+                const node = e.target;
+                const dx = node.x() - mainPlanTransform.x;
+                const dy = node.y() - mainPlanTransform.y;
+                if (!dx && !dy) return;
+                setMainPlanTransform((prev) => ({ ...prev, x: node.x(), y: node.y() }));
+                moveMainPlanContent({ dx, dy, scaleX: 1, scaleY: 1, originX: 0, originY: 0 });
+              }}
+              onTransformEnd={(e: any) => {
+                const node = e.target;
+                const rawScaleX = Math.abs(node.scaleX()) || 1;
+                const rawScaleY = Math.abs(node.scaleY()) || 1;
+                node.scaleX(1);
+                node.scaleY(1);
+
+                const width = Math.max(50, mainPlanTransform.width * rawScaleX);
+                const height = Math.max(50, mainPlanTransform.height * rawScaleY);
+                // Use the clamped sizes, so the content scales by exactly what
+                // the plan ended up doing.
+                const scaleX = width / mainPlanTransform.width;
+                const scaleY = height / mainPlanTransform.height;
+
+                setMainPlanTransform((prev) => ({
+                  ...prev,
+                  x: node.x(),
+                  y: node.y(),
+                  width,
+                  height
+                }));
+                moveMainPlanContent({
+                  dx: node.x() - mainPlanTransform.x,
+                  dy: node.y() - mainPlanTransform.y,
+                  scaleX,
+                  scaleY,
+                  originX: mainPlanTransform.x,
+                  originY: mainPlanTransform.y
+                });
+              }}
+            >
+              <KonvaImage
+                image={editedBackground || bgImage}
+                width={mainPlanTransform.width}
+                height={mainPlanTransform.height}
+                stroke={selectedOverlayId === MAIN_PLAN_ID ? "#3b82f6" : undefined}
+                strokeWidth={selectedOverlayId === MAIN_PLAN_ID ? 2 : 0}
+                name="bgImage"
+              />
+            </Group>
           )}
+
+          {/* Secondary Plan Overlays (Multi-plan in Plan Seul mode) */}
+          {planOverlays.map((overlay) => {
+            const img = overlayImages[overlay.tempId];
+            const isSelected = selectedOverlayId === overlay.tempId;
+            return (
+              <Group
+                key={overlay.tempId}
+                id={overlay.tempId}
+                name={overlay.tempId}
+                x={overlay.x}
+                y={overlay.y}
+                width={overlay.width}
+                height={overlay.height}
+                rotation={overlay.rotation}
+                listening={!areaSelectionMode}
+                draggable={!areaSelectionMode && mode === "select" && !shapeTool && !overlay.locked}
+                onMouseDown={() => selectPlanOverlay(overlay.tempId)}
+                onTouchStart={() => selectPlanOverlay(overlay.tempId)}
+                onClick={() => selectPlanOverlay(overlay.tempId)}
+                onTap={() => selectPlanOverlay(overlay.tempId)}
+                onDragEnd={(e: any) => {
+                  if (!onPlanOverlaysChange) return;
+                  const nextOverlay = { ...overlay, x: e.target.x(), y: e.target.y() };
+                  moveOverlayGroupedContent(overlay, nextOverlay);
+                  const updated = planOverlays.map((item) =>
+                    item.tempId === overlay.tempId
+                      ? nextOverlay
+                      : item
+                  );
+                  onPlanOverlaysChange(updated);
+                }}
+                onTransformEnd={(e: any) => {
+                  if (!onPlanOverlaysChange) return;
+                  const node = e.target;
+                  const scaleX = Math.abs(node.scaleX());
+                  const scaleY = Math.abs(node.scaleY());
+                  node.scaleX(1);
+                  node.scaleY(1);
+                  const nextOverlay = {
+                    ...overlay,
+                    x: Math.round(node.x()),
+                    y: Math.round(node.y()),
+                    width: Math.max(40, Math.round(overlay.width * scaleX)),
+                    height: Math.max(40, Math.round(overlay.height * scaleY)),
+                    rotation: node.rotation()
+                  };
+                  moveOverlayGroupedContent(overlay, nextOverlay);
+                  const updated = planOverlays.map((item) =>
+                    item.tempId === overlay.tempId
+                      ? nextOverlay
+                      : item
+                  );
+                  onPlanOverlaysChange(updated);
+                }}
+              >
+                {img ? (
+                  <KonvaImage
+                    image={img}
+                    width={overlay.width}
+                    height={overlay.height}
+                    stroke={isSelected ? "#3b82f6" : undefined}
+                    strokeWidth={isSelected ? 2 : 0}
+                  />
+                ) : (
+                  <Rect
+                    width={overlay.width}
+                    height={overlay.height}
+                    fill="rgba(56, 189, 248, 0.15)"
+                    stroke="#38bdf8"
+                    strokeWidth={1.5}
+                    dash={[4, 4]}
+                  />
+                )}
+              </Group>
+            );
+          })}
 
           {/* Drawn shapes — under the pictograms so icons stay readable */}
           {shapes.map((shape) => {
@@ -1791,13 +2733,19 @@ function PlanCanvas({
               stroke: shape.color,
               strokeWidth: shape.stroke_width,
               rotation: shape.rotation,
-              draggable: mode === "select" && !shapeTool,
+              listening: !areaSelectionMode,
+              draggable: !areaSelectionMode && mode === "select" && !shapeTool && !shape.locked,
               onClick: () => onSelectShape?.(shape.tempId),
               onTap: () => onSelectShape?.(shape.tempId),
               // A thin line is hard to grab, so widen its hit area.
               hitStrokeWidth: Math.max(12, shape.stroke_width + 8),
-              onDragEnd: (e: any) =>
-                updateShape(shape.tempId, { x: e.target.x(), y: e.target.y() }),
+              onDragEnd: (e: any) => {
+                const dx = e.target.x() - shape.x;
+                const dy = e.target.y() - shape.y;
+                if (!moveObjectGroup(shape.object_group_id, dx, dy)) {
+                  updateShape(shape.tempId, { x: e.target.x(), y: e.target.y() });
+                }
+              },
               onTransformEnd: (e: any) => {
                 const node = e.target;
                 const scaleX = Math.abs(node.scaleX());
@@ -1838,12 +2786,16 @@ function PlanCanvas({
                   y={shape.y + shape.height / 2}
                   radiusX={Math.max(1, shape.width / 2)}
                   radiusY={Math.max(1, shape.height / 2)}
-                  onDragEnd={(e: any) =>
-                    updateShape(shape.tempId, {
-                      x: e.target.x() - shape.width / 2,
-                      y: e.target.y() - shape.height / 2
-                    })
-                  }
+                  onDragEnd={(e: any) => {
+                    const dx = e.target.x() - (shape.x + shape.width / 2);
+                    const dy = e.target.y() - (shape.y + shape.height / 2);
+                    if (!moveObjectGroup(shape.object_group_id, dx, dy)) {
+                      updateShape(shape.tempId, {
+                        x: e.target.x() - shape.width / 2,
+                        y: e.target.y() - shape.height / 2
+                      });
+                    }
+                  }}
                 />
               );
             }
@@ -1986,7 +2938,8 @@ function PlanCanvas({
                 <Line
                   points={[icon.anchor_x, icon.anchor_y, end.x, end.y]}
                   stroke={leaderColor}
-                  strokeWidth={2}
+                  strokeWidth={icon.leader_width ?? 2}
+                  lineCap="round"
                   listening={false}
                 />
                 <Circle
@@ -1997,7 +2950,8 @@ function PlanCanvas({
                   stroke={leaderColor}
                   strokeWidth={1}
                   hitStrokeWidth={14}
-                  draggable={mode === "select" && !shapeTool}
+                  listening={!areaSelectionMode}
+                  draggable={!areaSelectionMode && mode === "select" && !shapeTool && !icon.locked}
                   onClick={() => onSelectIcon(icon.tempId)}
                   onTap={() => onSelectIcon(icon.tempId)}
                   onDragEnd={(e: any) => {
@@ -2027,10 +2981,14 @@ function PlanCanvas({
                 width={icon.width}
                 height={icon.height}
                 rotation={icon.rotation}
-                draggable={mode === "select"}
+                listening={!areaSelectionMode}
+                draggable={!areaSelectionMode && mode === "select" && !icon.locked}
                 onClick={() => onSelectIcon(icon.tempId)}
                 onTap={() => onSelectIcon(icon.tempId)}
                 onDragEnd={(e) => {
+                  const dx = e.target.x() - icon.x;
+                  const dy = e.target.y() - icon.y;
+                  if (moveObjectGroup(icon.object_group_id, dx, dy)) return;
                   const updated = icons.map((item) => {
                     if (item.tempId === icon.tempId) {
                       return {
@@ -2139,10 +3097,14 @@ function PlanCanvas({
                 x={t.x}
                 y={t.y}
                 rotation={t.rotation}
-                draggable={mode === "select"}
+                listening={!areaSelectionMode}
+                draggable={!areaSelectionMode && mode === "select" && !t.locked}
                 onClick={() => onSelectText?.(t.tempId)}
                 onTap={() => onSelectText?.(t.tempId)}
                 onDragEnd={(e) => {
+                  const dx = e.target.x() - t.x;
+                  const dy = e.target.y() - t.y;
+                  if (moveObjectGroup(t.object_group_id, dx, dy)) return;
                   const updated = texts.map((item) =>
                     item.tempId === t.tempId
                       ? { ...item, x: e.target.x(), y: e.target.y() }
@@ -2203,9 +3165,47 @@ function PlanCanvas({
               </Group>
             );
           })}
+
+          {selectedContentBounds && !areaSelectionMode && (
+            <Rect
+              name="multiSelectionBounds"
+              x={selectedContentBounds.x - 7}
+              y={selectedContentBounds.y - 7}
+              width={selectedContentBounds.width + 14}
+              height={selectedContentBounds.height + 14}
+              fill="rgba(59, 130, 246, 0.05)"
+              stroke="#3b82f6"
+              strokeWidth={2 / Math.max(zoom, 0.1)}
+              dash={[8 / Math.max(zoom, 0.1), 5 / Math.max(zoom, 0.1)]}
+              draggable={mode === "select"}
+              listening={mode === "select"}
+              onDragEnd={(event: any) => {
+                const dx = event.target.x() - (selectedContentBounds.x - 7);
+                const dy = event.target.y() - (selectedContentBounds.y - 7);
+                translateContent(dx, dy, multiSelection);
+              }}
+            />
+          )}
+
+          {marqueeRect && (
+            <Rect
+              name="areaSelectionMarquee"
+              x={marqueeRect.x}
+              y={marqueeRect.y}
+              width={marqueeRect.width}
+              height={marqueeRect.height}
+              fill="rgba(56, 189, 248, 0.12)"
+              stroke="#38bdf8"
+              strokeWidth={2 / Math.max(zoom, 0.1)}
+              dash={[7 / Math.max(zoom, 0.1), 4 / Math.max(zoom, 0.1)]}
+              listening={false}
+            />
+          )}
           </Group>
             </Group>
           </Group>
+
+
 
           {/* The window's rule, drawn over the plan so the frame stays crisp
               whatever the plan bleeds to its edges. */}
@@ -2232,7 +3232,7 @@ function PlanCanvas({
                   key={block.id}
                   block={block}
                   isSelected={selectedBlockId === block.id}
-                  editable={mode === "select"}
+                  editable={mode === "select" && !block.locked}
                   legendEntries={sheetLegendEntries}
                   images={sheetImages}
                   pictoImages={sheetPictoImages}
@@ -2252,12 +3252,176 @@ function PlanCanvas({
                 />
               ))}
 
+          {/* Approval layer: the stage remains the single source for preview and
+              export. Repeated watermark text never listens to pointer events;
+              only the optional BAT block can be selected and moved. */}
+          {watermark.enabled && (
+            <Group
+              name="approvalLayer"
+              x={approvalCentre.x}
+              y={approvalCentre.y}
+              offsetX={approvalCentre.x}
+              offsetY={approvalCentre.y}
+              rotation={sheet ? 0 : planRotation}
+            >
+              <Group
+                listening={false}
+                clipFunc={(context: { rect: (x: number, y: number, width: number, height: number) => void }) => {
+                  context.rect(
+                    approvalSurface.x,
+                    approvalSurface.y,
+                    approvalSurface.width,
+                    approvalSurface.height
+                  );
+                }}
+              >
+                {watermarkPositions.map((position, index) => (
+                  <Text
+                    key={`approval-watermark-${index}`}
+                    x={position.x}
+                    y={position.y}
+                    offsetX={approvalSurface.width * 0.28}
+                    offsetY={watermarkFontSize / 2}
+                    width={approvalSurface.width * 0.56}
+                    text={watermark.text || "BON À TIRER – POUR VALIDATION UNIQUEMENT"}
+                    align="center"
+                    fontSize={watermarkFontSize}
+                    fontFamily="Arial"
+                    fontStyle="bold"
+                    fill="#b91c1c"
+                    opacity={watermark.repeat ? 0.17 : 0.22}
+                    rotation={watermark.diagonal ? -28 : 0}
+                    listening={false}
+                  />
+                ))}
+              </Group>
+
+              {watermark.show_bat_block && (
+                <Group
+                  id={BAT_BLOCK_ID}
+                  name={BAT_BLOCK_ID}
+                  x={batX}
+                  y={batY}
+                  width={batWidth}
+                  height={batHeight}
+                  draggable={mode === "select" && !watermark.block_locked}
+                  onMouseDown={selectBatBlock}
+                  onTouchStart={selectBatBlock}
+                  onClick={selectBatBlock}
+                  onTap={selectBatBlock}
+                  onDragEnd={(event: { target: { x: () => number; y: () => number } }) => {
+                    const nextX = batTravelX
+                      ? (event.target.x() - approvalSurface.x) / batTravelX
+                      : 0;
+                    const nextY = batTravelY
+                      ? (event.target.y() - approvalSurface.y) / batTravelY
+                      : 0;
+                    onWatermarkChange({
+                      ...watermark,
+                      block_x: Math.min(1, Math.max(0, nextX)),
+                      block_y: Math.min(1, Math.max(0, nextY)),
+                    });
+                  }}
+                >
+                  <Rect
+                    width={batWidth}
+                    height={batHeight}
+                    fill="rgba(255,255,255,0.96)"
+                    stroke={selectedBatBlock ? "#2563eb" : "#991b1b"}
+                    strokeWidth={selectedBatBlock ? 3 : 2}
+                    cornerRadius={6}
+                    shadowColor="#000000"
+                    shadowBlur={8}
+                    shadowOpacity={0.2}
+                  />
+                  <Rect width={batWidth} height={38} fill="#991b1b" cornerRadius={[6, 6, 0, 0]} listening={false} />
+                  <Text
+                    text="BON À TIRER"
+                    width={batWidth}
+                    height={38}
+                    align="center"
+                    verticalAlign="middle"
+                    fontSize={19}
+                    fontStyle="bold"
+                    fill="#ffffff"
+                    listening={false}
+                  />
+                  {hasBatLogos && (
+                    <>
+                      {([
+                        { key: "client", label: "CLIENT", image: batLogoImages.client, slotX: 14 },
+                        { key: "creator", label: "CRÉATEUR", image: batLogoImages.creator, slotX: batWidth / 2 + 5 },
+                      ] as const).map(({ key, label, image, slotX }) => {
+                        if (!image || !image.width || !image.height) return null;
+                        const slotWidth = batWidth / 2 - 24;
+                        const slotHeight = 43;
+                        const scale = Math.min(slotWidth / image.width, slotHeight / image.height);
+                        const width = image.width * scale;
+                        const height = image.height * scale;
+                        return (
+                          <Group key={`bat-logo-${key}`} x={slotX} y={45} listening={false}>
+                            <Text
+                              text={label}
+                              width={slotWidth}
+                              align="center"
+                              fontSize={8}
+                              fontStyle="bold"
+                              fill="#6b7280"
+                              listening={false}
+                            />
+                            <KonvaImage
+                              image={image}
+                              x={(slotWidth - width) / 2}
+                              y={12 + (slotHeight - height) / 2}
+                              width={width}
+                              height={height}
+                              listening={false}
+                            />
+                          </Group>
+                        );
+                      })}
+                      {batLogoImages.client && batLogoImages.creator && (
+                        <Line
+                          points={[batWidth / 2, 47, batWidth / 2, 98]}
+                          stroke="#e5e7eb"
+                          strokeWidth={1}
+                          listening={false}
+                        />
+                      )}
+                    </>
+                  )}
+                  <Text
+                    x={16}
+                    y={batInfoY}
+                    width={batWidth - 32}
+                    height={Math.max(40, batHeight - batInfoY - 108)}
+                    text={`Client : ${watermark.client || ""}\nRéférence : ${watermark.reference || ""}\nDate : ${watermark.date || ""}${watermark.comment ? `\nCommentaire : ${watermark.comment}` : ""}`}
+                    fontSize={13}
+                    lineHeight={1.45}
+                    fill="#111827"
+                    ellipsis
+                    listening={false}
+                  />
+                  <Rect x={17} y={batHeight - 100} width={13} height={13} stroke="#111827" strokeWidth={1.2} listening={false} />
+                  <Text x={38} y={batHeight - 101} text="Validé" fontSize={13} fill="#111827" listening={false} />
+                  <Rect x={17} y={batHeight - 74} width={13} height={13} stroke="#111827" strokeWidth={1.2} listening={false} />
+                  <Text x={38} y={batHeight - 75} text="Validé avec modifications" fontSize={13} fill="#111827" listening={false} />
+                  <Text x={16} y={batHeight - 42} text="Nom / Signature :" fontSize={12} fontStyle="bold" fill="#111827" listening={false} />
+                  <Line points={[125, batHeight - 30, batWidth - 16, batHeight - 30]} stroke="#374151" strokeWidth={1} listening={false} />
+                </Group>
+              )}
+            </Group>
+          )}
+
           {/* Selection Transformer handles resizing & rotation */}
           {mode === "select" && (
             <Transformer
               ref={transformerRef}
               flipEnabled={false}
-              keepRatio={false}
+              keepRatio={selectedOverlayId ? keepPlanRatio : false}
+              // Turning the plan alone would leave its pictograms behind: the
+              // whole scene turns together, from the toolbar's rotation.
+              rotateEnabled={selectedOverlayId !== MAIN_PLAN_ID}
               boundBoxFunc={(oldBox, newBox) => {
                 // limit minimum size
                 if (Math.abs(newBox.width) < 15 || Math.abs(newBox.height) < 15) {
@@ -2284,6 +3448,7 @@ function PlanCanvas({
           )}
         </Layer>
       </Stage>
+      )}
 
       {/* In-place text editing: a textarea laid over the block being edited, so
           the copy is typed where it will be printed. */}

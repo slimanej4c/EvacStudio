@@ -33,6 +33,8 @@ export type SheetImageKey = "clientLogo" | "studioLogo";
 export interface SheetBlock {
   id: string;
   kind: SheetBlockKind;
+  /** For `plan` blocks: identifies if this is the main plan or a secondary inset plan. */
+  planSlot?: "main" | "secondary" | "tertiary";
   /** Name shown in the studio's block list. */
   label: string;
   x: number;
@@ -41,6 +43,8 @@ export interface SheetBlock {
   height: number;
   rotation: number;
   visible: boolean;
+  /** Prevents accidental movement/resizing while keeping the block selectable. */
+  locked?: boolean;
 
   // ── Content ──────────────────────────────────────────────────────────────
   /** Title bar text. Empty or absent means no title bar. */
@@ -361,7 +365,8 @@ export function createNfx08070Blocks(context: SheetTemplateContext = {}): SheetB
     {
       id: "nf-plan",
       kind: "plan",
-      label: "Plan (fenêtre)",
+      planSlot: "main",
+      label: "Plan principal (fenêtre)",
       x: leftX + leftW + 24,
       y: 96,
       width: SHEET_WIDTH - 20 - (leftX + leftW + 24),
@@ -495,7 +500,12 @@ export function createFreeTextBlock(index: number): SheetBlock {
   };
 }
 
-/** The plan window of a layout, if the template has one. */
+/** All plan windows of a layout. */
+export function findPlanBlocks(blocks: SheetBlock[]): SheetBlock[] {
+  return blocks.filter((block) => block.kind === "plan");
+}
+
+/** The main or first plan window of a layout, if the template has one. */
 export function findPlanBlock(blocks: SheetBlock[]): SheetBlock | null {
-  return blocks.find((block) => block.kind === "plan") ?? null;
+  return blocks.find((block) => block.kind === "plan" && (block.planSlot === "main" || !block.planSlot)) ?? blocks.find((block) => block.kind === "plan") ?? null;
 }

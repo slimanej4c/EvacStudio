@@ -1,0 +1,3498 @@
+{
+  "version": "1.0.0",
+  "gitCommitHash": "343f217079392efb175b5c65b67aca5cf34c4877",
+  "generatedAt": "2026-08-10T23:14:54.739Z",
+  "files": {
+    ".claude/launch.json": {
+      "filePath": ".claude/launch.json",
+      "contentHash": "a0f9efef15f171e06a251d5784820425b983cacc94ffb9e348cead19047515e8",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 13,
+      "hasStructuralAnalysis": false
+    },
+    ".DS_Store": {
+      "filePath": ".DS_Store",
+      "contentHash": "abe2fd3c36c25f85775906ff0f1fcc68569a5a09a7b2e34f4f45d7e741f33cb7",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 5,
+      "hasStructuralAnalysis": false
+    },
+    ".zcode/plans/plan-sess_aabbbeea-1354-40dc-be8a-6fd1e76a7a9a.md": {
+      "filePath": ".zcode/plans/plan-sess_aabbbeea-1354-40dc-be8a-6fd1e76a7a9a.md",
+      "contentHash": "967c92777187b817d3c28948977af84d235b66b02f652b8dcf0745d2ea34d237",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 151,
+      "hasStructuralAnalysis": false
+    },
+    ".zcode/plans/plan-sess_cb78353c-c03a-4562-81db-85e3179f2c06.md": {
+      "filePath": ".zcode/plans/plan-sess_cb78353c-c03a-4562-81db-85e3179f2c06.md",
+      "contentHash": "219383d4c78fa6692c6109bfe9d0df4b82418954481f79b277496442544c81f7",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 123,
+      "hasStructuralAnalysis": false
+    },
+    "backend/.env.example": {
+      "filePath": "backend/.env.example",
+      "contentHash": "66bceebcd900a4c380d1411a463506388b24eb6ea39c164ec0386ece7b621587",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 18,
+      "hasStructuralAnalysis": false
+    },
+    "backend/config/__init__.py": {
+      "filePath": "backend/config/__init__.py",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1,
+      "hasStructuralAnalysis": true
+    },
+    "backend/config/asgi.py": {
+      "filePath": "backend/config/asgi.py",
+      "contentHash": "85085ec70cba269660557023375b388cdaf64f3942482ee5509a0e4eeb86ee38",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "django.core.asgi",
+          "specifiers": [
+            "get_asgi_application"
+          ]
+        }
+      ],
+      "exports": [],
+      "totalLines": 17,
+      "hasStructuralAnalysis": true
+    },
+    "backend/config/settings.py": {
+      "filePath": "backend/config/settings.py",
+      "contentHash": "3025b88f7ea060ad6039ff92d62408cee9ae579fd9eb6347525ef19973c254b4",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "pathlib",
+          "specifiers": [
+            "Path"
+          ]
+        },
+        {
+          "source": "datetime",
+          "specifiers": [
+            "timedelta"
+          ]
+        },
+        {
+          "source": "dj_database_url",
+          "specifiers": [
+            "dj_database_url"
+          ]
+        },
+        {
+          "source": "dotenv",
+          "specifiers": [
+            "load_dotenv"
+          ]
+        }
+      ],
+      "exports": [],
+      "totalLines": 141,
+      "hasStructuralAnalysis": true
+    },
+    "backend/config/urls.py": {
+      "filePath": "backend/config/urls.py",
+      "contentHash": "5251d956b374327db485144fe4da2cb5a2ba75ae5e662fa6f81a5e1c47266c4b",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        {
+          "source": "django.contrib",
+          "specifiers": [
+            "admin"
+          ]
+        },
+        {
+          "source": "django.urls",
+          "specifiers": [
+            "path",
+            "include"
+          ]
+        },
+        {
+          "source": "django.conf",
+          "specifiers": [
+            "settings"
+          ]
+        },
+        {
+          "source": "django.conf.urls.static",
+          "specifiers": [
+            "static"
+          ]
+        }
+      ],
+      "exports": [],
+      "totalLines": 14,
+      "hasStructuralAnalysis": true
+    },
+    "backend/config/wsgi.py": {
+      "filePath": "backend/config/wsgi.py",
+      "contentHash": "943abf856f108fbfcc32982b6ceb2599369d742620c2fbf4d946956c81c4c3f8",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "django.core.wsgi",
+          "specifiers": [
+            "get_wsgi_application"
+          ]
+        }
+      ],
+      "exports": [],
+      "totalLines": 17,
+      "hasStructuralAnalysis": true
+    },
+    "backend/db.sqlite3": {
+      "filePath": "backend/db.sqlite3",
+      "contentHash": "e23b334973263454863d3c55fddfa9dfc97043ce16003599d2269fac183ed97f",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 476,
+      "hasStructuralAnalysis": false
+    },
+    "backend/evacuation_plans/__init__.py": {
+      "filePath": "backend/evacuation_plans/__init__.py",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/admin.py": {
+      "filePath": "backend/evacuation_plans/admin.py",
+      "contentHash": "b2e328e31f08dc907100505521d13ee6a9ea67a240655d051120011ce49cfaf8",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        {
+          "source": "django.contrib",
+          "specifiers": [
+            "admin"
+          ]
+        }
+      ],
+      "exports": [],
+      "totalLines": 4,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/apps.py": {
+      "filePath": "backend/evacuation_plans/apps.py",
+      "contentHash": "9c6ddf3a2dec6fda2cc861f9551427c5a926932fac2961791536be34c3a0653a",
+      "functions": [],
+      "classes": [
+        {
+          "name": "EvacuationPlansConfig",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 2
+        }
+      ],
+      "imports": [
+        {
+          "source": "django.apps",
+          "specifiers": [
+            "AppConfig"
+          ]
+        }
+      ],
+      "exports": [
+        "EvacuationPlansConfig"
+      ],
+      "totalLines": 6,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/grok_cleaning.py": {
+      "filePath": "backend/evacuation_plans/grok_cleaning.py",
+      "contentHash": "41c7785840541466f1706b3fa5559d1b38398fc39efd13de4abac4a76261ec91",
+      "functions": [
+        {
+          "name": "_get_analysis_model",
+          "params": [],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 2
+        },
+        {
+          "name": "_get_edit_model",
+          "params": [],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 2
+        },
+        {
+          "name": "_get_resolution",
+          "params": [],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 2
+        },
+        {
+          "name": "image_bytes_to_data_url",
+          "params": [
+            "image_bytes",
+            "mime_type"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "_clean_json_response",
+          "params": [
+            "text"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 9
+        },
+        {
+          "name": "_download_image",
+          "params": [
+            "url",
+            "timeout"
+          ],
+          "returnType": "bytes",
+          "exported": true,
+          "lineCount": 7
+        },
+        {
+          "name": "_extract_image_bytes",
+          "params": [
+            "response"
+          ],
+          "returnType": "bytes",
+          "exported": true,
+          "lineCount": 52
+        },
+        {
+          "name": "_map_grpc_error",
+          "params": [
+            "exc"
+          ],
+          "returnType": "GrokCleaningError",
+          "exported": true,
+          "lineCount": 41
+        },
+        {
+          "name": "_run_analysis",
+          "params": [
+            "client",
+            "source_data_url",
+            "analysis_model",
+            "instruction"
+          ],
+          "returnType": "dict",
+          "exported": true,
+          "lineCount": 18
+        },
+        {
+          "name": "_format_background_color_instruction",
+          "params": [
+            "background_color"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 13
+        },
+        {
+          "name": "_validate_analysis",
+          "params": [
+            "analysis",
+            "background_color"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 32
+        },
+        {
+          "name": "analyze_and_clean_plan",
+          "params": [
+            "image_bytes",
+            "api_key",
+            "background_color",
+            "preset"
+          ],
+          "returnType": "GrokCleaningResult",
+          "exported": true,
+          "lineCount": 72
+        },
+        {
+          "name": "_normalize_background_color",
+          "params": [
+            "image_bytes",
+            "target_hex"
+          ],
+          "returnType": "bytes",
+          "exported": true,
+          "lineCount": 45
+        },
+        {
+          "name": "_looks_like_grpc_error",
+          "params": [
+            "exc"
+          ],
+          "returnType": "bool",
+          "exported": true,
+          "lineCount": 5
+        }
+      ],
+      "classes": [
+        {
+          "name": "GrokCleaningError",
+          "methods": [
+            "__init__"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 11
+        },
+        {
+          "name": "MissingXaiApiKeyError",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "GrokCleaningResult",
+          "methods": [],
+          "properties": [
+            "analysis",
+            "generation_prompt",
+            "cleaned_image_bytes",
+            "analysis_model",
+            "image_model",
+            "warnings",
+            "status"
+          ],
+          "exported": true,
+          "lineCount": 8
+        }
+      ],
+      "imports": [
+        {
+          "source": "base64",
+          "specifiers": [
+            "base64"
+          ]
+        },
+        {
+          "source": "json",
+          "specifiers": [
+            "json"
+          ]
+        },
+        {
+          "source": "logging",
+          "specifiers": [
+            "logging"
+          ]
+        },
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "dataclasses",
+          "specifiers": [
+            "dataclass",
+            "field"
+          ]
+        },
+        {
+          "source": "urllib.error",
+          "specifiers": [
+            "HTTPError",
+            "URLError"
+          ]
+        },
+        {
+          "source": "urllib.request",
+          "specifiers": [
+            "Request",
+            "urlopen"
+          ]
+        },
+        {
+          "source": "cv2",
+          "specifiers": [
+            "cv2"
+          ]
+        },
+        {
+          "source": "numpy",
+          "specifiers": [
+            "np"
+          ]
+        }
+      ],
+      "exports": [
+        "_get_analysis_model",
+        "_get_edit_model",
+        "_get_resolution",
+        "GrokCleaningError",
+        "MissingXaiApiKeyError",
+        "GrokCleaningResult",
+        "image_bytes_to_data_url",
+        "_clean_json_response",
+        "_download_image",
+        "_extract_image_bytes",
+        "_map_grpc_error",
+        "_run_analysis",
+        "_format_background_color_instruction",
+        "_validate_analysis",
+        "analyze_and_clean_plan",
+        "_normalize_background_color",
+        "_looks_like_grpc_error"
+      ],
+      "totalLines": 1311,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/migrations/__init__.py": {
+      "filePath": "backend/evacuation_plans/migrations/__init__.py",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/migrations/0001_initial.py": {
+      "filePath": "backend/evacuation_plans/migrations/0001_initial.py",
+      "contentHash": "00fa4c9dadec265b55fc9c7ce9717c9098b6e4b7197c23793e4919f49743846b",
+      "functions": [],
+      "classes": [
+        {
+          "name": "Migration",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 133
+        }
+      ],
+      "imports": [
+        {
+          "source": "django.db.models.deletion",
+          "specifiers": [
+            "django.db.models.deletion"
+          ]
+        },
+        {
+          "source": "django.conf",
+          "specifiers": [
+            "settings"
+          ]
+        },
+        {
+          "source": "django.db",
+          "specifiers": [
+            "migrations",
+            "models"
+          ]
+        }
+      ],
+      "exports": [
+        "Migration"
+      ],
+      "totalLines": 141,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/migrations/0002_alter_planshape_shape_type.py": {
+      "filePath": "backend/evacuation_plans/migrations/0002_alter_planshape_shape_type.py",
+      "contentHash": "45b77af90befc760a5a5b2d6b2bcefb2f9f1b2451180cfa1e99c86eb6fe9e0b0",
+      "functions": [],
+      "classes": [
+        {
+          "name": "Migration",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 13
+        }
+      ],
+      "imports": [
+        {
+          "source": "django.db",
+          "specifiers": [
+            "migrations",
+            "models"
+          ]
+        }
+      ],
+      "exports": [
+        "Migration"
+      ],
+      "totalLines": 19,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/migrations/0003_planshape_points_polygon_zone.py": {
+      "filePath": "backend/evacuation_plans/migrations/0003_planshape_points_polygon_zone.py",
+      "contentHash": "a8f117fb0fc6bc5b8e0c66dead3fac62922a0232cc33230ed730119f3d5a4493",
+      "functions": [],
+      "classes": [
+        {
+          "name": "Migration",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 27
+        }
+      ],
+      "imports": [
+        {
+          "source": "django.db",
+          "specifiers": [
+            "migrations",
+            "models"
+          ]
+        }
+      ],
+      "exports": [
+        "Migration"
+      ],
+      "totalLines": 33,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/migrations/0004_grokcleaningjob_target_background_color.py": {
+      "filePath": "backend/evacuation_plans/migrations/0004_grokcleaningjob_target_background_color.py",
+      "contentHash": "1769efa9426205da3e274e206eab31d38625be8e2a5e337eb80f6743291f6440",
+      "functions": [],
+      "classes": [
+        {
+          "name": "Migration",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 13
+        }
+      ],
+      "imports": [
+        {
+          "source": "django.db",
+          "specifiers": [
+            "migrations",
+            "models"
+          ]
+        }
+      ],
+      "exports": [
+        "Migration"
+      ],
+      "totalLines": 19,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/migrations/0005_planshape_control_points_planshape_fill_color_and_more.py": {
+      "filePath": "backend/evacuation_plans/migrations/0005_planshape_control_points_planshape_fill_color_and_more.py",
+      "contentHash": "fb4a92f06cf323777a5e1fc46859d2eee67ea6a03a7a63f450e5ce808f7980c2",
+      "functions": [],
+      "classes": [
+        {
+          "name": "Migration",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 38
+        }
+      ],
+      "imports": [
+        {
+          "source": "django.db",
+          "specifiers": [
+            "migrations",
+            "models"
+          ]
+        }
+      ],
+      "exports": [
+        "Migration"
+      ],
+      "totalLines": 44,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/migrations/0006_grokcleaningjob_preset_and_more.py": {
+      "filePath": "backend/evacuation_plans/migrations/0006_grokcleaningjob_preset_and_more.py",
+      "contentHash": "bcba79495331a3fb5d361b1d7d0358ae89e2c0d30371cf3453891ddda8b17611",
+      "functions": [],
+      "classes": [
+        {
+          "name": "Migration",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 18
+        }
+      ],
+      "imports": [
+        {
+          "source": "django.db",
+          "specifiers": [
+            "migrations",
+            "models"
+          ]
+        }
+      ],
+      "exports": [
+        "Migration"
+      ],
+      "totalLines": 24,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/migrations/0007_planicon_flip_x_planicon_flip_y.py": {
+      "filePath": "backend/evacuation_plans/migrations/0007_planicon_flip_x_planicon_flip_y.py",
+      "contentHash": "2f2f3b032a9444370a2f73a6008f9b49b31ff670e20eafb41595452f10ad45bd",
+      "functions": [],
+      "classes": [
+        {
+          "name": "Migration",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 18
+        }
+      ],
+      "imports": [
+        {
+          "source": "django.db",
+          "specifiers": [
+            "migrations",
+            "models"
+          ]
+        }
+      ],
+      "exports": [
+        "Migration"
+      ],
+      "totalLines": 24,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/models.py": {
+      "filePath": "backend/evacuation_plans/models.py",
+      "contentHash": "e30701f303b0cac9669e214b3abb64928a218aca9b90b6fabcaa84624d8d2255",
+      "functions": [
+        {
+          "name": "_derive_xai_settings_keys",
+          "params": [],
+          "exported": true,
+          "lineCount": 5
+        },
+        {
+          "name": "_build_keystream",
+          "params": [
+            "key",
+            "nonce",
+            "length"
+          ],
+          "exported": true,
+          "lineCount": 8
+        },
+        {
+          "name": "encrypt_xai_api_key",
+          "params": [
+            "api_key"
+          ],
+          "exported": true,
+          "lineCount": 9
+        },
+        {
+          "name": "decrypt_xai_api_key",
+          "params": [
+            "encrypted_api_key"
+          ],
+          "exported": true,
+          "lineCount": 16
+        }
+      ],
+      "classes": [
+        {
+          "name": "EvacuationPlan",
+          "methods": [
+            "__str__"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 14
+        },
+        {
+          "name": "PlanIcon",
+          "methods": [
+            "is_offset",
+            "__str__"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 29
+        },
+        {
+          "name": "PlanOverlay",
+          "methods": [
+            "__str__"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 24
+        },
+        {
+          "name": "PlanShape",
+          "methods": [
+            "__str__"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 44
+        },
+        {
+          "name": "PlanText",
+          "methods": [
+            "__str__"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 24
+        },
+        {
+          "name": "PlanCleaningHistory",
+          "methods": [
+            "__str__"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 28
+        },
+        {
+          "name": "UserXaiSettings",
+          "methods": [
+            "set_api_key",
+            "get_api_key",
+            "__str__"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 14
+        },
+        {
+          "name": "GrokCleaningJob",
+          "methods": [
+            "mark_status",
+            "mark_failed",
+            "__str__"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 55
+        }
+      ],
+      "imports": [
+        {
+          "source": "base64",
+          "specifiers": [
+            "base64"
+          ]
+        },
+        {
+          "source": "hashlib",
+          "specifiers": [
+            "hashlib"
+          ]
+        },
+        {
+          "source": "hmac",
+          "specifiers": [
+            "hmac"
+          ]
+        },
+        {
+          "source": "secrets",
+          "specifiers": [
+            "secrets"
+          ]
+        },
+        {
+          "source": "django.conf",
+          "specifiers": [
+            "settings"
+          ]
+        },
+        {
+          "source": "django.contrib.auth.models",
+          "specifiers": [
+            "User"
+          ]
+        },
+        {
+          "source": "django.db",
+          "specifiers": [
+            "models"
+          ]
+        }
+      ],
+      "exports": [
+        "_derive_xai_settings_keys",
+        "_build_keystream",
+        "encrypt_xai_api_key",
+        "decrypt_xai_api_key",
+        "EvacuationPlan",
+        "PlanIcon",
+        "PlanOverlay",
+        "PlanShape",
+        "PlanText",
+        "PlanCleaningHistory",
+        "UserXaiSettings",
+        "GrokCleaningJob"
+      ],
+      "totalLines": 302,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/serializers.py": {
+      "filePath": "backend/evacuation_plans/serializers.py",
+      "contentHash": "60418513594a066939a83edc64353aea5988459c1156c7370c822e6f8beaca6c",
+      "functions": [],
+      "classes": [
+        {
+          "name": "UserRegistrationSerializer",
+          "methods": [
+            "create"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 18
+        },
+        {
+          "name": "UserSerializer",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 4
+        },
+        {
+          "name": "PlanIconSerializer",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 6
+        },
+        {
+          "name": "PlanShapeSerializer",
+          "methods": [
+            "validate"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 31
+        },
+        {
+          "name": "PlanTextSerializer",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 6
+        },
+        {
+          "name": "PlanOverlaySerializer",
+          "methods": [
+            "get_image_url"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 16
+        },
+        {
+          "name": "SyncPlanOverlaySerializer",
+          "methods": [
+            "validate"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 22
+        },
+        {
+          "name": "EvacuationPlanSerializer",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 11
+        },
+        {
+          "name": "PlanCleaningHistorySerializer",
+          "methods": [
+            "get_image_url"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 14
+        },
+        {
+          "name": "UserXaiSettingsSerializer",
+          "methods": [
+            "get_has_api_key"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 10
+        },
+        {
+          "name": "SaveUserXaiSettingsSerializer",
+          "methods": [
+            "validate_api_key"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 7
+        },
+        {
+          "name": "TestXaiKeySerializer",
+          "methods": [
+            "validate_api_key"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 5
+        },
+        {
+          "name": "UseCleaningHistorySerializer",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 2
+        },
+        {
+          "name": "ApplyManualPlanEditSerializer",
+          "methods": [
+            "validate_image_data"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 13
+        }
+      ],
+      "imports": [
+        {
+          "source": "rest_framework",
+          "specifiers": [
+            "serializers"
+          ]
+        },
+        {
+          "source": "django.contrib.auth.models",
+          "specifiers": [
+            "User"
+          ]
+        },
+        {
+          "source": ".models",
+          "specifiers": [
+            "EvacuationPlan",
+            "PlanCleaningHistory",
+            "PlanIcon",
+            "PlanOverlay",
+            "PlanShape",
+            "PlanText",
+            "UserXaiSettings"
+          ]
+        }
+      ],
+      "exports": [
+        "UserRegistrationSerializer",
+        "UserSerializer",
+        "PlanIconSerializer",
+        "PlanShapeSerializer",
+        "PlanTextSerializer",
+        "PlanOverlaySerializer",
+        "SyncPlanOverlaySerializer",
+        "EvacuationPlanSerializer",
+        "PlanCleaningHistorySerializer",
+        "UserXaiSettingsSerializer",
+        "SaveUserXaiSettingsSerializer",
+        "TestXaiKeySerializer",
+        "UseCleaningHistorySerializer",
+        "ApplyManualPlanEditSerializer"
+      ],
+      "totalLines": 195,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/tests.py": {
+      "filePath": "backend/evacuation_plans/tests.py",
+      "contentHash": "b559ff5b6f166a63425a521f1ad65f78f1d53663d057290ba18f3aa4e475cdf2",
+      "functions": [
+        {
+          "name": "_png_bytes",
+          "params": [
+            "color",
+            "size"
+          ],
+          "exported": true,
+          "lineCount": 6
+        }
+      ],
+      "classes": [
+        {
+          "name": "_PlanFactoryMixin",
+          "methods": [
+            "make_plan",
+            "authed_client"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 17
+        },
+        {
+          "name": "UserRegistrationTests",
+          "methods": [
+            "test_user_registration"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 10
+        },
+        {
+          "name": "AuthTests",
+          "methods": [
+            "test_user_login_and_jwt"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 11
+        },
+        {
+          "name": "PlansCrudTests",
+          "methods": [
+            "test_plans_crud_unauthenticated",
+            "test_plans_crud_authenticated",
+            "test_create_pdf_plan_authenticated"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 31
+        },
+        {
+          "name": "LocalCleaningTests",
+          "methods": [
+            "test_clean_and_revert_plan",
+            "test_clean_walls_plan",
+            "test_local_clean_creates_cleaning_history_entry"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 36
+        },
+        {
+          "name": "CleaningHistoryTests",
+          "methods": [
+            "test_cleaning_history_lists_cleaned_plan_versions",
+            "test_use_cleaning_history_applies_selected_cleaned_version"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 31
+        },
+        {
+          "name": "XaiSettingsTests",
+          "methods": [
+            "test_save_get_delete_xai_key",
+            "test_test_xai_key_marks_invalid_on_grpc_auth_error"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 47
+        },
+        {
+          "name": "GrokCleaningTests",
+          "methods": [
+            "test_grok_clean_requires_xai_key",
+            "test_grok_clean_launches_job_and_succeeds"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 51
+        }
+      ],
+      "imports": [
+        {
+          "source": "io",
+          "specifiers": [
+            "io"
+          ]
+        },
+        {
+          "source": "unittest.mock",
+          "specifiers": [
+            "patch"
+          ]
+        },
+        {
+          "source": "django.contrib.auth.models",
+          "specifiers": [
+            "User"
+          ]
+        },
+        {
+          "source": "django.core.files.base",
+          "specifiers": [
+            "ContentFile"
+          ]
+        },
+        {
+          "source": "django.test",
+          "specifiers": [
+            "TestCase"
+          ]
+        },
+        {
+          "source": "PIL",
+          "specifiers": [
+            "Image"
+          ]
+        },
+        {
+          "source": "rest_framework.test",
+          "specifiers": [
+            "APIClient"
+          ]
+        },
+        {
+          "source": ".models",
+          "specifiers": [
+            "EvacuationPlan",
+            "GrokCleaningJob",
+            "PlanCleaningHistory",
+            "UserXaiSettings"
+          ]
+        }
+      ],
+      "exports": [
+        "_png_bytes",
+        "_PlanFactoryMixin",
+        "UserRegistrationTests",
+        "AuthTests",
+        "PlansCrudTests",
+        "LocalCleaningTests",
+        "CleaningHistoryTests",
+        "XaiSettingsTests",
+        "GrokCleaningTests"
+      ],
+      "totalLines": 274,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/urls.py": {
+      "filePath": "backend/evacuation_plans/urls.py",
+      "contentHash": "cc383c0cbf12218124d89e7281c844edb22de2eed388dafe658ac42567150341",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        {
+          "source": "django.urls",
+          "specifiers": [
+            "path",
+            "include"
+          ]
+        },
+        {
+          "source": "rest_framework.routers",
+          "specifiers": [
+            "DefaultRouter"
+          ]
+        },
+        {
+          "source": "rest_framework_simplejwt.views",
+          "specifiers": [
+            "TokenObtainPairView",
+            "TokenRefreshView"
+          ]
+        },
+        {
+          "source": ".views",
+          "specifiers": [
+            "RegisterView",
+            "CurrentUserView",
+            "EvacuationPlanViewSet",
+            "PlanIconViewSet",
+            "UserXaiSettingsView",
+            "SaveUserXaiSettingsView",
+            "DeleteUserXaiSettingsView",
+            "TestXaiKeyView"
+          ]
+        }
+      ],
+      "exports": [],
+      "totalLines": 31,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/views.py": {
+      "filePath": "backend/evacuation_plans/views.py",
+      "contentHash": "1d1e2566e7608751d6f703bdf4902727f6b6fbc27fd0890919ac4a055aaf9307",
+      "functions": [
+        {
+          "name": "get_plan_pictogram_directory",
+          "params": [],
+          "exported": true,
+          "lineCount": 6
+        },
+        {
+          "name": "build_plan_pictogram_url",
+          "params": [
+            "request",
+            "relative_path"
+          ],
+          "exported": true,
+          "lineCount": 4
+        },
+        {
+          "name": "list_plan_pictograms",
+          "params": [
+            "request"
+          ],
+          "exported": true,
+          "lineCount": 21
+        },
+        {
+          "name": "flatten_on_white",
+          "params": [
+            "img"
+          ],
+          "exported": true,
+          "lineCount": 18
+        },
+        {
+          "name": "load_plan_image",
+          "params": [
+            "plan",
+            "dpi",
+            "use_active_background"
+          ],
+          "exported": true,
+          "lineCount": 34
+        },
+        {
+          "name": "create_cleaning_history",
+          "params": [
+            "plan",
+            "image_bytes",
+            "prefix",
+            "cleaning_method",
+            "title",
+            "options"
+          ],
+          "exported": true,
+          "lineCount": 12
+        },
+        {
+          "name": "save_cleaned_plan",
+          "params": [
+            "plan",
+            "image",
+            "prefix",
+            "cleaning_method",
+            "title",
+            "options"
+          ],
+          "exported": true,
+          "lineCount": 16
+        },
+        {
+          "name": "encode_image_to_png_bytes",
+          "params": [
+            "image"
+          ],
+          "exported": true,
+          "lineCount": 5
+        },
+        {
+          "name": "image_bytes_to_data_url",
+          "params": [
+            "image_bytes"
+          ],
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "save_cleaned_plan_bytes",
+          "params": [
+            "plan",
+            "image_bytes",
+            "prefix",
+            "cleaning_method",
+            "title",
+            "options",
+            "create_history"
+          ],
+          "exported": true,
+          "lineCount": 14
+        },
+        {
+          "name": "clean_plan_image",
+          "params": [
+            "img"
+          ],
+          "exported": true,
+          "lineCount": 14
+        },
+        {
+          "name": "keep_wall_components",
+          "params": [
+            "mask"
+          ],
+          "exported": true,
+          "lineCount": 17
+        },
+        {
+          "name": "clean_walls_image",
+          "params": [
+            "img"
+          ],
+          "exported": true,
+          "lineCount": 36
+        },
+        {
+          "name": "serialize_grok_cleaning_job",
+          "params": [
+            "job"
+          ],
+          "exported": true,
+          "lineCount": 19
+        },
+        {
+          "name": "run_grok_cleaning_job",
+          "params": [
+            "job_id"
+          ],
+          "exported": true,
+          "lineCount": 99
+        },
+        {
+          "name": "_looks_like_grpc_error",
+          "params": [
+            "exc"
+          ],
+          "returnType": "bool",
+          "exported": true,
+          "lineCount": 4
+        }
+      ],
+      "classes": [
+        {
+          "name": "RegisterView",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 4
+        },
+        {
+          "name": "CurrentUserView",
+          "methods": [
+            "get_object"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 6
+        },
+        {
+          "name": "UserXaiSettingsView",
+          "methods": [
+            "get"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 14
+        },
+        {
+          "name": "SaveUserXaiSettingsView",
+          "methods": [
+            "post"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 13
+        },
+        {
+          "name": "DeleteUserXaiSettingsView",
+          "methods": [
+            "delete"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 6
+        },
+        {
+          "name": "TestXaiKeyView",
+          "methods": [
+            "post"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 41
+        },
+        {
+          "name": "EvacuationPlanViewSet",
+          "methods": [
+            "get_query_set",
+            "get_queryset",
+            "perform_create",
+            "pictograms",
+            "clean_plan",
+            "clean_walls",
+            "clean_image_data",
+            "change_background",
+            "crop",
+            "grok_clean",
+            "grok_clean_status",
+            "cleaning_history",
+            "use_cleaning_history",
+            "apply_manual_edit",
+            "revert_plan",
+            "sync_shapes",
+            "sync_overlays",
+            "sync_icons",
+            "sync_texts"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 436
+        },
+        {
+          "name": "PlanIconViewSet",
+          "methods": [
+            "get_queryset"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 6
+        }
+      ],
+      "imports": [
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "base64",
+          "specifiers": [
+            "base64"
+          ]
+        },
+        {
+          "source": "binascii",
+          "specifiers": [
+            "binascii"
+          ]
+        },
+        {
+          "source": "cv2",
+          "specifiers": [
+            "cv2"
+          ]
+        },
+        {
+          "source": "logging",
+          "specifiers": [
+            "logging"
+          ]
+        },
+        {
+          "source": "threading",
+          "specifiers": [
+            "threading"
+          ]
+        },
+        {
+          "source": "numpy",
+          "specifiers": [
+            "np"
+          ]
+        },
+        {
+          "source": "fitz",
+          "specifiers": [
+            "fitz"
+          ]
+        },
+        {
+          "source": "urllib.parse",
+          "specifiers": [
+            "quote"
+          ]
+        },
+        {
+          "source": "django.conf",
+          "specifiers": [
+            "settings"
+          ]
+        },
+        {
+          "source": "django.db",
+          "specifiers": [
+            "close_old_connections",
+            "transaction"
+          ]
+        },
+        {
+          "source": "django.core.files.base",
+          "specifiers": [
+            "ContentFile"
+          ]
+        },
+        {
+          "source": "rest_framework",
+          "specifiers": [
+            "viewsets",
+            "permissions",
+            "status",
+            "generics"
+          ]
+        },
+        {
+          "source": "rest_framework.views",
+          "specifiers": [
+            "APIView"
+          ]
+        },
+        {
+          "source": "rest_framework.response",
+          "specifiers": [
+            "Response"
+          ]
+        },
+        {
+          "source": "rest_framework.decorators",
+          "specifiers": [
+            "action"
+          ]
+        },
+        {
+          "source": "django.contrib.auth.models",
+          "specifiers": [
+            "User"
+          ]
+        },
+        {
+          "source": ".models",
+          "specifiers": [
+            "EvacuationPlan",
+            "GrokCleaningJob",
+            "PlanCleaningHistory",
+            "PlanIcon",
+            "PlanOverlay",
+            "PlanShape",
+            "PlanText",
+            "UserXaiSettings"
+          ]
+        },
+        {
+          "source": ".grok_cleaning",
+          "specifiers": [
+            "GrokCleaningError",
+            "MissingXaiApiKeyError",
+            "analyze_and_clean_plan"
+          ]
+        },
+        {
+          "source": ".serializers",
+          "specifiers": [
+            "UserRegistrationSerializer",
+            "UserSerializer",
+            "EvacuationPlanSerializer",
+            "PlanIconSerializer",
+            "PlanOverlaySerializer",
+            "PlanShapeSerializer",
+            "PlanTextSerializer",
+            "SyncPlanOverlaySerializer",
+            "MAX_IMAGE_DATA_LENGTH",
+            "SaveUserXaiSettingsSerializer",
+            "TestXaiKeySerializer",
+            "PlanCleaningHistorySerializer",
+            "ApplyManualPlanEditSerializer",
+            "UseCleaningHistorySerializer",
+            "UserXaiSettingsSerializer"
+          ]
+        }
+      ],
+      "exports": [
+        "get_plan_pictogram_directory",
+        "build_plan_pictogram_url",
+        "list_plan_pictograms",
+        "flatten_on_white",
+        "load_plan_image",
+        "create_cleaning_history",
+        "save_cleaned_plan",
+        "encode_image_to_png_bytes",
+        "image_bytes_to_data_url",
+        "save_cleaned_plan_bytes",
+        "clean_plan_image",
+        "keep_wall_components",
+        "clean_walls_image",
+        "serialize_grok_cleaning_job",
+        "run_grok_cleaning_job",
+        "RegisterView",
+        "CurrentUserView",
+        "UserXaiSettingsView",
+        "SaveUserXaiSettingsView",
+        "DeleteUserXaiSettingsView",
+        "TestXaiKeyView",
+        "_looks_like_grpc_error",
+        "EvacuationPlanViewSet",
+        "PlanIconViewSet"
+      ],
+      "totalLines": 943,
+      "hasStructuralAnalysis": true
+    },
+    "backend/manage.py": {
+      "filePath": "backend/manage.py",
+      "contentHash": "9e055a3ca49f173675232d3f61d1feb89f1350708fb25a002f6d3edefeec6db4",
+      "functions": [
+        {
+          "name": "main",
+          "params": [],
+          "exported": true,
+          "lineCount": 12
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "sys",
+          "specifiers": [
+            "sys"
+          ]
+        }
+      ],
+      "exports": [
+        "main"
+      ],
+      "totalLines": 23,
+      "hasStructuralAnalysis": true
+    },
+    "backend/media/backgrounds/background_file": {
+      "filePath": "backend/media/backgrounds/background_file",
+      "contentHash": "5685e2d63d2a3b750e0850b8654c06f87fe9a1b138525deef264166e4152efbc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 4,
+      "hasStructuralAnalysis": false
+    },
+    "backend/media/backgrounds/background_file_1Yj42LV": {
+      "filePath": "backend/media/backgrounds/background_file_1Yj42LV",
+      "contentHash": "5685e2d63d2a3b750e0850b8654c06f87fe9a1b138525deef264166e4152efbc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 4,
+      "hasStructuralAnalysis": false
+    },
+    "backend/media/backgrounds/background_file_3t1Bhp7": {
+      "filePath": "backend/media/backgrounds/background_file_3t1Bhp7",
+      "contentHash": "5685e2d63d2a3b750e0850b8654c06f87fe9a1b138525deef264166e4152efbc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 4,
+      "hasStructuralAnalysis": false
+    },
+    "backend/media/backgrounds/background_file_9ZruVOR": {
+      "filePath": "backend/media/backgrounds/background_file_9ZruVOR",
+      "contentHash": "5685e2d63d2a3b750e0850b8654c06f87fe9a1b138525deef264166e4152efbc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 4,
+      "hasStructuralAnalysis": false
+    },
+    "backend/media/backgrounds/background_file_D3RRf6L": {
+      "filePath": "backend/media/backgrounds/background_file_D3RRf6L",
+      "contentHash": "5685e2d63d2a3b750e0850b8654c06f87fe9a1b138525deef264166e4152efbc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 4,
+      "hasStructuralAnalysis": false
+    },
+    "backend/media/backgrounds/background_file_dLlYbWs": {
+      "filePath": "backend/media/backgrounds/background_file_dLlYbWs",
+      "contentHash": "5685e2d63d2a3b750e0850b8654c06f87fe9a1b138525deef264166e4152efbc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 4,
+      "hasStructuralAnalysis": false
+    },
+    "backend/media/backgrounds/background_file_TBOIb1F": {
+      "filePath": "backend/media/backgrounds/background_file_TBOIb1F",
+      "contentHash": "5685e2d63d2a3b750e0850b8654c06f87fe9a1b138525deef264166e4152efbc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 4,
+      "hasStructuralAnalysis": false
+    },
+    "backend/media/backgrounds/vector-design-illustration-9x8m-house-600nw-2505066589_IlAThXe.webp": {
+      "filePath": "backend/media/backgrounds/vector-design-illustration-9x8m-house-600nw-2505066589_IlAThXe.webp",
+      "contentHash": "22382c917beb09f9806b580a1970ffbf458c098eec003025cbe2de89d58495f3",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 90,
+      "hasStructuralAnalysis": false
+    },
+    "backend/media/backgrounds/vector-design-illustration-9x8m-house-600nw-2505066589.webp": {
+      "filePath": "backend/media/backgrounds/vector-design-illustration-9x8m-house-600nw-2505066589.webp",
+      "contentHash": "22382c917beb09f9806b580a1970ffbf458c098eec003025cbe2de89d58495f3",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 90,
+      "hasStructuralAnalysis": false
+    },
+    "backend/README.md": {
+      "filePath": "backend/README.md",
+      "contentHash": "a2661eea523cd7182510b1434505fe36d3f8eeb9d6f4391e6e34ab2b25aab1f6",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 32,
+      "hasStructuralAnalysis": false
+    },
+    "backend/requirements.txt": {
+      "filePath": "backend/requirements.txt",
+      "contentHash": "f17f3ecb175d36f2c9e5191a7cf8320733fc7c8ab41c3abbd5d35e9e3d603d09",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 13,
+      "hasStructuralAnalysis": false
+    },
+    "frontend/.env.example": {
+      "filePath": "frontend/.env.example",
+      "contentHash": "e7122a5be73a7a0d4be2c1c489281e484b3cb0f54ba763e7c0b6d8fd65712bbe",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 2,
+      "hasStructuralAnalysis": false
+    },
+    "frontend/AGENTS.md": {
+      "filePath": "frontend/AGENTS.md",
+      "contentHash": "e3447d84251880fb34cfae09131cb4c57471529bbfe60976a3245793cf621627",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 6,
+      "hasStructuralAnalysis": false
+    },
+    "frontend/CLAUDE.md": {
+      "filePath": "frontend/CLAUDE.md",
+      "contentHash": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 2,
+      "hasStructuralAnalysis": false
+    },
+    "frontend/eslint.config.mjs": {
+      "filePath": "frontend/eslint.config.mjs",
+      "contentHash": "870f1adccecf3051cbcd9fd307cef51d7633cf510979c181a81f4b1797273493",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        {
+          "source": "eslint/config",
+          "specifiers": [
+            "defineConfig",
+            "globalIgnores"
+          ]
+        },
+        {
+          "source": "eslint-config-next/core-web-vitals",
+          "specifiers": [
+            "nextVitals"
+          ]
+        },
+        {
+          "source": "eslint-config-next/typescript",
+          "specifiers": [
+            "nextTs"
+          ]
+        }
+      ],
+      "exports": [],
+      "totalLines": 19,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/next.config.ts": {
+      "filePath": "frontend/next.config.ts",
+      "contentHash": "00da4883c14941a41c12e807808e217ded79c81e1bb22b86ac38a575226ca6c5",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        {
+          "source": "next",
+          "specifiers": [
+            "NextConfig"
+          ]
+        },
+        {
+          "source": "node:path",
+          "specifiers": [
+            "dirname"
+          ]
+        },
+        {
+          "source": "node:url",
+          "specifiers": [
+            "fileURLToPath"
+          ]
+        }
+      ],
+      "exports": [],
+      "totalLines": 14,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/package.json": {
+      "filePath": "frontend/package.json",
+      "contentHash": "5c324455876ca3d96aa144e9e0085dd9a981c250e06e2a91489767ca7c32b3ab",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 33,
+      "hasStructuralAnalysis": false
+    },
+    "frontend/postcss.config.mjs": {
+      "filePath": "frontend/postcss.config.mjs",
+      "contentHash": "dfac7ac2d86d326a0e5adb024e7943c181393ed17a5fcb8f0315b24c7da6ddde",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 8,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/README.md": {
+      "filePath": "frontend/README.md",
+      "contentHash": "96985b5f6b687ab717d0a1fd09cc98a27dd011430d824bb75394b07a9ec9d137",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 44,
+      "hasStructuralAnalysis": false
+    },
+    "frontend/src/app/dashboard/page.tsx": {
+      "filePath": "frontend/src/app/dashboard/page.tsx",
+      "contentHash": "0d7d9efc320429dca011f89845a81ac6178d61c70d0d4c68b8670387fba3fbb9",
+      "functions": [
+        {
+          "name": "normalizeList",
+          "params": [
+            "value"
+          ],
+          "returnType": "T[]",
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "DashboardPage",
+          "params": [],
+          "exported": true,
+          "lineCount": 51
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "useEffect",
+            "useState"
+          ]
+        },
+        {
+          "source": "next/link",
+          "specifiers": [
+            "Link"
+          ]
+        },
+        {
+          "source": "@/components/AppShell",
+          "specifiers": [
+            "AppShell"
+          ]
+        },
+        {
+          "source": "@/components/PageHeader",
+          "specifiers": [
+            "PageHeader"
+          ]
+        },
+        {
+          "source": "@/context/AuthContext",
+          "specifiers": [
+            "useAuth"
+          ]
+        },
+        {
+          "source": "@/lib/api",
+          "specifiers": [
+            "buildApiUrl"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "FilePlus2",
+            "Files",
+            "ShieldCheck"
+          ]
+        }
+      ],
+      "exports": [
+        "DashboardPage"
+      ],
+      "totalLines": 68,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/app/evacuation-plans/[id]/editor/page.tsx": {
+      "filePath": "frontend/src/app/evacuation-plans/[id]/editor/page.tsx",
+      "contentHash": "3ad86a25416bdef494633e62accac795507e3be63e9f17d89370878929f9ffa6",
+      "functions": [
+        {
+          "name": "isUntouchedExportTitle",
+          "params": [
+            "title"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "paperLongEdgePx",
+          "params": [
+            "paper"
+          ],
+          "exported": false,
+          "lineCount": 2
+        },
+        {
+          "name": "fitPixelRatio",
+          "params": [
+            "width",
+            "height",
+            "targetLongEdgePx"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "PlanEditorPage",
+          "params": [],
+          "exported": true,
+          "lineCount": 8024
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React",
+            "useEffect",
+            "useMemo",
+            "useRef",
+            "useState"
+          ]
+        },
+        {
+          "source": "@/components/ProtectedRoute",
+          "specifiers": [
+            "ProtectedRoute"
+          ]
+        },
+        {
+          "source": "@/context/AuthContext",
+          "specifiers": [
+            "useAuth"
+          ]
+        },
+        {
+          "source": "next/navigation",
+          "specifiers": [
+            "useRouter",
+            "useParams"
+          ]
+        },
+        {
+          "source": "next/dynamic",
+          "specifiers": [
+            "dynamic"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "ArrowLeft",
+            "Save",
+            "Trash2",
+            "Settings",
+            "HelpCircle",
+            "Loader2",
+            "Sparkles",
+            "RefreshCw",
+            "X",
+            "FileDown",
+            "Download",
+            "Eye",
+            "PanelLeft",
+            "PanelRight",
+            "Eraser",
+            "Circle",
+            "Square",
+            "Copy",
+            "CopyPlus",
+            "ClipboardPaste",
+            "Minus",
+            "Anchor",
+            "Undo2",
+            "Redo2",
+            "Type",
+            "AlertTriangle",
+            "Check",
+            "PaintBucket",
+            "Waypoints",
+            "FileUp",
+            "Crop",
+            "FlipHorizontal",
+            "FlipVertical",
+            "RotateCcw",
+            "RotateCw",
+            "Lock",
+            "Unlock"
+          ]
+        },
+        {
+          "source": "@/components/CropModal",
+          "specifiers": [
+            "CropModal"
+          ]
+        },
+        {
+          "source": "@/components/PolygonCropModal",
+          "specifiers": [
+            "PolygonCropModal"
+          ]
+        },
+        {
+          "source": "@/utils/safetyIcons",
+          "specifiers": [
+            "IconType",
+            "SAFETY_ICONS",
+            "SafetyIconDefinition",
+            "getIconImageSource",
+            "isYouAreHereIcon",
+            "inferPictogramColor"
+          ]
+        },
+        {
+          "source": "@/components/PlanCanvas",
+          "specifiers": [
+            "CanvasIcon",
+            "CanvasShape",
+            "CanvasText",
+            "CanvasPlanOverlay",
+            "ShapeKind",
+            "EraserShape",
+            "PlanCanvasHandle",
+            "FONT_OPTIONS",
+            "MAIN_PLAN_ID"
+          ]
+        },
+        {
+          "source": "@/lib/api",
+          "specifiers": [
+            "buildApiUrl"
+          ]
+        },
+        {
+          "source": "@/lib/sheetTemplates",
+          "specifiers": [
+            "SHEET_WIDTH",
+            "SHEET_HEIGHT",
+            "SHEET_TEMPLATES",
+            "SheetBlock",
+            "SheetTemplateKey",
+            "createSheetBlocks",
+            "createFreeTextBlock",
+            "createPictoBlock",
+            "findPlanBlock"
+          ]
+        },
+        {
+          "source": "@/components/SheetBlockNode",
+          "specifiers": [
+            "SheetLegendEntry"
+          ]
+        },
+        {
+          "source": "jspdf",
+          "specifiers": [
+            "jsPDF"
+          ]
+        }
+      ],
+      "exports": [
+        "PlanEditorPage"
+      ],
+      "totalLines": 8557,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/app/evacuation-plans/new/page.tsx": {
+      "filePath": "frontend/src/app/evacuation-plans/new/page.tsx",
+      "contentHash": "1020bc467e4631f37149150a98a1ebb6d11c4631c1e45933cd6f234da8cdbf5d",
+      "functions": [
+        {
+          "name": "NewPlanPage",
+          "params": [],
+          "exported": true,
+          "lineCount": 196
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React",
+            "useState"
+          ]
+        },
+        {
+          "source": "@/components/ProtectedRoute",
+          "specifiers": [
+            "ProtectedRoute"
+          ]
+        },
+        {
+          "source": "@/context/AuthContext",
+          "specifiers": [
+            "useAuth"
+          ]
+        },
+        {
+          "source": "next/navigation",
+          "specifiers": [
+            "useRouter"
+          ]
+        },
+        {
+          "source": "next/link",
+          "specifiers": [
+            "Link"
+          ]
+        },
+        {
+          "source": "@/lib/api",
+          "specifiers": [
+            "buildApiUrl"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "ArrowLeft",
+            "Upload",
+            "FileText",
+            "ImageIcon",
+            "CheckCircle"
+          ]
+        }
+      ],
+      "exports": [
+        "NewPlanPage"
+      ],
+      "totalLines": 207,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/app/evacuation-plans/page.tsx": {
+      "filePath": "frontend/src/app/evacuation-plans/page.tsx",
+      "contentHash": "5b543a44f2e240be734e9661446722f429bfef0fabdf81ee4d467717b9773038",
+      "functions": [
+        {
+          "name": "EvacuationPlansPage",
+          "params": [],
+          "exported": true,
+          "lineCount": 159
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React",
+            "useEffect",
+            "useState"
+          ]
+        },
+        {
+          "source": "next/link",
+          "specifiers": [
+            "Link"
+          ]
+        },
+        {
+          "source": "@/components/AppShell",
+          "specifiers": [
+            "AppShell"
+          ]
+        },
+        {
+          "source": "@/components/PageHeader",
+          "specifiers": [
+            "PageHeader"
+          ]
+        },
+        {
+          "source": "@/context/AuthContext",
+          "specifiers": [
+            "useAuth"
+          ]
+        },
+        {
+          "source": "@/lib/api",
+          "specifiers": [
+            "buildApiUrl"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "Edit2",
+            "Eye",
+            "FileText",
+            "Plus",
+            "Trash2"
+          ]
+        }
+      ],
+      "exports": [
+        "EvacuationPlansPage"
+      ],
+      "totalLines": 181,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/app/globals.css": {
+      "filePath": "frontend/src/app/globals.css",
+      "contentHash": "f43aafb0265f1cac19da731ce57a40f45f84cef360f4f755d717ff805d3838b7",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 70,
+      "hasStructuralAnalysis": false
+    },
+    "frontend/src/app/layout.tsx": {
+      "filePath": "frontend/src/app/layout.tsx",
+      "contentHash": "1e57449aa9f61de95d28193481f19470d5243d2ab2b5f68626dda7ce5efc7025",
+      "functions": [
+        {
+          "name": "RootLayout",
+          "params": [
+            "{\n  children,\n}"
+          ],
+          "exported": true,
+          "lineCount": 20
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "next",
+          "specifiers": [
+            "Metadata"
+          ]
+        },
+        {
+          "source": "./globals.css",
+          "specifiers": []
+        },
+        {
+          "source": "@/context/AuthContext",
+          "specifiers": [
+            "AuthProvider"
+          ]
+        }
+      ],
+      "exports": [
+        "metadata",
+        "RootLayout"
+      ],
+      "totalLines": 35,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/app/login/page.tsx": {
+      "filePath": "frontend/src/app/login/page.tsx",
+      "contentHash": "a381ac758f5e8d30b098837e9b98b74aa4b35d90d9d252c49999547bb41ebc8b",
+      "functions": [
+        {
+          "name": "LoginPage",
+          "params": [],
+          "exported": true,
+          "lineCount": 105
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React",
+            "useState"
+          ]
+        },
+        {
+          "source": "@/context/AuthContext",
+          "specifiers": [
+            "useAuth"
+          ]
+        },
+        {
+          "source": "next/link",
+          "specifiers": [
+            "Link"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "AlertTriangle",
+            "Lock",
+            "UserIcon"
+          ]
+        }
+      ],
+      "exports": [
+        "LoginPage"
+      ],
+      "totalLines": 115,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/app/page.tsx": {
+      "filePath": "frontend/src/app/page.tsx",
+      "contentHash": "115a08374b79db803584a0562c9032e5e9445a802290865f997697dd1d824248",
+      "functions": [
+        {
+          "name": "Home",
+          "params": [],
+          "exported": true,
+          "lineCount": 69
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "next/link",
+          "specifiers": [
+            "Link"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "ArrowRight",
+            "FilePlus2",
+            "ShieldCheck"
+          ]
+        }
+      ],
+      "exports": [
+        "Home"
+      ],
+      "totalLines": 77,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/app/register/page.tsx": {
+      "filePath": "frontend/src/app/register/page.tsx",
+      "contentHash": "f2bebd12acd5ef912b58f2960235eceabf78d4297fdf787f70a1bb3246272fa4",
+      "functions": [
+        {
+          "name": "RegisterPage",
+          "params": [],
+          "exported": true,
+          "lineCount": 165
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React",
+            "useState"
+          ]
+        },
+        {
+          "source": "@/context/AuthContext",
+          "specifiers": [
+            "useAuth"
+          ]
+        },
+        {
+          "source": "next/link",
+          "specifiers": [
+            "Link"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "AlertTriangle",
+            "Lock",
+            "Mail",
+            "ShieldCheck",
+            "UserIcon"
+          ]
+        }
+      ],
+      "exports": [
+        "RegisterPage"
+      ],
+      "totalLines": 173,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/components/AppShell.tsx": {
+      "filePath": "frontend/src/components/AppShell.tsx",
+      "contentHash": "ed0b7491787025847e756f4b988d3b78b67816688b7c21f758ac556f5b80cb29",
+      "functions": [
+        {
+          "name": "AppShell",
+          "params": [
+            "{ children }"
+          ],
+          "exported": true,
+          "lineCount": 12
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "ReactNode"
+          ]
+        },
+        {
+          "source": "@/components/ProtectedRoute",
+          "specifiers": [
+            "ProtectedRoute"
+          ]
+        },
+        {
+          "source": "@/components/AppSidebar",
+          "specifiers": [
+            "AppSidebar"
+          ]
+        }
+      ],
+      "exports": [
+        "AppShell"
+      ],
+      "totalLines": 19,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/components/AppSidebar.tsx": {
+      "filePath": "frontend/src/components/AppSidebar.tsx",
+      "contentHash": "6a47324ba93acf90faf7127fd54593714f21204fe5af944ca180a228d9fc9414",
+      "functions": [
+        {
+          "name": "initialSidebarHiddenState",
+          "params": [],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "SidebarLink",
+          "params": [
+            "{ item }"
+          ],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "AppSidebar",
+          "params": [],
+          "exported": true,
+          "lineCount": 84
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "useEffect",
+            "useRef",
+            "useState"
+          ]
+        },
+        {
+          "source": "next/link",
+          "specifiers": [
+            "Link"
+          ]
+        },
+        {
+          "source": "next/navigation",
+          "specifiers": [
+            "usePathname"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "FilePlus2",
+            "Files",
+            "Gauge",
+            "LogOut",
+            "Menu",
+            "ShieldCheck",
+            "X"
+          ]
+        },
+        {
+          "source": "@/context/AuthContext",
+          "specifiers": [
+            "useAuth"
+          ]
+        }
+      ],
+      "exports": [
+        "AppSidebar"
+      ],
+      "totalLines": 138,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/components/CropModal.tsx": {
+      "filePath": "frontend/src/components/CropModal.tsx",
+      "contentHash": "d350f3cd76584bb65cf393085776ab253d7e0522ec11ea8af9c5898b1558d261",
+      "functions": [
+        {
+          "name": "CropModal",
+          "params": [
+            "{\n  isOpen,\n  onClose,\n  imageUrl,\n  onApplyCrop,\n  loading,\n}"
+          ],
+          "exported": true,
+          "lineCount": 294
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React",
+            "useState",
+            "useRef",
+            "useEffect",
+            "useCallback"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "X",
+            "Crop",
+            "Check",
+            "RotateCcw",
+            "Loader2",
+            "Sparkles",
+            "Move",
+            "Maximize2"
+          ]
+        }
+      ],
+      "exports": [
+        "CropModal"
+      ],
+      "totalLines": 315,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/components/ExportButtons.tsx": {
+      "filePath": "frontend/src/components/ExportButtons.tsx",
+      "contentHash": "1cb809d6c62c7425aaa120a56063434ebd479b8c68a6d4ba0b31bdaf9ed300aa",
+      "functions": [
+        {
+          "name": "ExportButtons",
+          "params": [
+            "{\n  onExport,\n  exporting = false,\n  paperFormat,\n  paperOptions,\n  onPaperFormatChange\n}"
+          ],
+          "exported": true,
+          "lineCount": 124
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React",
+            "useCallback",
+            "useEffect",
+            "useRef",
+            "useState"
+          ]
+        },
+        {
+          "source": "react-dom",
+          "specifiers": [
+            "createPortal"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "Download",
+            "FileDown",
+            "Loader2"
+          ]
+        }
+      ],
+      "exports": [
+        "ExportButtons"
+      ],
+      "totalLines": 151,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/components/IconToolbar.tsx": {
+      "filePath": "frontend/src/components/IconToolbar.tsx",
+      "contentHash": "eb86a587c5ec7bedde6bfb2d4ea61b88f59ed628b12c0cfdd5d2fc7c0ff3df52",
+      "functions": [
+        {
+          "name": "IconToolbar",
+          "params": [
+            "{\n  onAddIcon,\n  activeIconType = null,\n  onCancelPlacement,\n  iconDefinitions = SAFETY_ICONS,\n  onAddText,\n  placementTextActive = false,\n  onCancelTextPlacement,\n}"
+          ],
+          "exported": true,
+          "lineCount": 152
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React",
+            "useState"
+          ]
+        },
+        {
+          "source": "@/utils/safetyIcons",
+          "specifiers": [
+            "SAFETY_ICONS",
+            "IconType",
+            "SafetyIconDefinition"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "Search",
+            "X",
+            "Type"
+          ]
+        }
+      ],
+      "exports": [
+        "IconToolbar"
+      ],
+      "totalLines": 172,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/components/PageHeader.tsx": {
+      "filePath": "frontend/src/components/PageHeader.tsx",
+      "contentHash": "4bfe0ba57f3d405120eff33dc235e2df7b2730bbfa69fc0c1a7c48aaa22770b4",
+      "functions": [
+        {
+          "name": "PageHeader",
+          "params": [
+            "{\n  title,\n  description,\n  children,\n}"
+          ],
+          "exported": true,
+          "lineCount": 19
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "ReactNode"
+          ]
+        }
+      ],
+      "exports": [
+        "PageHeader"
+      ],
+      "totalLines": 22,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/components/PlanCanvas.tsx": {
+      "filePath": "frontend/src/components/PlanCanvas.tsx",
+      "contentHash": "1dd2aa0f6d977651d961ae8baa0da92f1ac013b456bd7e443e337f6911b86a56",
+      "functions": [
+        {
+          "name": "pointLabel",
+          "params": [
+            "index"
+          ],
+          "returnType": "string",
+          "exported": true,
+          "lineCount": 4
+        },
+        {
+          "name": "boundsFromPoints",
+          "params": [
+            "points"
+          ],
+          "exported": true,
+          "lineCount": 10
+        },
+        {
+          "name": "isPolygonShape",
+          "params": [
+            "kind"
+          ],
+          "returnType": "boolean",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "isPolygonTool",
+          "params": [
+            "tool"
+          ],
+          "returnType": "boolean",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "pointsToFlat",
+          "params": [
+            "points"
+          ],
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "leaderEndpoint",
+          "params": [
+            "icon",
+            "anchorX",
+            "anchorY"
+          ],
+          "exported": false,
+          "lineCount": 25
+        },
+        {
+          "name": "iconOrientationClass",
+          "params": [
+            "type",
+            "definitions"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "iconArtworkRotation",
+          "params": [
+            "icon",
+            "definitions",
+            "planRotation"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "PlanCanvas",
+          "params": [
+            "{\n  backgroundUrl,\n  backgroundType,\n  icons,\n  onIconsChange,\n  selectedIconId,\n  onSelectIcon,\n  zoom,\n  setZoom,\n  mode,\n  placementIconType = null,\n  placementIconSize = { width: 40, height: 40 },\n  onPlaceIcon,\n  iconDefinitions = SAFETY_ICONS,\n  fitSignal = 0,\n  eraserSize = 24,\n  eraserShape = \"square\",\n  undoEraseSignal = 0,\n  resetEraseSignal = 0,\n  onEraseStrokesChange,\n  shapes = [],\n  onShapesChange,\n  selectedShapeId = null,\n  onSelectShape,\n  shapeTool = null,\n  onFinishShapeTool,\n  shapeStrokeWidth = 3,\n  shapeColor = \"#000000\",\n  planRotation = 0,\n  texts = [],\n  onTextsChange,\n  selectedTextId = null,\n  onSelectText,\n  placementText = false,\n  onPlaceText,\n  sheet = null,\n  onSheetBlocksChange,\n  selectedBlockId = null,\n  onSelectBlock,\n  sheetImages = {},\n  sheetLegendEntries = [],\n  sheetPictoImages = {},\n  onPlaceSheetIcon,\n  planReframeMode = false,\n  planPlacement = { scale: 100, offsetX: 0, offsetY: 0 },\n  onPlanPlacementChange,\n  planOverlays = [],\n  onPlanOverlaysChange,\n  selectedOverlayId = null,\n  onSelectOverlay,\n  keepPlanRatio = true,\n  canvasRef\n}"
+          ],
+          "exported": false,
+          "lineCount": 2413
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React",
+            "useState",
+            "useEffect",
+            "useRef",
+            "useCallback",
+            "useImperativeHandle"
+          ]
+        },
+        {
+          "source": "react-konva",
+          "specifiers": [
+            "Stage",
+            "Layer",
+            "KonvaImage",
+            "Transformer",
+            "Group",
+            "Rect",
+            "Text",
+            "Line",
+            "Ellipse",
+            "Circle",
+            "Path"
+          ]
+        },
+        {
+          "source": "@/lib/sheetTemplates",
+          "specifiers": [
+            "SheetBlock",
+            "findPlanBlock"
+          ]
+        },
+        {
+          "source": "@/components/SheetBlockNode",
+          "specifiers": [
+            "SheetBlockNode",
+            "SheetLegendEntry"
+          ]
+        },
+        {
+          "source": "@/utils/safetyIcons",
+          "specifiers": [
+            "IconType",
+            "SAFETY_ICONS",
+            "SafetyIconDefinition",
+            "getIconImageSource",
+            "getIconLeaderColor",
+            "isDirectionalIcon",
+            "isYouAreHereIcon"
+          ]
+        }
+      ],
+      "exports": [
+        "pointLabel",
+        "boundsFromPoints",
+        "isPolygonShape",
+        "isPolygonTool",
+        "pointsToFlat",
+        "FONT_OPTIONS",
+        "MAIN_PLAN_ID"
+      ],
+      "totalLines": 2733,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/components/ProtectedRoute.tsx": {
+      "filePath": "frontend/src/components/ProtectedRoute.tsx",
+      "contentHash": "54571e0f6cf750424f7efee7b1dbbc20644010368a854457f851144bc3f0e961",
+      "functions": [
+        {
+          "name": "ProtectedRoute",
+          "params": [
+            "{ children }"
+          ],
+          "exported": true,
+          "lineCount": 27
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React",
+            "useEffect"
+          ]
+        },
+        {
+          "source": "@/context/AuthContext",
+          "specifiers": [
+            "useAuth"
+          ]
+        },
+        {
+          "source": "next/navigation",
+          "specifiers": [
+            "useRouter"
+          ]
+        }
+      ],
+      "exports": [
+        "ProtectedRoute"
+      ],
+      "totalLines": 34,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/components/SheetBlockNode.tsx": {
+      "filePath": "frontend/src/components/SheetBlockNode.tsx",
+      "contentHash": "253fe3ffd5a93b77fcdef18e654a0adc0cc4c771a776d5cc6891853a0a312a63",
+      "functions": [
+        {
+          "name": "bodyText",
+          "params": [
+            "block"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "SheetBlockNode",
+          "params": [
+            "{\n  block,\n  isSelected,\n  editable,\n  legendEntries,\n  images,\n  pictoImages,\n  onSelect,\n  onChange,\n  onEditText\n}"
+          ],
+          "exported": true,
+          "lineCount": 251
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React"
+          ]
+        },
+        {
+          "source": "react-konva",
+          "specifiers": [
+            "Group",
+            "Rect",
+            "Text",
+            "Line",
+            "KonvaImage"
+          ]
+        },
+        {
+          "source": "@/lib/sheetTemplates",
+          "specifiers": [
+            "SheetBlock"
+          ]
+        },
+        {
+          "source": "@/utils/safetyIcons",
+          "specifiers": [
+            "IconType"
+          ]
+        }
+      ],
+      "exports": [
+        "SheetBlockNode"
+      ],
+      "totalLines": 295,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/components/ZoomControls.tsx": {
+      "filePath": "frontend/src/components/ZoomControls.tsx",
+      "contentHash": "16e08b08a10199491d4b38947bb335457faec06a42f7caf4d59c1c266646b22c",
+      "functions": [
+        {
+          "name": "ZoomControls",
+          "params": [
+            "{\n  zoom,\n  onZoomChange,\n  mode,\n  onModeChange,\n  onFitToView\n}"
+          ],
+          "exported": true,
+          "lineCount": 106
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "ZoomIn",
+            "ZoomOut",
+            "Maximize",
+            "Move",
+            "MousePointerClick",
+            "Eraser"
+          ]
+        }
+      ],
+      "exports": [
+        "ZoomControls"
+      ],
+      "totalLines": 122,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/context/AuthContext.tsx": {
+      "filePath": "frontend/src/context/AuthContext.tsx",
+      "contentHash": "8299607cdd92e6edee584d8687ee24bf36cf8a15fbd6d0f5e2d5f085854fe379",
+      "functions": [
+        {
+          "name": "getApiError",
+          "params": [
+            "res"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "AuthProvider",
+          "params": [
+            "{ children }"
+          ],
+          "exported": true,
+          "lineCount": 107
+        },
+        {
+          "name": "useAuth",
+          "params": [],
+          "exported": true,
+          "lineCount": 7
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React",
+            "createContext",
+            "useContext",
+            "useState",
+            "useEffect"
+          ]
+        },
+        {
+          "source": "next/navigation",
+          "specifiers": [
+            "useRouter"
+          ]
+        },
+        {
+          "source": "@/lib/api",
+          "specifiers": [
+            "API_BASE_URL",
+            "buildApiUrl"
+          ]
+        }
+      ],
+      "exports": [
+        "AuthProvider",
+        "useAuth"
+      ],
+      "totalLines": 162,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/lib/api.ts": {
+      "filePath": "frontend/src/lib/api.ts",
+      "contentHash": "9547263eefb0b2a7a36c781470cd39e7457d8dbed4b95174e63ec4933537f4ce",
+      "functions": [
+        {
+          "name": "buildApiUrl",
+          "params": [
+            "path"
+          ],
+          "returnType": "string",
+          "exported": true,
+          "lineCount": 9
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [
+        "API_BASE_URL",
+        "buildApiUrl"
+      ],
+      "totalLines": 13,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/lib/sheetTemplates.ts": {
+      "filePath": "frontend/src/lib/sheetTemplates.ts",
+      "contentHash": "fd9dcd6997a52b35fefb27375233b1f91903ef58c39f2304d259ac2938250111",
+      "functions": [
+        {
+          "name": "createNfx08070Blocks",
+          "params": [
+            "context"
+          ],
+          "returnType": "SheetBlock[]",
+          "exported": true,
+          "lineCount": 292
+        },
+        {
+          "name": "createSheetBlocks",
+          "params": [
+            "template",
+            "context"
+          ],
+          "returnType": "SheetBlock[]",
+          "exported": true,
+          "lineCount": 10
+        },
+        {
+          "name": "createPictoBlock",
+          "params": [
+            "iconType",
+            "label",
+            "x",
+            "y",
+            "size"
+          ],
+          "returnType": "SheetBlock",
+          "exported": true,
+          "lineCount": 20
+        },
+        {
+          "name": "createFreeTextBlock",
+          "params": [
+            "index"
+          ],
+          "returnType": "SheetBlock",
+          "exported": true,
+          "lineCount": 22
+        },
+        {
+          "name": "findPlanBlocks",
+          "params": [
+            "blocks"
+          ],
+          "returnType": "SheetBlock[]",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "findPlanBlock",
+          "params": [
+            "blocks"
+          ],
+          "returnType": "SheetBlock | null",
+          "exported": true,
+          "lineCount": 3
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [
+        "SHEET_WIDTH",
+        "SHEET_HEIGHT",
+        "SHEET_TEMPLATES",
+        "NF_COLORS",
+        "createNfx08070Blocks",
+        "createSheetBlocks",
+        "createPictoBlock",
+        "createFreeTextBlock",
+        "findPlanBlocks",
+        "findPlanBlock"
+      ],
+      "totalLines": 511,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/utils/safetyIcons.ts": {
+      "filePath": "frontend/src/utils/safetyIcons.ts",
+      "contentHash": "87aea7c60a09343c109992fd9401c4d179bda48ab1e80ff8345c9390c11d6400",
+      "functions": [
+        {
+          "name": "stripAccents",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 2
+        },
+        {
+          "name": "isDirectionalIcon",
+          "params": [
+            "type",
+            "definitions"
+          ],
+          "returnType": "boolean",
+          "exported": true,
+          "lineCount": 8
+        },
+        {
+          "name": "isYouAreHereIcon",
+          "params": [
+            "type",
+            "definitions"
+          ],
+          "returnType": "boolean",
+          "exported": true,
+          "lineCount": 7
+        },
+        {
+          "name": "normalisePictoName",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "getIconLeaderColor",
+          "params": [
+            "iconType",
+            "options"
+          ],
+          "returnType": "string",
+          "exported": true,
+          "lineCount": 16
+        },
+        {
+          "name": "inferPictogramColor",
+          "params": [
+            "type",
+            "label"
+          ],
+          "returnType": "string",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "getSvgDataUrl",
+          "params": [
+            "type"
+          ],
+          "returnType": "string",
+          "exported": true,
+          "lineCount": 5
+        },
+        {
+          "name": "getIconImageSource",
+          "params": [
+            "type",
+            "definitions"
+          ],
+          "returnType": "string",
+          "exported": true,
+          "lineCount": 10
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [
+        "DIRECTIONAL_ICON_KEYWORDS",
+        "isDirectionalIcon",
+        "YOU_ARE_HERE_KEYWORD",
+        "isYouAreHereIcon",
+        "LEADER_COLOR_RED",
+        "LEADER_COLOR_GREEN",
+        "LEADER_COLOR_BLUE",
+        "LEADER_COLOR_YELLOW",
+        "LEADER_COLOR_DARK",
+        "getIconLeaderColor",
+        "inferPictogramColor",
+        "SAFETY_ICONS",
+        "getSvgDataUrl",
+        "getIconImageSource"
+      ],
+      "totalLines": 311,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/tsconfig.json": {
+      "filePath": "frontend/tsconfig.json",
+      "contentHash": "5c51df4c59f4510d8c7dadf07a5c32132228826a3b331da5e286207b4df7ef9c",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 35,
+      "hasStructuralAnalysis": false
+    },
+    "README.md": {
+      "filePath": "README.md",
+      "contentHash": "9bb78f4ff7adc6fc35b351914a5e77a8ba3262364706fd497a45b2698b0e6d66",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 78,
+      "hasStructuralAnalysis": false
+    },
+    "backend/evacuation_plans/migrations/0008_evacuationplan_secondary_background_file.py": {
+      "filePath": "backend/evacuation_plans/migrations/0008_evacuationplan_secondary_background_file.py",
+      "contentHash": "e600431e0fae59f3931916fb39595d8482905e674276b0d3aafdd2134d92595f",
+      "functions": [],
+      "classes": [
+        {
+          "name": "Migration",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 13
+        }
+      ],
+      "imports": [
+        {
+          "source": "django.db",
+          "specifiers": [
+            "migrations",
+            "models"
+          ]
+        }
+      ],
+      "exports": [
+        "Migration"
+      ],
+      "totalLines": 19,
+      "hasStructuralAnalysis": true
+    },
+    "backend/evacuation_plans/migrations/0009_planoverlay.py": {
+      "filePath": "backend/evacuation_plans/migrations/0009_planoverlay.py",
+      "contentHash": "2d42a95fc949afb316efe24b13e32fd9fe9d6024539f99876e82ce283657257e",
+      "functions": [],
+      "classes": [
+        {
+          "name": "Migration",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 33
+        }
+      ],
+      "imports": [
+        {
+          "source": "django.db",
+          "specifiers": [
+            "migrations",
+            "models"
+          ]
+        },
+        {
+          "source": "django.db.models.deletion",
+          "specifiers": [
+            "django.db.models.deletion"
+          ]
+        }
+      ],
+      "exports": [
+        "Migration"
+      ],
+      "totalLines": 38,
+      "hasStructuralAnalysis": true
+    },
+    "frontend/src/components/PolygonCropModal.tsx": {
+      "filePath": "frontend/src/components/PolygonCropModal.tsx",
+      "contentHash": "181675b00df261cda54802b11bc9c91ca66a90dfd84c8f943f8a6612b1ff0d95",
+      "functions": [
+        {
+          "name": "PolygonCropModal",
+          "params": [
+            "{\n  isOpen,\n  onClose,\n  mainBackgroundUrl,\n  planOverlays,\n  selectedOverlayId = null,\n  buildingName = \"Plan principal\",\n  onCropMainPlan,\n  onCropSecondaryPlan\n}"
+          ],
+          "exported": true,
+          "lineCount": 488
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "react",
+          "specifiers": [
+            "React",
+            "useState",
+            "useEffect",
+            "useRef"
+          ]
+        },
+        {
+          "source": "lucide-react",
+          "specifiers": [
+            "X",
+            "Crop",
+            "PenTool",
+            "RotateCcw",
+            "Check",
+            "Scissors",
+            "Layers",
+            "ZoomIn",
+            "ZoomOut",
+            "Move"
+          ]
+        },
+        {
+          "source": "@/components/PlanCanvas",
+          "specifiers": [
+            "CanvasPlanOverlay"
+          ]
+        }
+      ],
+      "exports": [
+        "PolygonCropModal"
+      ],
+      "totalLines": 515,
+      "hasStructuralAnalysis": true
+    }
+  }
+}

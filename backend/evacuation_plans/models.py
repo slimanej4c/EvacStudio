@@ -63,6 +63,21 @@ class EvacuationPlan(models.Model):
     background_type = models.CharField(max_length=50) # 'image' or 'pdf'
     cleaned_background_file = models.FileField(upload_to='backgrounds_cleaned/', null=True, blank=True)
     use_cleaned_background = models.BooleanField(default=False)
+    # Placement of the main drawing in the shared editor coordinate system.
+    # A zero width/height means "use the natural image size" for older plans.
+    main_plan_x = models.FloatField(default=0.0)
+    main_plan_y = models.FloatField(default=0.0)
+    main_plan_width = models.FloatField(default=0.0)
+    main_plan_height = models.FloatField(default=0.0)
+    main_plan_locked = models.BooleanField(default=False)
+    # Optional explicit association between the main plan and the annotations
+    # that must follow it. Older projects keep the historical "carry all"
+    # behaviour until the user deliberately groups or ungroups the plan.
+    main_plan_group_id = models.CharField(max_length=64, blank=True, default='')
+    main_plan_grouping_enabled = models.BooleanField(default=False)
+    # Flexible, versioned presentation settings for the approval watermark/BAT.
+    # Keeping the visual options together lets the canvas remain the only renderer.
+    watermark_config = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -89,6 +104,9 @@ class PlanIcon(models.Model):
     framed = models.BooleanField(default=False)
     flip_x = models.BooleanField(default=False)
     flip_y = models.BooleanField(default=False)
+    locked = models.BooleanField(default=False)
+    group_id = models.CharField(max_length=64, blank=True, default='')
+    object_group_id = models.CharField(max_length=64, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -98,6 +116,34 @@ class PlanIcon(models.Model):
 
     def __str__(self):
         return f"{self.icon_type} on {self.plan.title}"
+
+
+class PlanOverlay(models.Model):
+    """A secondary plan image dropped onto the canvas next to the main plan.
+
+    A site is rarely one drawing: a floor plan often has to sit beside a site
+    map or a second level. Each overlay keeps its own image and its own place
+    on the canvas, in the same coordinate space as the icons and the shapes.
+    """
+
+    plan = models.ForeignKey(EvacuationPlan, on_delete=models.CASCADE, related_name='overlays')
+    image_file = models.FileField(upload_to='plan_overlays/')
+    x = models.FloatField(default=0.0)
+    y = models.FloatField(default=0.0)
+    width = models.FloatField()
+    height = models.FloatField()
+    rotation = models.FloatField(default=0.0)
+    label = models.CharField(max_length=255, blank=True, default='')
+    locked = models.BooleanField(default=False)
+    group_id = models.CharField(max_length=64, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['id']
+
+    def __str__(self):
+        return f"Overlay {self.label or self.pk} on {self.plan.title}"
 
 
 class PlanShape(models.Model):
@@ -136,6 +182,9 @@ class PlanShape(models.Model):
     control_points = models.JSONField(null=True, blank=True, default=dict)
     # Absolute plan coordinates for polygon_zone shapes: [{x, y}, ...]
     points = models.JSONField(null=True, blank=True, default=None)
+    locked = models.BooleanField(default=False)
+    group_id = models.CharField(max_length=64, blank=True, default='')
+    object_group_id = models.CharField(max_length=64, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -161,6 +210,9 @@ class PlanText(models.Model):
     # Optional colored background behind the text. Null/blank means no background.
     background_color = models.CharField(max_length=16, null=True, blank=True)
     rotation = models.FloatField(default=0.0)
+    locked = models.BooleanField(default=False)
+    group_id = models.CharField(max_length=64, blank=True, default='')
+    object_group_id = models.CharField(max_length=64, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

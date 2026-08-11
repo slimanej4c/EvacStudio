@@ -24,7 +24,7 @@ export default function RootLayout({
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
       </head>
-      <body className="min-h-full flex flex-col bg-white text-slate-950">
+      <body className="flex min-h-full w-full min-w-0 flex-col bg-white text-slate-950">
         <AuthProvider>
           {children}
         </AuthProvider>

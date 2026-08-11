@@ -1,10 +1,13 @@
 import os
 import base64
+import binascii
+import io
 import cv2
 import logging
 import threading
 import numpy as np
 import fitz # PyMuPDF
+from PIL import Image, UnidentifiedImageError
 from urllib.parse import quote
 from django.conf import settings
 from django.db import close_old_connections, transaction
@@ -19,6 +22,7 @@ from .models import (
     GrokCleaningJob,
     PlanCleaningHistory,
     PlanIcon,
+    PlanOverlay,
     PlanShape,
     PlanText,
     UserXaiSettings,
@@ -33,8 +37,12 @@ from .serializers import (
     UserSerializer,
     EvacuationPlanSerializer,
     PlanIconSerializer,
+    PlanOverlaySerializer,
     PlanShapeSerializer,
     PlanTextSerializer,
+    SyncEditorSerializer,
+    SyncPlanOverlaySerializer,
+    MAX_IMAGE_DATA_LENGTH,
     SaveUserXaiSettingsSerializer,
     TestXaiKeySerializer,
     PlanCleaningHistorySerializer,
@@ -46,6 +54,28 @@ from .serializers import (
 PLAN_PICTOGRAM_DIRS = ('plan_picto', 'nf_x-picto')
 PLAN_PICTOGRAM_EXTENSIONS = {'.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif'}
 logger = logging.getLogger(__name__)
+
+MAX_OVERLAY_IMAGE_SIDE = 20_000
+MAX_OVERLAY_IMAGE_PIXELS = 80_000_000
+
+
+def validate_overlay_image_bytes(image_bytes):
+    """Inspect image headers before OpenCV allocates the decoded pixel buffer."""
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            width, height = image.size
+            if (
+                width <= 0
+                or height <= 0
+                or width > MAX_OVERLAY_IMAGE_SIDE
+                or height > MAX_OVERLAY_IMAGE_SIDE
+                or width * height > MAX_OVERLAY_IMAGE_PIXELS
+            ):
+                return False, "Le plan secondaire dépasse les dimensions maximales autorisées."
+            image.verify()
+    except (UnidentifiedImageError, OSError, ValueError):
+        return False, "Le fichier secondaire n'est pas une image valide."
+    return True, None
 
 
 def get_plan_pictogram_directory():
@@ -82,6 +112,26 @@ def list_plan_pictograms(request):
 
     return pictograms
 
+def flatten_on_white(img):
+    """Lays a transparent image on a white sheet, the way it is displayed.
+
+    A plan exported as PNG — or cut out with the lasso — is transparent around
+    its outline. Read as plain colour, those pixels are black, and the cleaning
+    then reads the whole background as one uniform dark area and wipes the plan
+    out: what came back was a blank white page. Compositing first keeps the
+    drawing where it is.
+    """
+    if img is None:
+        return None
+    if img.ndim == 2:
+        return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    if img.shape[2] == 4:
+        alpha = img[:, :, 3:4].astype(np.float32) / 255.0
+        colour = img[:, :, :3].astype(np.float32)
+        return (colour * alpha + 255.0 * (1.0 - alpha)).astype(np.uint8)
+    return img
+
+
 def load_plan_image(plan, dpi=200, use_active_background=True):
     target_file = None
     if use_active_background and plan.use_cleaned_background and plan.cleaned_background_file:
@@ -112,7 +162,7 @@ def load_plan_image(plan, dpi=200, use_active_background=True):
         finally:
             doc.close()
 
-    img = cv2.imread(target_path)
+    img = flatten_on_white(cv2.imread(target_path, cv2.IMREAD_UNCHANGED))
     if img is None:
         return None, "Failed to load image"
     return img, None
@@ -532,6 +582,54 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(plan)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'], url_path='clean-image-data')
+    def clean_image_data(self, request, pk=None):
+        """Cleans any raw base64 plan image using OpenCV (full plan clean or walls extraction).
+
+        Used by the secondary plans, which live in the browser until they are
+        saved and so have no file on disk to point the other clean actions at.
+        """
+        # Not needed to do the work, but it keeps the endpoint behind the same
+        # ownership check as the rest of the viewset.
+        self.get_object()
+
+        image_data = request.data.get('image_data')
+        method = request.data.get('method', 'plan')
+        if not image_data or not isinstance(image_data, str):
+            return Response({"error": "No image_data provided."}, status=status.HTTP_400_BAD_REQUEST)
+        if len(image_data) > MAX_IMAGE_DATA_LENGTH:
+            return Response({"error": "Image trop volumineuse."}, status=status.HTTP_400_BAD_REQUEST)
+        if not image_data.startswith('data:image/') or ';base64,' not in image_data:
+            return Response(
+                {"error": "Image invalide : une data URL base64 est attendue."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            _, encoded = image_data.split(';base64,', 1)
+            image_bytes = base64.b64decode(encoded, validate=True)
+            valid, validation_error = validate_overlay_image_bytes(image_bytes)
+            if not valid:
+                return Response({"error": validation_error}, status=status.HTTP_400_BAD_REQUEST)
+            np_arr = np.frombuffer(image_bytes, np.uint8)
+            img = flatten_on_white(cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED))
+            if img is None:
+                return Response({"error": "Invalid image file."}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            return Response({"error": "Failed to decode image data."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if method == 'walls':
+            cleaned = clean_walls_image(img)
+        else:
+            cleaned = clean_plan_image(img)
+
+        ret, buffer = cv2.imencode('.png', cleaned)
+        if not ret:
+            return Response({"error": "Failed to encode cleaned image."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        cleaned_data_url = image_bytes_to_data_url(buffer.tobytes())
+        return Response({"cleaned_image_data": cleaned_data_url}, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['post'], url_path='change-background')
     def change_background(self, request, pk=None):
         plan = self.get_object()
@@ -546,6 +644,10 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         plan.background_type = background_type
         plan.cleaned_background_file = None
         plan.use_cleaned_background = False
+        plan.main_plan_x = 0.0
+        plan.main_plan_y = 0.0
+        plan.main_plan_width = 0.0
+        plan.main_plan_height = 0.0
         plan.save()
 
         serializer = self.get_serializer(plan)
@@ -733,6 +835,273 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
 
         return Response(PlanShapeSerializer(created, many=True).data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'], url_path='sync-overlays')
+    def sync_overlays(self, request, pk=None):
+        """Replaces the plan's secondary plans with the supplied list.
+
+        An overlay whose image has not changed travels as `image_ref` (its id),
+        so only the ones the user actually edited are decoded and rewritten.
+        """
+        plan = self.get_object()
+        serializer = SyncPlanOverlaySerializer(data=request.data, many=True)
+        serializer.is_valid(raise_exception=True)
+
+        existing = {overlay.pk: overlay for overlay in plan.overlays.all()}
+        kept_files = set()
+        rows = []
+
+        for item in serializer.validated_data:
+            image_data = item.get('image_data')
+            reference = item.get('image_ref')
+
+            if image_data:
+                if not image_data.startswith('data:image/') or ';base64,' not in image_data:
+                    return Response(
+                        {"error": "Plan secondaire invalide : une data URL base64 est attendue."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                header, encoded = image_data.split(';base64,', 1)
+                try:
+                    image_bytes = base64.b64decode(encoded, validate=True)
+                except (ValueError, binascii.Error):
+                    return Response(
+                        {"error": "Plan secondaire illisible."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                valid, validation_error = validate_overlay_image_bytes(image_bytes)
+                if not valid:
+                    return Response(
+                        {"error": validation_error},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                extension = header.split('/', 1)[-1].split(';')[0].lower()
+                if extension not in ('png', 'jpeg', 'jpg', 'webp'):
+                    extension = 'png'
+                content = ContentFile(image_bytes, name=f"overlay.{extension}")
+            else:
+                previous = existing.get(reference)
+                if previous is None:
+                    return Response(
+                        {"error": f"Plan secondaire {reference} introuvable."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                # Reuse the stored file instead of rewriting identical bytes.
+                content = previous.image_file.name
+                kept_files.add(previous.image_file.name)
+
+            rows.append((content, item))
+
+        stale_files = {
+            overlay.image_file.name
+            for overlay in existing.values()
+            if overlay.image_file and overlay.image_file.name not in kept_files
+        }
+        new_files = []
+        storage = PlanOverlay._meta.get_field('image_file').storage
+        try:
+            with transaction.atomic():
+                plan.overlays.all().delete()
+
+                for content, item in rows:
+                    overlay = PlanOverlay(
+                        plan=plan,
+                        x=item['x'],
+                        y=item['y'],
+                        width=item['width'],
+                        height=item['height'],
+                        rotation=item.get('rotation', 0.0),
+                        label=item.get('label', ''),
+                        locked=item.get('locked', False),
+                        group_id=item.get('group_id', ''),
+                    )
+                    if isinstance(content, str):
+                        overlay.image_file.name = content
+                        overlay.save()
+                    else:
+                        overlay.image_file.save(content.name, content, save=True)
+                        new_files.append(overlay.image_file.name)
+
+                def delete_stale_files(names=tuple(stale_files)):
+                    for name in names:
+                        if PlanOverlay.objects.filter(image_file=name).exists():
+                            continue
+                        if storage.exists(name):
+                            storage.delete(name)
+
+                transaction.on_commit(delete_stale_files)
+        except Exception:
+            for name in new_files:
+                if name and storage.exists(name):
+                    storage.delete(name)
+            raise
+
+        return Response(
+            PlanOverlaySerializer(plan.overlays.all(), many=True, context={'request': request}).data,
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=['post'], url_path='sync-editor')
+    def sync_editor(self, request, pk=None):
+        """Atomically stores every editable layer and the visual project settings.
+
+        Validation and image decoding happen before the database is touched. New
+        files are removed if the SQL transaction fails; replaced files are only
+        removed after commit, so a failed save cannot destroy the last good plan.
+        """
+        plan = self.get_object()
+        serializer = SyncEditorSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        existing_overlays = {overlay.pk: overlay for overlay in plan.overlays.all()}
+        prepared_overlays = []
+        used_overlay_ids = set()
+
+        for item in payload['overlays']:
+            image_data = item.get('image_data')
+            reference = item.get('image_ref')
+            overlay_id = item.get('overlay_id') or reference
+
+            if overlay_id is not None:
+                if overlay_id not in existing_overlays:
+                    return Response(
+                        {"error": f"Plan secondaire {overlay_id} introuvable."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if overlay_id in used_overlay_ids:
+                    return Response(
+                        {"error": f"Plan secondaire {overlay_id} présent plusieurs fois."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                used_overlay_ids.add(overlay_id)
+
+            image_bytes = None
+            extension = 'png'
+            if image_data:
+                if not image_data.startswith('data:image/') or ';base64,' not in image_data:
+                    return Response(
+                        {"error": "Plan secondaire invalide : une data URL base64 est attendue."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                header, encoded = image_data.split(';base64,', 1)
+                try:
+                    image_bytes = base64.b64decode(encoded, validate=True)
+                except (ValueError, binascii.Error):
+                    return Response(
+                        {"error": "Plan secondaire illisible."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                valid, validation_error = validate_overlay_image_bytes(image_bytes)
+                if not valid:
+                    return Response(
+                        {"error": validation_error},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                extension = header.split('/', 1)[-1].split(';')[0].lower()
+                if extension not in ('png', 'jpeg', 'jpg', 'webp'):
+                    extension = 'png'
+            elif overlay_id is None:
+                return Response(
+                    {"error": "Un nouveau plan secondaire doit contenir une image."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            prepared_overlays.append((overlay_id, image_bytes, extension, item))
+
+        new_file_names = []
+        files_to_delete = set()
+        try:
+            with transaction.atomic():
+                plan.icons.all().delete()
+                PlanIcon.objects.bulk_create([
+                    PlanIcon(plan=plan, **item) for item in payload['icons']
+                ])
+
+                plan.shapes.all().delete()
+                PlanShape.objects.bulk_create([
+                    PlanShape(plan=plan, **item) for item in payload['shapes']
+                ])
+
+                plan.texts.all().delete()
+                PlanText.objects.bulk_create([
+                    PlanText(plan=plan, **item) for item in payload['texts']
+                ])
+
+                retained_ids = []
+                for overlay_id, image_bytes, extension, item in prepared_overlays:
+                    overlay = existing_overlays.get(overlay_id) if overlay_id is not None else None
+                    if overlay is None:
+                        overlay = PlanOverlay(plan=plan)
+
+                    old_file_name = overlay.image_file.name if overlay.image_file else ''
+                    overlay.x = item['x']
+                    overlay.y = item['y']
+                    overlay.width = item['width']
+                    overlay.height = item['height']
+                    overlay.rotation = item.get('rotation', 0.0)
+                    overlay.label = item.get('label', '')
+                    overlay.locked = item.get('locked', False)
+                    overlay.group_id = item.get('group_id', '')
+
+                    if image_bytes is not None:
+                        overlay.image_file.save(
+                            f"overlay.{extension}",
+                            ContentFile(image_bytes),
+                            save=False,
+                        )
+                        new_file_names.append(overlay.image_file.name)
+                        if old_file_name and old_file_name != overlay.image_file.name:
+                            files_to_delete.add(old_file_name)
+
+                    overlay.save()
+                    retained_ids.append(overlay.pk)
+
+                removed = plan.overlays.exclude(pk__in=retained_ids)
+                files_to_delete.update(
+                    name for name in removed.values_list('image_file', flat=True) if name
+                )
+                removed.delete()
+
+                settings_data = payload['plan_settings']
+                plan.main_plan_x = settings_data.get('main_plan_x', 0.0)
+                plan.main_plan_y = settings_data.get('main_plan_y', 0.0)
+                plan.main_plan_width = settings_data.get('main_plan_width', 0.0)
+                plan.main_plan_height = settings_data.get('main_plan_height', 0.0)
+                plan.main_plan_locked = settings_data.get('main_plan_locked', False)
+                plan.main_plan_group_id = settings_data.get('main_plan_group_id', '')
+                plan.main_plan_grouping_enabled = settings_data.get('main_plan_grouping_enabled', False)
+                plan.watermark_config = dict(settings_data.get('watermark', {}))
+                plan.save(update_fields=[
+                    'main_plan_x', 'main_plan_y', 'main_plan_width', 'main_plan_height',
+                    'main_plan_locked', 'main_plan_group_id', 'main_plan_grouping_enabled',
+                    'watermark_config', 'updated_at',
+                ])
+
+                live_file_names = set(
+                    plan.overlays.exclude(image_file='').values_list('image_file', flat=True)
+                )
+                stale_file_names = tuple(files_to_delete - live_file_names)
+                storage = PlanOverlay._meta.get_field('image_file').storage
+                transaction.on_commit(
+                    lambda names=stale_file_names, target_storage=storage: [
+                        target_storage.delete(name) for name in names if target_storage.exists(name)
+                    ]
+                )
+        except Exception:
+            storage = PlanOverlay._meta.get_field('image_file').storage
+            for name in new_file_names:
+                if name and storage.exists(name):
+                    storage.delete(name)
+            raise
+
+        plan.refresh_from_db()
+        response_data = dict(self.get_serializer(plan).data)
+        # Input order is the editor's layer order; model ordering by primary key
+        # is not sufficient when a new overlay is inserted between old ones.
+        response_data['overlay_ids'] = retained_ids
+        return Response(response_data, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['post'], url_path='sync-icons')
     def sync_icons(self, request, pk=None):
         """
@@ -765,6 +1134,9 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 framed=icon_data.get('framed', False),
                 flip_x=icon_data.get('flip_x', False),
                 flip_y=icon_data.get('flip_y', False),
+                locked=icon_data.get('locked', False),
+                group_id=icon_data.get('group_id', ''),
+                object_group_id=icon_data.get('object_group_id', ''),
             )
             icon.save()
             created_icons.append(icon)
