@@ -1,11 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
-import { Check, ImagePlus, Loader2, RefreshCw, Trash2, X } from "lucide-react";
+import React from "react";
+import { Check, X } from "lucide-react";
 import { WatermarkConfig } from "@/lib/watermark";
-import { DEFAULT_STUDIO_LOGO, prepareLogoFile } from "@/lib/brandLogos";
-
-type LogoKey = "client_logo" | "creator_logo";
 
 interface WatermarkModalProps {
   open: boolean;
@@ -22,26 +19,10 @@ export function WatermarkModal({
   onApply,
   onCancel,
 }: WatermarkModalProps) {
-  const [logoBusy, setLogoBusy] = useState<LogoKey | null>(null);
-  const [logoError, setLogoError] = useState("");
-
   if (!open) return null;
 
   const update = <K extends keyof WatermarkConfig>(key: K, next: WatermarkConfig[K]) =>
     onChange({ ...value, [key]: next });
-
-  const importLogo = async (key: LogoKey, file: File | undefined) => {
-    if (!file) return;
-    setLogoBusy(key);
-    setLogoError("");
-    try {
-      update(key, await prepareLogoFile(file));
-    } catch (error) {
-      setLogoError(error instanceof Error ? error.message : "Impossible d’importer le logo.");
-    } finally {
-      setLogoBusy(null);
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/65 p-4">
@@ -127,78 +108,6 @@ export function WatermarkModal({
               className="w-full rounded border border-white/10 bg-black/30 px-3 py-2 text-xs text-white outline-none focus:border-emerald-500"
             />
           </label>
-
-          <div className="sm:col-span-2 rounded-lg border border-white/10 bg-black/20 p-3">
-            <div className="mb-3">
-              <h3 className="text-xs font-bold text-neutral-200">Logos du BON À TIRER</h3>
-              <p className="mt-1 text-[10px] leading-4 text-neutral-500">
-                Le logo client appartient au plan courant. Le logo studio est partagé par tous les plans et utilise
-                PREV&apos; INC &amp; CIE par défaut. PNG, JPEG, SVG ou WebP, 5 Mo maximum.
-              </p>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {([
-                ["client_logo", "Logo client · ce plan"],
-                ["creator_logo", "Logo studio · tous les plans"],
-              ] as const).map(([key, label]) => {
-                const logo = value[key];
-                const busy = logoBusy === key;
-                return (
-                  <div key={key} className="rounded-lg border border-white/10 bg-[#202022] p-2.5">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-400">
-                        {label}
-                      </span>
-                      {logo && (
-                        <button
-                          type="button"
-                          onClick={() => update(key, key === "creator_logo" ? DEFAULT_STUDIO_LOGO : "")}
-                          title={key === "creator_logo" ? "Rétablir le logo PREV’ INC & CIE" : "Retirer le logo client"}
-                          className="rounded p-1 text-neutral-500 transition-colors hover:bg-red-500/10 hover:text-red-300"
-                        >
-                          {key === "creator_logo" ? <RefreshCw className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
-                        </button>
-                      )}
-                    </div>
-                    <label className="flex h-20 cursor-pointer items-center justify-center overflow-hidden rounded border border-dashed border-white/15 bg-black/20 transition-colors hover:border-emerald-500/60 hover:bg-emerald-500/5">
-                      {busy ? (
-                        <Loader2 className="h-5 w-5 animate-spin text-emerald-400" />
-                      ) : logo ? (
-                        <span
-                          role="img"
-                          aria-label={`Aperçu ${label.toLowerCase()}`}
-                          className="h-16 w-[90%] bg-contain bg-center bg-no-repeat"
-                          style={{ backgroundImage: `url(${logo})` }}
-                        />
-                      ) : (
-                        <span className="flex items-center gap-2 text-[11px] font-medium text-neutral-400">
-                          <ImagePlus className="h-4 w-4 text-emerald-400" />
-                          Importer
-                        </span>
-                      )}
-                      <input
-                        type="file"
-                        accept="image/png,image/jpeg,image/svg+xml,image/webp"
-                        aria-label={`Importer le ${label.toLowerCase()}`}
-                        className="hidden"
-                        disabled={busy}
-                        onChange={(event) => {
-                          const file = event.target.files?.[0];
-                          event.target.value = "";
-                          void importLogo(key, file);
-                        }}
-                      />
-                    </label>
-                  </div>
-                );
-              })}
-            </div>
-            {logoError && (
-              <p role="alert" className="mt-2 text-[11px] font-medium text-red-300">
-                {logoError}
-              </p>
-            )}
-          </div>
 
           <div className="sm:col-span-2 grid gap-2 rounded-lg border border-white/10 bg-black/20 p-3 sm:grid-cols-3">
             {([

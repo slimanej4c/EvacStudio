@@ -5,7 +5,7 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter, useParams } from "next/navigation";
 import dynamic from "next/dynamic";
-import { ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Pencil, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw, Lock, Unlock, Stamp, Group as GroupIcon, Ungroup, BoxSelect, Layers3, Library } from "lucide-react";
+import { ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Pencil, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw, Lock, Unlock, Stamp, Group as GroupIcon, Ungroup, BoxSelect, Layers3, Library, ImagePlus } from "lucide-react";
 import { CropModal } from "@/components/CropModal";
 import { PolygonCropModal } from "@/components/PolygonCropModal";
 import { WatermarkModal } from "@/components/WatermarkModal";
@@ -1146,6 +1146,8 @@ const MAX_HISTORY_STEPS = 50;
   const [templateTransferBusy, setTemplateTransferBusy] = useState(false);
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [logoManagerOpen, setLogoManagerOpen] = useState(false);
+  const [logoImportBusy, setLogoImportBusy] = useState<"client" | "studio" | null>(null);
   const [exportSaveConfirmOpen, setExportSaveConfirmOpen] = useState(false);
   const [pendingExportAction, setPendingExportAction] = useState<(() => Promise<void>) | null>(null);
   const [exportFormat] = useState<"png" | "pdf">("pdf");
@@ -3764,6 +3766,7 @@ const MAX_HISTORY_STEPS = 50;
 
   const importConfiguredLogo = async (target: "client" | "studio", file?: File) => {
     if (!file) return;
+    setLogoImportBusy(target);
     setLogoSettingsError("");
     try {
       const source = await prepareLogoFile(file);
@@ -3777,6 +3780,8 @@ const MAX_HISTORY_STEPS = 50;
       window.setTimeout(() => setSaveStatus(""), 3500);
     } catch (error) {
       setLogoSettingsError(error instanceof Error ? error.message : "Impossible d’importer le logo.");
+    } finally {
+      setLogoImportBusy(null);
     }
   };
 
@@ -4797,18 +4802,18 @@ const MAX_HISTORY_STEPS = 50;
     return () => window.removeEventListener("keydown", handleKeyDown);
   });
 
-  /**
-   * The sheet's own settings: the site name and the logos the studio template
-   * draws. The export no longer goes through this dialog — it captures the
-   * studio directly — but these fields still feed the sheet, so they keep a
-   * way in of their own.
-   */
+  /** The sheet settings only contain content/layout options. Logos have their
+   * own entry in the studio toolbar so they are never hidden in another dialog. */
   const openSheetSettings = () => {
     setExportSiteName((current) => current || plan?.building_name || "");
+    setExportModalOpen(true);
+  };
+
+  const openLogoManager = () => {
     setExportClientLogo((current) => current || watermarkConfig.client_logo);
     setExportStudioLogo((current) => current || getStoredStudioLogo(watermarkConfig.creator_logo || DEFAULT_STUDIO_LOGO));
     setLogoSettingsError("");
-    setExportModalOpen(true);
+    setLogoManagerOpen(true);
   };
 
   const drawWrappedText = (
@@ -7712,12 +7717,22 @@ const MAX_HISTORY_STEPS = 50;
               <button
                 type="button"
                 onClick={openSheetSettings}
-                title="Réglages de la feuille : nom du site, titre et logos"
+                title="Réglages de la feuille : nom du site et titre"
                 className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
               >
                 <Settings className="h-3 w-3" />
               </button>
             </div>
+
+            <button
+              type="button"
+              onClick={openLogoManager}
+              title="Importer le logo client ou changer le logo du studio"
+              className="flex cursor-pointer items-center gap-1.5 rounded border border-white/10 bg-black/20 px-2.5 py-1.5 text-[11px] font-semibold text-neutral-300 transition-colors hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-white"
+            >
+              <ImagePlus className="h-3.5 w-3.5 text-emerald-400" />
+              <span>Logos</span>
+            </button>
 
             <button
               type="button"
@@ -10499,13 +10514,229 @@ const MAX_HISTORY_STEPS = 50;
           </div>
         )}
 
+        {logoManagerOpen && (
+          <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/65 px-4 py-4 backdrop-blur-sm">
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="studio-logos-title"
+              className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+            >
+              <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+                <div>
+                  <h2 id="studio-logos-title" className="text-lg font-bold text-slate-950">
+                    Logos du studio
+                  </h2>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    Importez ici le logo du client ou remplacez le logo du studio. Ils apparaissent directement dans le template ouvert.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setLogoManagerOpen(false)}
+                  className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-950"
+                  title="Fermer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-5">
+                {!sheetActive && (
+                  <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Choisissez une feuille dans « Affichage » pour voir les logos sur le canvas du studio.
+                  </p>
+                )}
+                <div className="grid gap-4 md:grid-cols-2">
+                  {([
+                    {
+                      key: "client",
+                      label: "Logo client",
+                      scope: "Ce plan seulement",
+                      help: "Changez-le pour chaque client. Il sera conservé lorsque vous sauvegarderez ce plan.",
+                      value: exportClientLogo,
+                      scale: exportClientLogoScale,
+                      setScale: setExportClientLogoScale,
+                      offsetX: exportClientLogoOffsetX,
+                      setOffsetX: setExportClientLogoOffsetX,
+                      offsetY: exportClientLogoOffsetY,
+                      setOffsetY: setExportClientLogoOffsetY
+                    },
+                    {
+                      key: "studio",
+                      label: "Logo studio",
+                      scope: "Tous les plans",
+                      help: "Le logo PREV’ INC & CIE est utilisé par défaut. Votre choix reste mémorisé jusqu’à la prochaine modification.",
+                      value: exportStudioLogo,
+                      scale: exportStudioLogoScale,
+                      setScale: setExportStudioLogoScale,
+                      offsetX: exportStudioLogoOffsetX,
+                      setOffsetX: setExportStudioLogoOffsetX,
+                      offsetY: exportStudioLogoOffsetY,
+                      setOffsetY: setExportStudioLogoOffsetY
+                    }
+                  ] as const).map(({ key, label, scope, help, value, scale, setScale, offsetX, setOffsetX, offsetY, setOffsetY }) => {
+                    const busy = logoImportBusy === key;
+                    return (
+                      <section key={key} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <div className="mb-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <h3 className="text-sm font-bold text-slate-950">{label}</h3>
+                            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-800">
+                              {scope}
+                            </span>
+                          </div>
+                          <p className="mt-1 min-h-10 text-[11px] leading-4 text-slate-500">{help}</p>
+                        </div>
+
+                        <div className="flex h-28 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white p-3">
+                          {busy ? (
+                            <Loader2 className="h-6 w-6 animate-spin text-safety-green" />
+                          ) : value ? (
+                            <img src={value} alt={`Aperçu du ${label.toLowerCase()}`} className="max-h-full max-w-full object-contain" />
+                          ) : (
+                            <div className="text-center text-slate-400">
+                              <ImagePlus className="mx-auto h-6 w-6" />
+                              <span className="mt-1 block text-[11px]">Aucun logo client</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="mt-3 flex gap-2">
+                          <label className={`flex h-9 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg bg-safety-green px-3 text-xs font-semibold text-white transition-colors hover:bg-green-600 ${busy ? "cursor-wait opacity-60" : ""}`}>
+                            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
+                            {value ? "Remplacer" : "Importer"}
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                              aria-label={`Importer le ${label.toLowerCase()}`}
+                              className="hidden"
+                              disabled={busy}
+                              onChange={(event) => {
+                                const file = event.target.files?.[0];
+                                event.target.value = "";
+                                if (file) void importConfiguredLogo(key, file);
+                              }}
+                            />
+                          </label>
+                          {(value || key === "studio") && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (key === "studio") {
+                                  setStudioLogoPreference(DEFAULT_STUDIO_LOGO);
+                                  setSaveStatus("Logo studio PREV’ INC & CIE restauré");
+                                } else {
+                                  setClientLogoForPlan("");
+                                  setSaveStatus("Logo client retiré — sauvegardez le plan");
+                                }
+                                window.setTimeout(() => setSaveStatus(""), 3000);
+                              }}
+                              title={key === "studio" ? "Rétablir le logo PREV’ INC & CIE" : "Retirer le logo client"}
+                              className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-950"
+                            >
+                              {key === "studio" ? <RefreshCw className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
+                              {key === "studio" ? "Logo par défaut" : "Retirer"}
+                            </button>
+                          )}
+                        </div>
+
+                        {value && (
+                          <div className="mt-4 space-y-3 border-t border-slate-200 pt-3">
+                            <div>
+                              <div className="mb-1 flex justify-between text-xs text-slate-600">
+                                <span>Taille</span>
+                                <span>{scale}%</span>
+                              </div>
+                              <input
+                                type="range"
+                                min="40"
+                                max="500"
+                                value={scale}
+                                onChange={(event) => setScale(Number(event.target.value))}
+                                className="w-full accent-safety-green"
+                              />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <div className="mb-1 flex justify-between text-[11px] text-slate-600">
+                                  <span>Horizontal</span>
+                                  <span>{offsetX}px</span>
+                                </div>
+                                <input
+                                  type="range"
+                                  min="-250"
+                                  max="250"
+                                  value={offsetX}
+                                  onChange={(event) => setOffsetX(Number(event.target.value))}
+                                  className="w-full accent-safety-green"
+                                />
+                              </div>
+                              <div>
+                                <div className="mb-1 flex justify-between text-[11px] text-slate-600">
+                                  <span>Vertical</span>
+                                  <span>{offsetY}px</span>
+                                </div>
+                                <input
+                                  type="range"
+                                  min="-250"
+                                  max="250"
+                                  value={offsetY}
+                                  onChange={(event) => setOffsetY(Number(event.target.value))}
+                                  className="w-full accent-safety-green"
+                                />
+                              </div>
+                            </div>
+                            {(scale !== 100 || offsetX !== 0 || offsetY !== 0) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setScale(100);
+                                  setOffsetX(0);
+                                  setOffsetY(0);
+                                }}
+                                className="text-[11px] font-semibold text-safety-green hover:text-green-700"
+                              >
+                                Réinitialiser la taille et la position
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </section>
+                    );
+                  })}
+                </div>
+
+                {logoSettingsError && (
+                  <p role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                    {logoSettingsError}
+                  </p>
+                )}
+                <p className="mt-4 text-[11px] leading-4 text-slate-500">
+                  Formats acceptés : PNG, JPEG, SVG ou WebP, 5 Mo maximum. Le logo client doit être enregistré avec le bouton « Sauvegarder » du studio.
+                </p>
+              </div>
+
+              <div className="flex shrink-0 justify-end border-t border-slate-200 px-5 py-4">
+                <button
+                  type="button"
+                  onClick={() => setLogoManagerOpen(false)}
+                  className="rounded-xl bg-safety-green px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-green-600"
+                >
+                  Terminé
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {exportModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 px-4 py-4 backdrop-blur-sm">
             <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
               <div className="shrink-0 flex items-center justify-between border-b border-slate-200 px-5 py-4">
                 <div>
                   <h2 className="text-lg font-bold text-slate-950">Réglages de la feuille</h2>
-                  <p className="text-xs text-slate-500">Nom du site, titre et logos utilisés par la feuille du studio. L&apos;export, lui, reprend exactement ce qu&apos;affiche le studio.</p>
+                  <p className="text-xs text-slate-500">Nom du site, titre et mise en page de la feuille. Les logos ont maintenant leur propre bouton dans le studio.</p>
                 </div>
                 <button
                   onClick={() => setExportModalOpen(false)}
@@ -11331,168 +11562,6 @@ const MAX_HISTORY_STEPS = 50;
                   </div>
                   </>
                   )}
-
-                  {/* Logos: who made the sheet, and who it is for */}
-                  <div className="rounded-xl border border-slate-200 bg-white p-3">
-                    <h3 className="mb-1 text-sm font-bold text-slate-950">Logos</h3>
-                    <p className="mb-3 text-[11px] leading-4 text-slate-500">
-                      {isInterventionTheme
-                        ? "Colonne de droite : logo client en haut, au-dessus de l'adresse. Logo studio (auteur de la planche) en bas, sous la légende."
-                        : isNfTheme || isEvacuationTheme
-                          ? "Logo client en haut à droite, au-dessus de l'adresse. Logo studio (auteur de la planche) en bas à gauche."
-                          : "Affichés dans la bande d'en-tête. Client à gauche, studio à droite."}
-                    </p>
-                    <div className="space-y-3">
-                      {([
-                        {
-                          key: "client",
-                          label: "Logo client · ce plan",
-                          value: exportClientLogo,
-                          scale: exportClientLogoScale,
-                          setScale: setExportClientLogoScale,
-                          offsetX: exportClientLogoOffsetX,
-                          setOffsetX: setExportClientLogoOffsetX,
-                          offsetY: exportClientLogoOffsetY,
-                          setOffsetY: setExportClientLogoOffsetY
-                        },
-                        {
-                          key: "studio",
-                          label: "Logo studio · tous les plans",
-                          value: exportStudioLogo,
-                          scale: exportStudioLogoScale,
-                          setScale: setExportStudioLogoScale,
-                          offsetX: exportStudioLogoOffsetX,
-                          setOffsetX: setExportStudioLogoOffsetX,
-                          offsetY: exportStudioLogoOffsetY,
-                          setOffsetY: setExportStudioLogoOffsetY
-                        }
-                      ] as const).map(({ key, label, value, scale, setScale, offsetX, setOffsetX, offsetY, setOffsetY }) => (
-                        <div key={key} className="rounded-lg border border-slate-200 p-2.5">
-                          <div className="mb-1.5 flex items-center justify-between">
-                            <div>
-                              <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</span>
-                              <p className="mt-0.5 text-[9px] leading-3 text-slate-400">
-                                {key === "client"
-                                  ? "Changez-le pour chaque client; il est sauvegardé avec ce projet."
-                                  : "Mémorisé dans l’application jusqu’à votre prochaine modification."}
-                              </p>
-                            </div>
-                            {value && (scale !== 100 || offsetX !== 0 || offsetY !== 0) && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setScale(100);
-                                  setOffsetX(0);
-                                  setOffsetY(0);
-                                }}
-                                className="text-[11px] font-semibold text-safety-green hover:text-green-700"
-                              >
-                                Réinitialiser
-                              </button>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <label
-                              className={`flex h-12 flex-1 cursor-pointer items-center justify-center overflow-hidden rounded-lg border border-slate-300 bg-slate-50 text-[11px] font-medium text-slate-500 transition-colors hover:bg-slate-100 ${
-                                value ? "border-safety-green/40 bg-white" : ""
-                              }`}
-                            >
-                              {value ? (
-                                <img src={value} alt={label} className="max-h-10 max-w-full object-contain" />
-                              ) : (
-                                <span>Choisir…</span>
-                              )}
-                              <input
-                                type="file"
-                                accept="image/png,image/jpeg,image/svg+xml,image/webp"
-                                className="hidden"
-                                onChange={(event) => {
-                                  const file = event.target.files?.[0];
-                                  event.target.value = "";
-                                  if (!file) return;
-                                  void importConfiguredLogo(key, file);
-                                }}
-                              />
-                            </label>
-                            {value && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (key === "studio") {
-                                    setStudioLogoPreference(DEFAULT_STUDIO_LOGO);
-                                    setSaveStatus("Logo studio PREV’ INC & CIE restauré");
-                                  } else {
-                                    setClientLogoForPlan("");
-                                    setSaveStatus("Logo client retiré — sauvegardez le plan");
-                                  }
-                                  window.setTimeout(() => setSaveStatus(""), 3000);
-                                }}
-                                title={key === "studio" ? "Rétablir le logo PREV’ INC & CIE" : "Retirer le logo client"}
-                                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-300 text-slate-500 transition-colors hover:bg-red-50 hover:text-red-600"
-                              >
-                                {key === "studio" ? <RefreshCw className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
-                              </button>
-                            )}
-                          </div>
-
-                          {/* Size and position, only once there is something to move */}
-                          {value && (
-                            <div className="mt-2.5 space-y-2">
-                              <div>
-                                <div className="mb-1 flex justify-between text-xs text-slate-500">
-                                  <span>Taille</span>
-                                  <span>{scale}%</span>
-                                </div>
-                                <input
-                                  type="range"
-                                  min="40"
-                                  max="500"
-                                  value={scale}
-                                  onChange={(e) => setScale(Number(e.target.value))}
-                                  className="w-full accent-safety-green"
-                                />
-                              </div>
-                              <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                  <div className="mb-1 flex justify-between text-xs text-slate-500">
-                                    <span>← Horizontal →</span>
-                                    <span>{offsetX}px</span>
-                                  </div>
-                                  <input
-                                    type="range"
-                                    min="-250"
-                                    max="250"
-                                    value={offsetX}
-                                    onChange={(e) => setOffsetX(Number(e.target.value))}
-                                    className="w-full accent-safety-green"
-                                  />
-                                </div>
-                                <div>
-                                  <div className="mb-1 flex justify-between text-xs text-slate-500">
-                                    <span>↑ Vertical ↓</span>
-                                    <span>{offsetY}px</span>
-                                  </div>
-                                  <input
-                                    type="range"
-                                    min="-250"
-                                    max="250"
-                                    value={offsetY}
-                                    onChange={(e) => setOffsetY(Number(e.target.value))}
-                                    className="w-full accent-safety-green"
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                      {logoSettingsError ? (
-                        <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[11px] font-medium text-red-700">
-                          {logoSettingsError}
-                        </p>
-                      ) : null}
-                    </div>
-                  </div>
 
                   {/* Section visibility: hide any block, the plan reclaims the space */}
                   <div className="rounded-xl border border-slate-200 bg-white p-3">
