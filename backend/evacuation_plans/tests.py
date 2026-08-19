@@ -126,6 +126,30 @@ class PlansCrudTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()), 1)
 
+    def test_imported_plan_is_visible_by_default(self):
+        user = User.objects.create_user(username="visible-import", password="longsecret-1")
+        client = self.authed_client(user)
+
+        response = client.post(
+            "/api/plans/",
+            {
+                "title": "Plan visible",
+                "building_name": "Bâtiment A",
+                "floor_name": "RDC",
+                "background_type": "image",
+                "background_file": SimpleUploadedFile(
+                    "plan-visible.png",
+                    _png_bytes(),
+                    content_type="image/png",
+                ),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertTrue(response.data["main_plan_visible"])
+        self.assertTrue(EvacuationPlan.objects.get(pk=response.data["id"]).main_plan_visible)
+
     def test_create_pdf_plan_authenticated(self):
         user = User.objects.create_user(username="dave", password="longsecret-1")
         client = self.authed_client(user)

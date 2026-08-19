@@ -861,8 +861,10 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         # A new plan always lands in the creator's own list, never in a list
-        # they merely have access to.
-        serializer.save(user=self.request.user)
+        # they merely have access to. Multipart forms treat a missing checkbox
+        # as False, so explicitly show the newly imported main plan instead of
+        # relying on the model's True default.
+        serializer.save(user=self.request.user, main_plan_visible=True)
 
     @action(detail=False, methods=['get', 'post', 'patch', 'delete'], url_path='pictograms')
     def pictograms(self, request):

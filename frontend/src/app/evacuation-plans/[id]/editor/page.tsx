@@ -483,6 +483,8 @@ const PRESET_COLORS = [
 
 interface EvacuationPlanBackend {
   id: number;
+  created_at: string;
+  updated_at: string;
   title: string;
   building_name: string;
   floor_name: string;
@@ -578,6 +580,30 @@ interface EvacuationPlanBackend {
     can_revert_original?: boolean;
   }>;
   overlay_ids?: number[];
+}
+
+/**
+ * Multipart creation used to turn an omitted visibility checkbox into False.
+ * Recover only untouched records created by that bug; once a plan has been
+ * edited, a hidden main layer is an intentional saved choice and stays hidden.
+ */
+function isAccidentallyHiddenFreshImport(plan: EvacuationPlanBackend): boolean {
+  if (plan.main_plan_visible !== false) return false;
+  const createdAt = Date.parse(plan.created_at);
+  const updatedAt = Date.parse(plan.updated_at);
+  const wasNeverUpdated = Number.isFinite(createdAt)
+    && Number.isFinite(updatedAt)
+    && updatedAt >= createdAt
+    && updatedAt - createdAt <= 1_000;
+  const hasUntouchedPlacement = !plan.main_plan_x
+    && !plan.main_plan_y
+    && !plan.main_plan_width
+    && !plan.main_plan_height;
+  const hasNoEditorContent = !(plan.icons || []).length
+    && !(plan.shapes || []).length
+    && !(plan.texts || []).length
+    && !(plan.overlays || []).length;
+  return wasNeverUpdated && hasUntouchedPlacement && hasNoEditorContent;
 }
 
 interface PlanPictogramBackend {
@@ -1534,9 +1560,11 @@ const MAX_HISTORY_STEPS = 50;
             ...loadedWatermark,
             creator_logo: studioLogo,
           };
+          const loadedMainPlanVisible = (data.main_plan_visible ?? true)
+            || isAccidentallyHiddenFreshImport(data);
           setMainPlanTransform(loadedMainPlanTransform);
           setMainPlanLocked(Boolean(data.main_plan_locked));
-          setMainPlanVisible(data.main_plan_visible ?? true);
+          setMainPlanVisible(loadedMainPlanVisible);
           setMainPlanZIndex(data.main_plan_z_index ?? 0);
           setMainPlanGroupId(data.main_plan_group_id || "");
           setMainPlanGroupingEnabled(Boolean(data.main_plan_grouping_enabled));
@@ -1563,7 +1591,7 @@ const MAX_HISTORY_STEPS = 50;
             })),
             mainPlanTransform: loadedMainPlanTransform,
             mainPlanLocked: Boolean(data.main_plan_locked),
-            mainPlanVisible: data.main_plan_visible ?? true,
+            mainPlanVisible: loadedMainPlanVisible,
             mainPlanZIndex: data.main_plan_z_index ?? 0,
             mainPlanGroupId: data.main_plan_group_id || "",
             mainPlanGroupingEnabled: Boolean(data.main_plan_grouping_enabled),
