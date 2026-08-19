@@ -505,52 +505,6 @@ export interface PlanCanvasHandle {
 const FIT_VIEWPORT_RATIO = 0.75;
 
 /**
- * Where a leader line must stop. It enters the pictogram box just enough to
- * bridge transparent margins in PNG/SVG artwork. The pictogram is rendered on
- * top of the line, so the overlap stays hidden while the join remains seamless.
- */
-function leaderEndpoint(icon: CanvasIcon, anchorX: number, anchorY: number) {
-  const centreX = icon.x + icon.width / 2;
-  const centreY = icon.y + icon.height / 2;
-  const dx = centreX - anchorX;
-  const dy = centreY - anchorY;
-  if (dx === 0 && dy === 0) return { x: centreX, y: centreY };
-
-  // Slab clipping: the entry point into the box along the anchor -> centre ray.
-  let entry = 0;
-  if (dx !== 0) {
-    entry = Math.max(
-      entry,
-      Math.min((icon.x - anchorX) / dx, (icon.x + icon.width - anchorX) / dx)
-    );
-  }
-  if (dy !== 0) {
-    entry = Math.max(
-      entry,
-      Math.min((icon.y - anchorY) / dy, (icon.y + icon.height - anchorY) / dy)
-    );
-  }
-
-  const clamped = Math.min(Math.max(entry, 0), 1);
-  const distance = Math.hypot(dx, dy);
-  const edgeDistance = distance * clamped;
-  const remainingDistance = Math.max(0, distance - edgeDistance);
-  const smallestSide = Math.min(icon.width, icon.height);
-  const desiredOverlap = Math.max(
-    4,
-    smallestSide * 0.18,
-    (icon.leader_width ?? 2) * 1.5
-  );
-  const overlap = Math.min(remainingDistance, desiredOverlap, smallestSide * 0.3);
-  const endDistance = edgeDistance + overlap;
-
-  return {
-    x: anchorX + (dx / distance) * endDistance,
-    y: anchorY + (dy / distance) * endDistance,
-  };
-}
-
-/**
  * How a pictogram's artwork behaves when the sheet is turned. Three cases:
  *
  * - the orientation marker: its rotation is an *input* — it is what sets the
@@ -581,6 +535,74 @@ function iconArtworkRotation(
     default:
       return -planRotation;
   }
+}
+
+/**
+ * Where a leader line must stop. The artwork can have two rotations at once:
+ * its own rotation and the compensation that keeps it readable when the plan
+ * turns. In particular, “Vous êtes ici” drives the plan rotation itself. Using
+ * the stored, axis-aligned x/y box therefore left its line behind as soon as the
+ * plan turned.
+ *
+ * Work in the artwork's real oriented rectangle, then enter it far enough to
+ * bridge transparent SVG/PNG margins. The artwork is painted over the line, so
+ * this small overlap makes the join seamless.
+ */
+function leaderEndpoint(
+  icon: CanvasIcon,
+  anchorX: number,
+  anchorY: number,
+  definitions: Record<string, SafetyIconDefinition>,
+  planRotation: number
+) {
+  const halfWidth = icon.width / 2;
+  const halfHeight = icon.height / 2;
+  const outerRadians = ((icon.rotation || 0) * Math.PI) / 180;
+
+  // Konva rotates the outer icon group around its x/y origin. Consequently its
+  // displayed centre is the rotated half-size vector, not simply x+w/2,y+h/2.
+  const centreX = icon.x + halfWidth * Math.cos(outerRadians) - halfHeight * Math.sin(outerRadians);
+  const centreY = icon.y + halfWidth * Math.sin(outerRadians) + halfHeight * Math.cos(outerRadians);
+
+  // Combined orientation of the actual artwork inside planScene. planScene's
+  // own rotation is shared by both the line and icon and cancels out here.
+  const artworkDegrees = (icon.rotation || 0) + iconArtworkRotation(icon, definitions, planRotation);
+  const artworkRadians = (artworkDegrees * Math.PI) / 180;
+  const cos = Math.cos(artworkRadians);
+  const sin = Math.sin(artworkRadians);
+
+  // Rotate the anchor into a rectangle centred at (0,0).
+  const worldDx = anchorX - centreX;
+  const worldDy = anchorY - centreY;
+  const localAnchorX = worldDx * cos + worldDy * sin;
+  const localAnchorY = -worldDx * sin + worldDy * cos;
+  const distance = Math.hypot(localAnchorX, localAnchorY);
+  if (distance < 0.001) return { x: centreX, y: centreY };
+
+  // If the anchor is already inside the pictogram, hide the end below its
+  // centre. Otherwise intersect the anchor -> centre ray with the rotated box.
+  if (Math.abs(localAnchorX) <= halfWidth && Math.abs(localAnchorY) <= halfHeight) {
+    return { x: centreX, y: centreY };
+  }
+  const scaleAtVerticalEdge = Math.abs(localAnchorX) > 0.001
+    ? halfWidth / Math.abs(localAnchorX)
+    : Number.POSITIVE_INFINITY;
+  const scaleAtHorizontalEdge = Math.abs(localAnchorY) > 0.001
+    ? halfHeight / Math.abs(localAnchorY)
+    : Number.POSITIVE_INFINITY;
+  const boundaryScale = Math.min(scaleAtVerticalEdge, scaleAtHorizontalEdge);
+  const boundaryDistance = distance * boundaryScale;
+  const smallestSide = Math.min(icon.width, icon.height);
+  const desiredOverlap = Math.max(4, smallestSide * 0.18, (icon.leader_width ?? 2) * 1.5);
+  const overlap = Math.min(boundaryDistance, desiredOverlap, smallestSide * 0.3);
+  const endpointScale = Math.max(0, boundaryDistance - overlap) / distance;
+  const localEndpointX = localAnchorX * endpointScale;
+  const localEndpointY = localAnchorY * endpointScale;
+
+  return {
+    x: centreX + localEndpointX * cos - localEndpointY * sin,
+    y: centreY + localEndpointX * sin + localEndpointY * cos,
+  };
 }
 
 function rotatedBoxBounds(box: { x: number; y: number; width: number; height: number; rotation: number }) {
@@ -3546,7 +3568,7 @@ function PlanCanvas({
           {icons.filter((icon) => icon.visible !== false).map((icon) => {
             if (icon.anchor_x == null || icon.anchor_y == null) return null;
 
-            const end = leaderEndpoint(icon, icon.anchor_x, icon.anchor_y);
+            const end = leaderEndpoint(icon, icon.anchor_x, icon.anchor_y, iconDefinitions, planRotation);
             // Centralised leader colour: exact pictogram → colour lookup, so the
             // line and anchor dot use the pictogram's functional colour (red for
             // fire-fighting, green for escape, …) rather than a flat tint.
