@@ -3,12 +3,12 @@ import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
 
 export const metadata: Metadata = {
-  title: "EvacStudio - Plan intervention et évacuation",
-  description: "Créez, annotez et exportez vos plans d'intervention et d'évacuation.",
+  title: "PREV' INC & CIE — Plans d'intervention et d'évacuation",
+  description: "Créez, annotez et exportez vos plans de sécurité incendie avec PREV' INC & CIE.",
   icons: {
-    icon: "/evacstudio-favicon.png",
-    shortcut: "/evacstudio-favicon.png",
-    apple: "/evacstudio-favicon.png",
+    icon: "/prev-inc-cie-mark.png",
+    shortcut: "/prev-inc-cie-mark.png",
+    apple: "/prev-inc-cie-mark.png",
   },
 };
 

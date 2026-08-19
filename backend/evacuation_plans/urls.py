@@ -10,6 +10,9 @@ from .views import (
     SaveUserXaiSettingsView,
     DeleteUserXaiSettingsView,
     TestXaiKeyView,
+    WorkspaceCollaboratorsView,
+    RevokeWorkspaceAccessView,
+    AcceptWorkspaceInvitationView,
 )
 
 router = DefaultRouter()
@@ -26,5 +29,8 @@ urlpatterns = [
     path('xai-settings/save/', SaveUserXaiSettingsView.as_view(), name='xai_settings_save'),
     path('xai-settings/delete/', DeleteUserXaiSettingsView.as_view(), name='xai_settings_delete'),
     path('xai/test-key/', TestXaiKeyView.as_view(), name='xai_test_key'),
+    path('workspace/collaborators/', WorkspaceCollaboratorsView.as_view(), name='workspace_collaborators'),
+    path('workspace/revoke/', RevokeWorkspaceAccessView.as_view(), name='workspace_revoke'),
+    path('workspace/accept/', AcceptWorkspaceInvitationView.as_view(), name='workspace_accept'),
     path('', include(router.urls)),
 ]

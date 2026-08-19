@@ -1,3 +1,5 @@
+import { DEFAULT_STUDIO_LOGO } from "@/lib/brandLogos";
+
 export const DEFAULT_WATERMARK_TEXT = "BON À TIRER – POUR VALIDATION UNIQUEMENT";
 
 export interface WatermarkConfig {
@@ -28,7 +30,7 @@ export function createDefaultWatermarkConfig(date = ""): WatermarkConfig {
     date,
     comment: "",
     client_logo: "",
-    creator_logo: "",
+    creator_logo: DEFAULT_STUDIO_LOGO,
     show_bat_block: true,
     repeat: true,
     diagonal: true,

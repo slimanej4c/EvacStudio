@@ -5,12 +5,14 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter, useParams } from "next/navigation";
 import dynamic from "next/dynamic";
-import { ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw, Lock, Unlock, Stamp, Group as GroupIcon, Ungroup, BoxSelect } from "lucide-react";
+import { ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Pencil, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw, Lock, Unlock, Stamp, Group as GroupIcon, Ungroup, BoxSelect, Layers3, Library } from "lucide-react";
 import { CropModal } from "@/components/CropModal";
 import { PolygonCropModal } from "@/components/PolygonCropModal";
 import { WatermarkModal } from "@/components/WatermarkModal";
+import { BrandLogo } from "@/components/BrandLogo";
+import LayerPanel, { EditorLayerItem, LayerMoveDirection } from "@/components/LayerPanel";
 import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource, isYouAreHereIcon, inferPictogramColor } from "@/utils/safetyIcons";
-import { CanvasIcon, CanvasShape, CanvasText, CanvasPlanOverlay, CanvasPlanTransform, CanvasMultiSelection, ShapeKind, EraserShape, PlanCanvasHandle, FONT_OPTIONS, MAIN_PLAN_ID } from "@/components/PlanCanvas";
+import { CanvasIcon, CanvasShape, CanvasText, CanvasPlanOverlay, CanvasPlanTransform, CanvasMultiSelection, ShapeKind, EraserShape, EraserTarget, PlanCanvasHandle, FONT_OPTIONS, MAIN_PLAN_ID, isPolygonTool, isPolygonShape, pointLabel, shapeWithoutPoint, boundsFromPoints } from "@/components/PlanCanvas";
 import { buildApiUrl } from "@/lib/api";
 import {
   SHEET_WIDTH,
@@ -24,6 +26,7 @@ import {
 } from "@/lib/sheetTemplates";
 import type { SheetLegendEntry } from "@/components/SheetBlockNode";
 import { createDefaultWatermarkConfig, normalizeWatermarkConfig, WatermarkConfig } from "@/lib/watermark";
+import { DEFAULT_STUDIO_LOGO, getStoredStudioLogo, prepareLogoFile, storeStudioLogo } from "@/lib/brandLogos";
 import jsPDF from "jspdf";
 
 // Dynamically load PlanCanvas with SSR disabled since Konva depends on the DOM
@@ -55,14 +58,40 @@ const EXPORT_CANVAS_WIDTH = 1600;
 // A-series paper is 1:√2, so A4 and A3 share one design canvas — only the printed
 // size and the resulting resolution differ between them.
 const EXPORT_PAPER_SIZES = {
+  a2: { label: "A2", widthMm: 594, heightMm: 420 },
   a4: { label: "A4", widthMm: 297, heightMm: 210 },
   a3: { label: "A3", widthMm: 420, heightMm: 297 }
 } as const;
 type ExportPaperFormat = keyof typeof EXPORT_PAPER_SIZES;
+interface StoredSheetTemplateVersion {
+  id: string;
+  template: SheetTemplateKey;
+  name: string;
+  blocks: SheetBlock[];
+  planPlacement: { scale: number; offsetX: number; offsetY: number };
+  createdAt: string;
+  updatedAt: string;
+}
 const EXPORT_PAPER_OPTIONS = (Object.keys(EXPORT_PAPER_SIZES) as ExportPaperFormat[]).map((key) => ({
   key,
   label: EXPORT_PAPER_SIZES[key].label
 }));
+const EXPORT_OFFICIAL_FONDS = {
+  none: { label: "Aucun fond officiel", file: "", paper: "a4", orientation: "landscape" },
+  a2PayPi: { label: "A2 PAY PI - Fond de plan", file: "/export-fonds/a2-pay-pi-fond-de-plan.pdf", paper: "a2", orientation: "landscape" },
+  a3PePay: { label: "A3 PE PAY", file: "/export-fonds/a3-pe-pay.pdf", paper: "a3", orientation: "landscape" },
+  a3PiPay: { label: "A3 PI PAY", file: "/export-fonds/a3-pi-pay.pdf", paper: "a3", orientation: "landscape" },
+  a3PiPort: { label: "A3 PI PORT", file: "/export-fonds/a3-pi-port.pdf", paper: "a3", orientation: "portrait" },
+  fondA3PePhPor: { label: "Fond A3 PE PH POR", file: "/export-fonds/fond-a3-pe-ph-por.pdf", paper: "a3", orientation: "portrait" },
+  fondPhPeA3Pay: { label: "FOND PH PE A3 PAY", file: "/export-fonds/fond-ph-pe-a3-pay.pdf", paper: "a3", orientation: "portrait" },
+  fondPhPiA3Pay: { label: "FOND PH PI A3 PAY", file: "/export-fonds/fond-ph-pi-a3-pay.pdf", paper: "a3", orientation: "portrait" },
+  fondPiA3PhPor: { label: "FOND PI A3 PH POR", file: "/export-fonds/fond-pi-a3-ph-por.pdf", paper: "a3", orientation: "portrait" },
+  fondPsiA3PhPay: { label: "FOND PSI A3 PH PAY", file: "/export-fonds/fond-psi-a3-ph-pay.pdf", paper: "a3", orientation: "landscape" },
+  fondPsiPhA3Por: { label: "FOND PSI PH A3 POR", file: "/export-fonds/fond-psi-ph-a3-por.pdf", paper: "a3", orientation: "portrait" },
+  peA3Port: { label: "PE A3 PORT", file: "/export-fonds/pe-a3-port.pdf", paper: "a3", orientation: "portrait" },
+  piA2Port: { label: "PI A2 PORT", file: "/export-fonds/pi-a2-port.pdf", paper: "a2", orientation: "portrait" }
+} as const;
+type ExportOfficialFondKey = keyof typeof EXPORT_OFFICIAL_FONDS;
 const EXPORT_THEMES = {
   nfx08070: {
     label: "NF X08-070 Incendie",
@@ -379,6 +408,8 @@ const EVAC_DEFAULTS = {
 
 const EXPORT_CANVAS_HEIGHT = 1131; // 1600 / √2, rounded
 const ICON_CLIPBOARD_KEY = "securplan:icon-clipboard";
+const SHEET_TEMPLATE_STORAGE_KEY = "securplan:sheet-template-versions";
+const LEGACY_SHEET_TEMPLATE_STORAGE_PREFIX = "securplan:sheet-template-versions";
 const EXPORT_FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
 const EXPORT_CARD_RADIUS = 10;
 const EXPORT_CARD_HEADER_H = 38;
@@ -387,10 +418,6 @@ const EXPORT_GUTTER = 24;
 const EXPORT_SIDE_W = 292;
 const EXPORT_HEADER_H = 104;
 const EXPORT_FOOTER_H = 44;
-const EXPORT_GREEN = "#168f5a";
-const EXPORT_GREEN_DARK = "#0d6b41";
-const EXPORT_RED = "#c8362c";
-const EXPORT_SLATE = "#33475b";
 const EXPORT_OUTPUT_SCALE = 4;
 const EXPORT_STAGE_PIXEL_RATIO = 6;
 // Print resolution of an exported file. What matters is the size on paper, not
@@ -398,6 +425,34 @@ const EXPORT_STAGE_PIXEL_RATIO = 6;
 // megapixel image, and a PDF of several hundred megabytes with it.
 const EXPORT_TARGET_DPI = 300;
 const EXPORT_MAX_PIXEL_RATIO = 6;
+
+const SVG_EXPORT_PADDING = 8;
+
+const escapeSvgText = (value: string) =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+const escapeSvgAttribute = (value: string) =>
+  escapeSvgText(value)
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
+const svgNumber = (value: number) =>
+  Number.isFinite(value) ? Number(value.toFixed(3)).toString() : "0";
+
+const downloadTextFile = (content: string, filename: string, mimeType: string) => {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.setTimeout(() => URL.revokeObjectURL(url), 800);
+};
 
 /** Longest edge, in pixels, that fills the given paper at the export's dpi. */
 const paperLongEdgePx = (paper: { widthMm: number; heightMm: number }) =>
@@ -440,6 +495,8 @@ interface EvacuationPlanBackend {
   main_plan_width: number;
   main_plan_height: number;
   main_plan_locked: boolean;
+  main_plan_visible?: boolean;
+  main_plan_z_index?: number;
   main_plan_group_id?: string;
   main_plan_grouping_enabled?: boolean;
   watermark_config?: Partial<WatermarkConfig>;
@@ -457,8 +514,11 @@ interface EvacuationPlanBackend {
     leader_width?: number;
     framed?: boolean;
     flip_x?: boolean;
+    color?: string;
     flip_y?: boolean;
     locked?: boolean;
+    visible?: boolean;
+    z_index?: number;
     group_id?: string;
     object_group_id?: string;
   }>;
@@ -478,6 +538,8 @@ interface EvacuationPlanBackend {
     control_points?: Record<number, { x: number; y: number }> | null;
     points?: Array<{ x: number; y: number }> | null;
     locked?: boolean;
+    visible?: boolean;
+    z_index?: number;
     group_id?: string;
     object_group_id?: string;
   }>;
@@ -494,6 +556,8 @@ interface EvacuationPlanBackend {
     background_color: string | null;
     rotation: number;
     locked?: boolean;
+    visible?: boolean;
+    z_index?: number;
     group_id?: string;
     object_group_id?: string;
   }>;
@@ -507,7 +571,11 @@ interface EvacuationPlanBackend {
     rotation: number;
     label: string;
     locked?: boolean;
+    visible?: boolean;
+    z_index?: number;
     group_id?: string;
+    is_original?: boolean;
+    can_revert_original?: boolean;
   }>;
   overlay_ids?: number[];
 }
@@ -517,6 +585,7 @@ interface PlanPictogramBackend {
   label: string;
   file_name: string;
   url: string;
+  deletable?: boolean;
 }
 
 type CleanMethod = "local_plan" | "local_walls" | "grok";
@@ -531,6 +600,7 @@ type GrokJobStatus =
 interface GrokJob {
   job_id: number;
   status: GrokJobStatus;
+  target_kind?: "main" | "overlay";
   error?: string;
   error_code?: string;
   diagnostic?: string;
@@ -540,6 +610,14 @@ interface GrokJob {
   generation_prompt?: string;
   model?: string;
 }
+
+const GROK_POLL_INTERVAL_MS = 2_000;
+const GROK_STATUS_REQUEST_TIMEOUT_MS = 15_000;
+const GROK_LAUNCH_REQUEST_TIMEOUT_MS = 30_000;
+const GROK_CLIENT_MAX_DURATION_MS = 12 * 60_000;
+const GROK_MAX_POLL_ATTEMPTS = Math.ceil(
+  GROK_CLIENT_MAX_DURATION_MS / GROK_POLL_INTERVAL_MS,
+);
 
 interface CleaningHistoryItem {
   id: number;
@@ -580,6 +658,7 @@ export default function PlanEditorPage() {
   const spaceHeldRef = useRef(false);
   const modeBeforeSpaceRef = useRef<"select" | "pan" | "erase">("select");
   const [leftDockOpen, setLeftDockOpen] = useState(true);
+  const [leftDockTab, setLeftDockTab] = useState<"library" | "layers">("library");
   const [rightDockOpen, setRightDockOpen] = useState(true);
   // Default to 100% so the canvas fills the available space and no inert
   // backdrop is left on the right side of the window.
@@ -587,9 +666,19 @@ export default function PlanEditorPage() {
   const planCanvasRef = useRef<PlanCanvasHandle>(null);
   const [eraserSize, setEraserSize] = useState(24);
   const [eraserShape, setEraserShape] = useState<EraserShape>("square");
+  const [eraserTarget, setEraserTarget] = useState<EraserTarget>("lines");
   const [eraseStrokeCount, setEraseStrokeCount] = useState(0);
   const [undoEraseSignal, setUndoEraseSignal] = useState(0);
   const [resetEraseSignal, setResetEraseSignal] = useState(0);
+  // Stroke count undo/redo wants the eraser to be at, so it shares one timeline.
+  // The nonce makes two successive requests for the same count distinct values,
+  // otherwise React drops the second one and the strokes stay out of step.
+  const [eraseStrokeTarget, setEraseStrokeTarget] = useState<{ count: number; nonce: number } | null>(null);
+  const eraseTargetNonceRef = useRef(0);
+  const requestEraseStrokeTarget = useCallback((count: number) => {
+    eraseTargetNonceRef.current += 1;
+    setEraseStrokeTarget({ count, nonce: eraseTargetNonceRef.current });
+  }, []);
   const [savingErase, setSavingErase] = useState(false);
   const [clipboardHasIcon, setClipboardHasIcon] = useState(() =>
     typeof window !== "undefined" && Boolean(window.localStorage.getItem(ICON_CLIPBOARD_KEY))
@@ -610,6 +699,8 @@ export default function PlanEditorPage() {
     height: 0,
   });
   const [mainPlanLocked, setMainPlanLocked] = useState(false);
+  const [mainPlanVisible, setMainPlanVisible] = useState(true);
+  const [mainPlanZIndex, setMainPlanZIndex] = useState(0);
   const [mainPlanGroupId, setMainPlanGroupId] = useState("");
   const [mainPlanGroupingEnabled, setMainPlanGroupingEnabled] = useState(false);
   const [watermarkConfig, setWatermarkConfig] = useState<WatermarkConfig>(() =>
@@ -620,9 +711,36 @@ export default function PlanEditorPage() {
   );
   const [watermarkModalOpen, setWatermarkModalOpen] = useState(false);
   const [selectedBatBlock, setSelectedBatBlock] = useState(false);
+  // Sheet state lives above the shared history stack because sheet edits use
+  // the same Ctrl/Cmd+Z timeline as objects placed directly on the plan.
+  const [sheetTemplate, setSheetTemplate] = useState<SheetTemplateKey | "none">("none");
+  const [sheetBlocks, setSheetBlocks] = useState<SheetBlock[]>([]);
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [sheetPlanPlacement, setSheetPlanPlacement] = useState({ scale: 100, offsetX: 0, offsetY: 0 });
+
+  const getNextLayerZIndex = () => Math.max(
+    mainPlanZIndex,
+    ...planOverlays.map((overlay) => overlay.z_index ?? 100),
+    ...shapes.map((shape) => shape.z_index ?? 200),
+    ...icons.map((icon) => icon.z_index ?? 300),
+    ...texts.map((text) => text.z_index ?? 400),
+  ) + 10;
 
   // ── Undo / Redo History Stack (up to 50 steps) ───────────────────────────
-  const MAX_HISTORY_STEPS = 50;
+  // Regulated pictogram colours first (NF X08-070), then neutrals for the plan's
+// own annotations. A free picker sits beside them for anything else.
+const ICON_COLOR_SWATCHES = [
+  { value: "#e63329", label: "Rouge incendie" },
+  { value: "#00a651", label: "Vert évacuation" },
+  { value: "#3046b8", label: "Bleu obligation" },
+  { value: "#ffd500", label: "Jaune danger" },
+  { value: "#f97316", label: "Orange" },
+  { value: "#7c3aed", label: "Violet" },
+  { value: "#111827", label: "Noir" },
+  { value: "#6b7280", label: "Gris" },
+] as const;
+
+const MAX_HISTORY_STEPS = 50;
   const [history, setHistory] = useState<
     Array<{
       icons: CanvasIcon[];
@@ -631,15 +749,57 @@ export default function PlanEditorPage() {
       overlays: CanvasPlanOverlay[];
       mainPlanTransform: CanvasPlanTransform;
       mainPlanLocked: boolean;
+      mainPlanVisible: boolean;
+      mainPlanZIndex: number;
       mainPlanGroupId: string;
       mainPlanGroupingEnabled: boolean;
       watermark: WatermarkConfig;
+      sheetTemplate: SheetTemplateKey | "none";
+      sheetBlocks: SheetBlock[];
+      sheetPlanPlacement: { scale: number; offsetX: number; offsetY: number };
+      eraseStrokeCount: number;
       signature: string;
     }>
   >([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const historyIndexRef = useRef<number>(-1);
+  // Mirrors `history` so undo/redo always read the live stack. Reading the state
+  // instead made two quick Ctrl+Z land on the same step: the second press still
+  // ran the previous closure.
+  const historyRef = useRef<typeof history>([]);
+  // How long to wait before snapshotting. Normally immediate; raised while the
+  // arrow keys repeat so the whole run collapses into a single undo step.
+  const historyDelayRef = useRef(0);
+  const NUDGE_HISTORY_COALESCE_MS = 400;
   const isHistoryActionRef = useRef<boolean>(false);
+  const pendingHistorySnapshotRef = useRef<(typeof history)[number] | null>(null);
+  const historyTimerRef = useRef<number | null>(null);
+
+  const commitHistorySnapshot = useCallback((snapshot: (typeof history)[number]) => {
+    const currentIndex = historyIndexRef.current;
+    const previous = historyRef.current;
+    if (currentIndex >= 0 && previous[currentIndex]?.signature === snapshot.signature) {
+      return;
+    }
+
+    const validHistory = previous.slice(0, currentIndex + 1);
+    const nextHistory = [...validHistory, snapshot].slice(-MAX_HISTORY_STEPS);
+    historyRef.current = nextHistory;
+    historyIndexRef.current = nextHistory.length - 1;
+    setHistory(nextHistory);
+    setHistoryIndex(historyIndexRef.current);
+    historyDelayRef.current = 0;
+  }, []);
+
+  const flushPendingHistorySnapshot = useCallback(() => {
+    if (historyTimerRef.current !== null) {
+      window.clearTimeout(historyTimerRef.current);
+      historyTimerRef.current = null;
+    }
+    const pendingSnapshot = pendingHistorySnapshotRef.current;
+    pendingHistorySnapshotRef.current = null;
+    if (pendingSnapshot) commitHistorySnapshot(pendingSnapshot);
+  }, [commitHistorySnapshot]);
 
   useEffect(() => {
     if (loading) return;
@@ -648,8 +808,8 @@ export default function PlanEditorPage() {
       return;
     }
 
-    const comparableOverlays = planOverlays.map(({ tempId, url, x, y, width, height, rotation, label, locked, group_id }) => ({
-      tempId, url, x, y, width, height, rotation, label, locked, group_id,
+    const comparableOverlays = planOverlays.map(({ tempId, url, x, y, width, height, rotation, label, locked, visible, z_index, group_id }) => ({
+      tempId, url, x, y, width, height, rotation, label, locked, visible, z_index, group_id,
     }));
     const signature = JSON.stringify({
       icons,
@@ -658,9 +818,15 @@ export default function PlanEditorPage() {
       overlays: comparableOverlays,
       mainPlanTransform,
       mainPlanLocked,
+      mainPlanVisible,
+      mainPlanZIndex,
       mainPlanGroupId,
       mainPlanGroupingEnabled,
       watermark: watermarkConfig,
+      sheetTemplate,
+      sheetBlocks,
+      sheetPlanPlacement,
+      eraseStrokeCount,
     });
     const currentSnapshot = {
       icons,
@@ -669,33 +835,46 @@ export default function PlanEditorPage() {
       overlays: planOverlays,
       mainPlanTransform,
       mainPlanLocked,
+      mainPlanVisible,
+      mainPlanZIndex,
       mainPlanGroupId,
       mainPlanGroupingEnabled,
       watermark: watermarkConfig,
+      sheetTemplate,
+      sheetBlocks,
+      sheetPlanPlacement,
+      eraseStrokeCount,
       signature,
     };
 
-    const timer = window.setTimeout(() => {
-      setHistory((previous) => {
-        const currentIndex = historyIndexRef.current;
-        if (currentIndex >= 0 && previous[currentIndex]?.signature === signature) {
-          return previous;
-        }
-
-        const validHistory = previous.slice(0, currentIndex + 1);
-        const nextHistory = [...validHistory, currentSnapshot].slice(-MAX_HISTORY_STEPS);
-        const nextIndex = nextHistory.length - 1;
-        historyIndexRef.current = nextIndex;
-        setHistoryIndex(nextIndex);
-        return nextHistory;
-      });
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [icons, shapes, texts, planOverlays, mainPlanTransform, mainPlanLocked, mainPlanGroupId, mainPlanGroupingEnabled, watermarkConfig, loading]);
+    // Held down, an arrow key repeats ~30 times a second. Recorded one by one
+    // those would fill the whole stack and make a single undo useless, so a run
+    // of nudges is coalesced into the one step the user thinks they made.
+    pendingHistorySnapshotRef.current = currentSnapshot;
+    historyTimerRef.current = window.setTimeout(() => {
+      historyTimerRef.current = null;
+      const pendingSnapshot = pendingHistorySnapshotRef.current;
+      pendingHistorySnapshotRef.current = null;
+      if (pendingSnapshot) commitHistorySnapshot(pendingSnapshot);
+    }, historyDelayRef.current);
+    return () => {
+      if (historyTimerRef.current !== null) {
+        window.clearTimeout(historyTimerRef.current);
+        historyTimerRef.current = null;
+      }
+    };
+  }, [icons, shapes, texts, planOverlays, mainPlanTransform, mainPlanLocked, mainPlanVisible, mainPlanZIndex, mainPlanGroupId, mainPlanGroupingEnabled, watermarkConfig, sheetTemplate, sheetBlocks, sheetPlanPlacement, eraseStrokeCount, loading, commitHistorySnapshot]);
 
   const handleUndo = useCallback(() => {
-    if (historyIndex <= 0 || !history[historyIndex - 1]) return;
-    const target = history[historyIndex - 1];
+    if (planCanvasRef.current?.undoActiveDrawing()) return;
+    // Shape completion and drag updates are snapshot asynchronously. Flush the
+    // visible state first so an immediate Ctrl/Cmd+Z always undoes that action,
+    // rather than skipping back to an older unrelated one.
+    flushPendingHistorySnapshot();
+    const index = historyIndexRef.current;
+    const stack = historyRef.current;
+    if (index <= 0 || !stack[index - 1]) return;
+    const target = stack[index - 1];
     isHistoryActionRef.current = true;
     setIcons(target.icons);
     setShapes(target.shapes);
@@ -703,20 +882,32 @@ export default function PlanEditorPage() {
     setPlanOverlays(target.overlays);
     setMainPlanTransform(target.mainPlanTransform);
     setMainPlanLocked(target.mainPlanLocked);
+    setMainPlanVisible(target.mainPlanVisible);
+    setMainPlanZIndex(target.mainPlanZIndex);
     setMainPlanGroupId(target.mainPlanGroupId);
     setMainPlanGroupingEnabled(target.mainPlanGroupingEnabled);
     setWatermarkConfig(target.watermark);
+    setSheetTemplate(target.sheetTemplate ?? "none");
+    setSheetBlocks(target.sheetBlocks ?? []);
+    setSheetPlanPlacement(target.sheetPlanPlacement ?? { scale: 100, offsetX: 0, offsetY: 0 });
+    setSelectedBlockId((currentId) =>
+      currentId && target.sheetBlocks?.some((block) => block.id === currentId) ? currentId : null
+    );
+    requestEraseStrokeTarget(target.eraseStrokeCount ?? 0);
     setAreaSelectionMode(false);
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
     setSelectedOverlayId(null);
     setSelectedBatBlock(false);
-    historyIndexRef.current = historyIndex - 1;
+    historyIndexRef.current = index - 1;
     setHistoryIndex(historyIndexRef.current);
-  }, [history, historyIndex]);
+  }, [flushPendingHistorySnapshot, requestEraseStrokeTarget]);
 
   const handleRedo = useCallback(() => {
-    if (historyIndex < 0 || historyIndex >= history.length - 1 || !history[historyIndex + 1]) return;
-    const target = history[historyIndex + 1];
+    flushPendingHistorySnapshot();
+    const index = historyIndexRef.current;
+    const stack = historyRef.current;
+    if (index < 0 || index >= stack.length - 1 || !stack[index + 1]) return;
+    const target = stack[index + 1];
     isHistoryActionRef.current = true;
     setIcons(target.icons);
     setShapes(target.shapes);
@@ -724,28 +915,40 @@ export default function PlanEditorPage() {
     setPlanOverlays(target.overlays);
     setMainPlanTransform(target.mainPlanTransform);
     setMainPlanLocked(target.mainPlanLocked);
+    setMainPlanVisible(target.mainPlanVisible);
+    setMainPlanZIndex(target.mainPlanZIndex);
     setMainPlanGroupId(target.mainPlanGroupId);
     setMainPlanGroupingEnabled(target.mainPlanGroupingEnabled);
     setWatermarkConfig(target.watermark);
+    setSheetTemplate(target.sheetTemplate ?? "none");
+    setSheetBlocks(target.sheetBlocks ?? []);
+    setSheetPlanPlacement(target.sheetPlanPlacement ?? { scale: 100, offsetX: 0, offsetY: 0 });
+    setSelectedBlockId((currentId) =>
+      currentId && target.sheetBlocks?.some((block) => block.id === currentId) ? currentId : null
+    );
+    requestEraseStrokeTarget(target.eraseStrokeCount ?? 0);
     setAreaSelectionMode(false);
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
     setSelectedOverlayId(null);
     setSelectedBatBlock(false);
-    historyIndexRef.current = historyIndex + 1;
+    historyIndexRef.current = index + 1;
     setHistoryIndex(historyIndexRef.current);
-  }, [history, historyIndex]);
+  }, [flushPendingHistorySnapshot, requestEraseStrokeTarget]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      const isInput =
+      const isTextEditingTarget =
         target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable);
+        (target.tagName === "TEXTAREA" ||
+          target.isContentEditable ||
+          (target.tagName === "INPUT" &&
+            ["text", "search", "email", "url", "tel", "password"].includes(
+              (target as HTMLInputElement).type
+            )));
 
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
-        if (!isInput) {
+        if (!isTextEditingTarget) {
           e.preventDefault();
           if (e.shiftKey) {
             handleRedo();
@@ -754,7 +957,7 @@ export default function PlanEditorPage() {
           }
         }
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "y") {
-        if (!isInput) {
+        if (!isTextEditingTarget) {
           e.preventDefault();
           handleRedo();
         }
@@ -785,7 +988,11 @@ export default function PlanEditorPage() {
   const [grokJob, setGrokJob] = useState<GrokJob | null>(null);
   const [grokError, setGrokError] = useState("");
   const [grokBackgroundColor, setGrokBackgroundColor] = useState("#FFFFFF");
-  const [grokPreset, setGrokPreset] = useState<"evacuation" | "autocad">("evacuation");
+  const [grokWallColor, setGrokWallColor] = useState("#000000");
+  const [grokPreset, setGrokPreset] = useState<"evacuation" | "autocad" | "sketch">("evacuation");
+  const grokColorsConflict =
+    grokPreset === "sketch" &&
+    grokWallColor.trim().toUpperCase() === grokBackgroundColor.trim().toUpperCase();
   const [changingBackground, setChangingBackground] = useState(false);
   const [cropModalOpen, setCropModalOpen] = useState(false);
   const [polygonCropModalOpen, setPolygonCropModalOpen] = useState(false);
@@ -881,10 +1088,6 @@ export default function PlanEditorPage() {
   // ── Studio sheet mode ──────────────────────────────────────────────────────
   // "plan" keeps the bare plan on screen, the way the editor has always worked;
   // a template shows the printed sheet around it, editable in place.
-  const [sheetTemplate, setSheetTemplate] = useState<SheetTemplateKey | "none">("none");
-  const [sheetBlocks, setSheetBlocks] = useState<SheetBlock[]>([]);
-  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
-  const [sheetPlanPlacement, setSheetPlanPlacement] = useState({ scale: 100, offsetX: 0, offsetY: 0 });
   const [keepPlanRatio, setKeepPlanRatio] = useState<boolean>(true);
   const [selectedCleanTargetId, setSelectedCleanTargetId] = useState<string>(MAIN_PLAN_ID);
   const planOverlayInputRef = useRef<HTMLInputElement>(null);
@@ -893,12 +1096,15 @@ export default function PlanEditorPage() {
   const [sheetLogoImages, setSheetLogoImages] = useState<Record<string, HTMLImageElement | null>>({});
   const [sheetLegendImages, setSheetLegendImages] = useState<Record<string, HTMLImageElement>>({});
   const [sheetExporting, setSheetExporting] = useState(false);
+  const [storedSheetTemplateVersions, setStoredSheetTemplateVersions] = useState<StoredSheetTemplateVersion[]>([]);
+  const [activeSheetTemplateVersionId, setActiveSheetTemplateVersionId] = useState("");
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportSaveConfirmOpen, setExportSaveConfirmOpen] = useState(false);
   const [pendingExportAction, setPendingExportAction] = useState<(() => Promise<void>) | null>(null);
-  const [exportFormat, setExportFormat] = useState<"png" | "pdf">("pdf");
+  const [exportFormat] = useState<"png" | "pdf">("pdf");
   const [exportTheme, setExportTheme] = useState<ExportTheme>("modern");
+  const [exportOfficialFond, setExportOfficialFond] = useState<ExportOfficialFondKey>("none");
   const [exportUseCustomColors, setExportUseCustomColors] = useState(false);
   const [exportCustomColors, setExportCustomColors] = useState<Record<ExportCustomColorKey, string>>(DEFAULT_EXPORT_CUSTOM_COLORS);
   const [exportPaperFormat, setExportPaperFormat] = useState<ExportPaperFormat>("a4");
@@ -928,10 +1134,11 @@ export default function PlanEditorPage() {
   const [exportPlanOffsetY, setExportPlanOffsetY] = useState(0);
   const [exportDisablePlanClipping, setExportDisablePlanClipping] = useState(false);
   // Logos overlaid on the export sheet: the client's brand (left of the header)
-  // and our studio's brand (right of the header). Stored as data URLs so the
-  // export works fully offline once loaded.
+  // and our studio's brand (right of the header). Uploaded files are stored as
+  // data URLs; the built-in PREV' INC & CIE logo uses its application URL.
   const [exportClientLogo, setExportClientLogo] = useState("");
-  const [exportStudioLogo, setExportStudioLogo] = useState("");
+  const [exportStudioLogo, setExportStudioLogo] = useState(DEFAULT_STUDIO_LOGO);
+  const [logoSettingsError, setLogoSettingsError] = useState("");
   // Size and position of each logo, relative to the slot the theme gives it:
   // 100% and (0, 0) is the automatic placement, so a sheet that already looks
   // right is unaffected until one of these is touched.
@@ -989,6 +1196,125 @@ export default function PlanEditorPage() {
   const getPlanAuthHeaders = (): Record<string, string> => {
     const authToken = token || (typeof window !== "undefined" ? localStorage.getItem("token") : null);
     return authToken ? { Authorization: `Bearer ${authToken}` } : {};
+  };
+
+  const handleAddSvgPictogram = async ({ name, svg }: { name: string; svg: string }) => {
+    const response = await fetch(buildApiUrl("/api/plans/pictograms/"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...getPlanAuthHeaders(),
+      },
+      body: JSON.stringify({ name, svg }),
+    });
+
+    let payload: (PlanPictogramBackend & { error?: string }) | null = null;
+    try {
+      payload = await response.json();
+    } catch {
+      // Keep the user-facing fallback below when the server did not return JSON.
+    }
+
+    if (!response.ok || !payload?.type || !payload.url) {
+      throw new Error(payload?.error || "Le pictogramme SVG n’a pas pu être ajouté.");
+    }
+
+    const definition: SafetyIconDefinition = {
+      type: payload.type,
+      label: payload.label,
+      fileName: payload.file_name,
+      imageUrl: payload.url,
+      color: inferPictogramColor(payload.type, payload.label),
+      deletable: Boolean(payload.deletable),
+    };
+    setAvailableIconDefinitions((current) => ({
+      ...current,
+      [definition.type]: definition,
+    }));
+  };
+
+  const handleDeleteSvgPictogram = async (definition: SafetyIconDefinition) => {
+    if (!definition.fileName) {
+      throw new Error("Le fichier associé à ce pictogramme est introuvable.");
+    }
+
+    const query = new URLSearchParams({ file_name: definition.fileName });
+    const response = await fetch(buildApiUrl(`/api/plans/pictograms/?${query.toString()}`), {
+      method: "DELETE",
+      headers: getPlanAuthHeaders(),
+    });
+
+    if (!response.ok) {
+      let message = "Le pictogramme SVG n’a pas pu être supprimé.";
+      try {
+        const payload = await response.json() as { error?: string };
+        message = payload.error || message;
+      } catch {
+        // Keep the fallback when the server did not return JSON.
+      }
+      throw new Error(message);
+    }
+
+    setAvailableIconDefinitions((current) => {
+      const updated = { ...current };
+      delete updated[definition.type];
+      return updated;
+    });
+    if (icons.some((icon) => icon.tempId === selectedIconId && icon.icon_type === definition.type)) {
+      setSelectedIconId(null);
+    }
+    setIcons((current) => current.filter((icon) => icon.icon_type !== definition.type));
+    if (placementIconType === definition.type) {
+      setPlacementIconType(null);
+    }
+  };
+
+  const handleRenameSvgPictogram = async (definition: SafetyIconDefinition, name: string) => {
+    if (!definition.fileName) {
+      throw new Error("Le fichier associé à ce pictogramme est introuvable.");
+    }
+
+    const response = await fetch(buildApiUrl("/api/plans/pictograms/"), {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...getPlanAuthHeaders(),
+      },
+      body: JSON.stringify({ file_name: definition.fileName, name }),
+    });
+
+    let payload: (PlanPictogramBackend & { error?: string }) | null = null;
+    try {
+      payload = await response.json();
+    } catch {
+      // Keep the user-facing fallback below when the server did not return JSON.
+    }
+    if (!response.ok || !payload?.type || !payload.url) {
+      throw new Error(payload?.error || "Le pictogramme SVG n’a pas pu être renommé.");
+    }
+
+    const renamedDefinition: SafetyIconDefinition = {
+      type: payload.type,
+      label: payload.label,
+      fileName: payload.file_name,
+      imageUrl: payload.url,
+      color: inferPictogramColor(payload.type, payload.label),
+      deletable: Boolean(payload.deletable),
+    };
+    setAvailableIconDefinitions((current) => {
+      const updated = { ...current };
+      delete updated[definition.type];
+      updated[renamedDefinition.type] = renamedDefinition;
+      return updated;
+    });
+    setIcons((current) => current.map((icon) => (
+      icon.icon_type === definition.type
+        ? { ...icon, icon_type: renamedDefinition.type }
+        : icon
+    )));
+    if (placementIconType === definition.type) {
+      setPlacementIconType(renamedDefinition.type);
+    }
   };
 
   const revokeObjectUrlSafely = (url: string) => {
@@ -1112,8 +1438,11 @@ export default function PlanEditorPage() {
             leader_width: icon.leader_width ?? 2,
             framed: icon.framed ?? false,
             flip_x: icon.flip_x ?? false,
+            color: icon.color ?? "",
             flip_y: icon.flip_y ?? false,
             locked: icon.locked ?? false,
+            visible: icon.visible ?? true,
+            z_index: icon.z_index ?? 300,
             group_id: icon.group_id || "",
             object_group_id: icon.object_group_id || "",
           }));
@@ -1136,6 +1465,8 @@ export default function PlanEditorPage() {
             control_points: shape.control_points ?? undefined,
             points: shape.points || undefined,
             locked: shape.locked ?? false,
+            visible: shape.visible ?? true,
+            z_index: shape.z_index ?? 200,
             group_id: shape.group_id || "",
             object_group_id: shape.object_group_id || "",
           }));
@@ -1155,6 +1486,8 @@ export default function PlanEditorPage() {
             background_color: t.background_color ?? null,
             rotation: t.rotation,
             locked: t.locked ?? false,
+            visible: t.visible ?? true,
+            z_index: t.z_index ?? 400,
             group_id: t.group_id || "",
             object_group_id: t.object_group_id || "",
           }));
@@ -1171,8 +1504,12 @@ export default function PlanEditorPage() {
             rotation: overlay.rotation,
             label: overlay.label || "",
             locked: overlay.locked ?? false,
+            visible: overlay.visible ?? true,
+            z_index: overlay.z_index ?? 100,
             group_id: overlay.group_id || "",
             imageChanged: false,
+            isOriginal: overlay.is_original ?? true,
+            canRevertOriginal: overlay.can_revert_original ?? false,
           }));
           setPlanOverlays(canvasOverlays);
 
@@ -1183,34 +1520,45 @@ export default function PlanEditorPage() {
             height: data.main_plan_height || 0,
           };
           const loadedWatermark = normalizeWatermarkConfig(data.watermark_config);
+          const studioLogo = getStoredStudioLogo(loadedWatermark.creator_logo || DEFAULT_STUDIO_LOGO);
+          const loadedWatermarkWithLogos = {
+            ...loadedWatermark,
+            creator_logo: studioLogo,
+          };
           setMainPlanTransform(loadedMainPlanTransform);
           setMainPlanLocked(Boolean(data.main_plan_locked));
+          setMainPlanVisible(data.main_plan_visible ?? true);
+          setMainPlanZIndex(data.main_plan_z_index ?? 0);
           setMainPlanGroupId(data.main_plan_group_id || "");
           setMainPlanGroupingEnabled(Boolean(data.main_plan_grouping_enabled));
-          setWatermarkConfig(loadedWatermark);
-          setWatermarkDraft(loadedWatermark);
+          setWatermarkConfig(loadedWatermarkWithLogos);
+          setWatermarkDraft(loadedWatermarkWithLogos);
+          setExportClientLogo(loadedWatermark.client_logo || "");
+          setExportStudioLogo(studioLogo);
 
           // Baseline for the unsaved-changes guard: the freshly loaded state.
           // The very same fields as buildEditableSnapshot, or the editor would
           // report unsaved changes before the user has touched anything.
           setSavedSnapshot(JSON.stringify({
-            icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, group_id, object_group_id }) => ({
-              icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, group_id, object_group_id,
+            icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
+              icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
             })),
-            shapes: canvasShapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, group_id, object_group_id }) => ({
-              shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, group_id, object_group_id,
+            shapes: canvasShapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, visible, z_index, group_id, object_group_id }) => ({
+              shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, visible, z_index, group_id, object_group_id,
             })),
-            texts: canvasTexts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, group_id, object_group_id }) => ({
-              text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, group_id, object_group_id,
+            texts: canvasTexts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id }) => ({
+              text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id,
             })),
-            overlays: canvasOverlays.map(({ url, x, y, width, height, rotation, label, locked, group_id }) => ({
-              url, x, y, width, height, rotation, label, locked, group_id,
+            overlays: canvasOverlays.map(({ url, x, y, width, height, rotation, label, locked, visible, z_index, group_id }) => ({
+              url, x, y, width, height, rotation, label, locked, visible, z_index, group_id,
             })),
             mainPlanTransform: loadedMainPlanTransform,
             mainPlanLocked: Boolean(data.main_plan_locked),
+            mainPlanVisible: data.main_plan_visible ?? true,
+            mainPlanZIndex: data.main_plan_z_index ?? 0,
             mainPlanGroupId: data.main_plan_group_id || "",
             mainPlanGroupingEnabled: Boolean(data.main_plan_grouping_enabled),
-            watermark: loadedWatermark,
+            watermark: loadedWatermarkWithLogos,
           }));
         } else if (res.status === 401 || res.status === 403) {
           router.push("/login");
@@ -1251,6 +1599,7 @@ export default function PlanEditorPage() {
             // line and anchor dot match the equipment's category (red for fire
             // fighting, green for escape, …) instead of a single flat colour.
             color: inferPictogramColor(pictogram.type, pictogram.label),
+            deletable: Boolean(pictogram.deletable),
           };
           return acc;
         }, {});
@@ -1356,7 +1705,10 @@ export default function PlanEditorPage() {
       const key = event.key.toLowerCase();
       if (key === "v") setMode("select");
       else if (key === "h") setMode("pan");
-      else if (key === "e") setMode("erase");
+      else if (key === "e") {
+        setShapeTool(null);
+        setMode("erase");
+      }
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
@@ -1413,7 +1765,7 @@ export default function PlanEditorPage() {
     return () => {
       cancelled = true;
     };
-  }, [cleanModalOpen, cleanMethod, token]);
+  }, [cleanModalOpen, cleanMethod, selectedCleanTargetId, token]);
 
   const handleAddIcon = (type: IconType) => {
     setPlacementIconType(type);
@@ -1430,7 +1782,9 @@ export default function PlanEditorPage() {
       width: defaultIconSize.width,
       height: defaultIconSize.height,
       rotation: 0,
-      label: ""
+      label: "",
+      visible: true,
+      z_index: getNextLayerZIndex(),
     };
     setIcons((currentIcons) => [...currentIcons, newIcon]);
     setSelectedIconId(newIcon.tempId);
@@ -1474,6 +1828,8 @@ export default function PlanEditorPage() {
       italic: false,
       background_color: null,
       rotation: 0,
+      visible: true,
+      z_index: getNextLayerZIndex(),
     };
     setTexts((current) => [...current, newText]);
     setSelectedTextId(newText.tempId);
@@ -1505,20 +1861,22 @@ export default function PlanEditorPage() {
   // tempId/id) so a deep-equality check detects any real change.
   const buildEditableSnapshot = () =>
     JSON.stringify({
-      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, group_id, object_group_id }) => ({
-        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, group_id, object_group_id,
+      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
+        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
       })),
-      shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, group_id, object_group_id }) => ({
-        shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, group_id, object_group_id,
+      shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, visible, z_index, group_id, object_group_id }) => ({
+        shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, visible, z_index, group_id, object_group_id,
       })),
-      texts: texts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, group_id, object_group_id }) => ({
-        text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, group_id, object_group_id,
+      texts: texts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id }) => ({
+        text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id,
       })),
-      overlays: planOverlays.map(({ url, x, y, width, height, rotation, label, locked, group_id }) => ({
-        url, x, y, width, height, rotation, label, locked, group_id,
+      overlays: planOverlays.map(({ url, x, y, width, height, rotation, label, locked, visible, z_index, group_id }) => ({
+        url, x, y, width, height, rotation, label, locked, visible, z_index, group_id,
       })),
       mainPlanTransform,
       mainPlanLocked,
+      mainPlanVisible,
+      mainPlanZIndex,
       mainPlanGroupId,
       mainPlanGroupingEnabled,
       watermark: watermarkConfig,
@@ -1607,6 +1965,8 @@ export default function PlanEditorPage() {
       control_points: shape.control_points ?? {},
       points: shape.points || null,
       locked: shape.locked ?? false,
+      visible: shape.visible ?? true,
+      z_index: shape.z_index ?? 200,
       group_id: shape.group_id || "",
       object_group_id: shape.object_group_id || "",
     }));
@@ -1624,6 +1984,8 @@ export default function PlanEditorPage() {
       background_color: t.background_color,
       rotation: t.rotation,
       locked: t.locked ?? false,
+      visible: t.visible ?? true,
+      z_index: t.z_index ?? 400,
       group_id: t.group_id || "",
       object_group_id: t.object_group_id || "",
     }));
@@ -1643,7 +2005,10 @@ export default function PlanEditorPage() {
       framed: icon.framed ?? false,
       flip_x: icon.flip_x ?? false,
       flip_y: icon.flip_y ?? false,
+      color: icon.color ?? "",
       locked: icon.locked ?? false,
+      visible: icon.visible ?? true,
+      z_index: icon.z_index ?? 300,
       group_id: icon.group_id || "",
       object_group_id: icon.object_group_id || "",
     }));
@@ -1664,6 +2029,8 @@ export default function PlanEditorPage() {
           rotation: overlay.rotation,
           label: overlay.label || "",
           locked: overlay.locked ?? false,
+          visible: overlay.visible ?? true,
+          z_index: overlay.z_index ?? 100,
           group_id: overlay.group_id || "",
         };
         if (overlay.serverId && !overlay.imageChanged) {
@@ -1703,19 +2070,6 @@ export default function PlanEditorPage() {
     });
 
   /** Pushes the annotation layers to the API. Returns false if any call failed. */
-  const syncPlanContent = async (
-    nextIcons: CanvasIcon[],
-    nextShapes: CanvasShape[],
-    nextTexts: CanvasText[]
-  ) => {
-    const [iconsRes, shapesRes, textsRes] = await Promise.all([
-      postJson(`/api/plans/${id}/sync-icons/`, iconsPayload(nextIcons)),
-      postJson(`/api/plans/${id}/sync-shapes/`, shapesPayload(nextShapes)),
-      postJson(`/api/plans/${id}/sync-texts/`, textsPayload(nextTexts)),
-    ]);
-    return iconsRes.ok && shapesRes.ok && textsRes.ok;
-  };
-
   /**
    * A lasso cut of the main plan replaces the background for good, exactly like
    * the eraser's retouches: keeping it in the browser only would lose it at the
@@ -1828,6 +2182,8 @@ export default function PlanEditorPage() {
           main_plan_width: mainPlanTransform.width,
           main_plan_height: mainPlanTransform.height,
           main_plan_locked: mainPlanLocked,
+          main_plan_visible: mainPlanVisible,
+          main_plan_z_index: mainPlanZIndex,
           main_plan_group_id: mainPlanGroupId,
           main_plan_grouping_enabled: mainPlanGroupingEnabled,
           watermark: watermarkConfig,
@@ -1843,39 +2199,61 @@ export default function PlanEditorPage() {
       const savedPlan: EvacuationPlanBackend = await response.json();
       setPlan(savedPlan);
       setPlanOverlays((current) =>
-        current.map((overlay, index) => ({
-          ...overlay,
-          serverId: savedPlan.overlay_ids?.[index] ?? overlay.serverId,
-          imageChanged: false,
-        }))
+        current.map((overlay, index) => {
+          const serverId = savedPlan.overlay_ids?.[index] ?? overlay.serverId;
+          const savedOverlay = savedPlan.overlays?.find((item) => item.id === serverId);
+          return {
+            ...overlay,
+            serverId,
+            imageChanged: false,
+            isOriginal: savedOverlay?.is_original ?? overlay.isOriginal,
+            canRevertOriginal: savedOverlay?.can_revert_original ?? overlay.canRevertOriginal,
+          };
+        })
       );
       setSaveStatus("Sauvegardé !");
       setTimeout(() => setSaveStatus(""), 2000);
       setSavedSnapshot(buildEditableSnapshot());
-      return true;
+      return savedPlan;
     } catch (err) {
       console.error(err);
       setSaveStatus("Erreur");
-      return false;
+      return null;
     } finally {
       setSaving(false);
     }
   };
 
-  /** True when the cleaning dialog is aimed at a secondary plan, not the main one. */
-  const cleanTargetIsOverlay = planOverlays.some((overlay) => overlay.tempId === selectedCleanTargetId);
-
-  /** Swaps a secondary plan's artwork, releasing the image it replaces. */
-  const replaceOverlayImage = (tempId: string, url: string) => {
+  /** Swaps a secondary plan's artwork and records whether the server persisted it. */
+  const replaceOverlayImage = (
+    tempId: string,
+    url: string,
+    options: { persisted?: boolean; isOriginal?: boolean; canRevertOriginal?: boolean } = {},
+  ) => {
     setPlanOverlays((prev) =>
       prev.map((overlay) => {
         if (overlay.tempId !== tempId) return overlay;
         if (overlay.url.startsWith("blob:")) URL.revokeObjectURL(overlay.url);
         // The pixels changed, so the stored copy is stale: the next save
         // uploads this one instead of pointing at the old file.
-        return { ...overlay, url, imageChanged: true };
+        return {
+          ...overlay,
+          url,
+          imageChanged: !options.persisted,
+          isOriginal: options.isOriginal ?? false,
+          canRevertOriginal: options.canRevertOriginal ?? overlay.canRevertOriginal,
+        };
       })
     );
+  };
+
+  const ensureOverlayServerId = async (target: CanvasPlanOverlay) => {
+    if (target.serverId) return target.serverId;
+    const overlayIndex = planOverlays.findIndex((overlay) => overlay.tempId === target.tempId);
+    if (overlayIndex < 0) return null;
+    const savedPlan = await handleSave();
+    if (!savedPlan) return null;
+    return savedPlan.overlay_ids?.[overlayIndex] ?? null;
   };
 
   /**
@@ -1885,6 +2263,12 @@ export default function PlanEditorPage() {
   const cleanSelectedOverlay = async (method: "plan" | "walls") => {
     const target = planOverlays.find((overlay) => overlay.tempId === selectedCleanTargetId);
     if (!target) return false;
+
+    const overlayServerId = await ensureOverlayServerId(target);
+    if (!overlayServerId) {
+      alert("Enregistrez le plan secondaire avant de lancer son nettoyage.");
+      return true;
+    }
 
     setCleaning(true);
     setCleaningText(
@@ -1901,6 +2285,7 @@ export default function PlanEditorPage() {
       const res = await postJson(`/api/plans/${id}/clean-image-data/`, {
         image_data: imageData,
         method,
+        overlay_id: overlayServerId,
       });
 
       if (!res.ok) {
@@ -1913,13 +2298,18 @@ export default function PlanEditorPage() {
         alert("Le serveur n'a renvoyé aucune image nettoyée pour ce plan.");
         return true;
       }
-      replaceOverlayImage(target.tempId, data.cleaned_image_data);
+      replaceOverlayImage(target.tempId, data.cleaned_image_data, {
+        persisted: true,
+        isOriginal: false,
+        canRevertOriginal: Boolean(data.overlay?.can_revert_original),
+      });
       setSaveStatus(
         method === "walls"
           ? "Murs du plan secondaire extraits avec succès !"
           : "Plan secondaire nettoyé avec succès !"
       );
       window.setTimeout(() => setSaveStatus(""), 3500);
+      void fetchCleaningHistory(overlayServerId);
     } catch (err) {
       console.error(err);
       alert("Erreur lors du nettoyage du plan secondaire.");
@@ -2017,6 +2407,33 @@ export default function PlanEditorPage() {
     setCleaning(true);
     setCleaningText("Retour au plan original...");
     try {
+      const targetOverlay = planOverlays.find((overlay) => overlay.tempId === selectedCleanTargetId);
+      if (targetOverlay) {
+        const overlayServerId = await ensureOverlayServerId(targetOverlay);
+        if (!overlayServerId) {
+          alert("Le plan secondaire doit être enregistré avant de restaurer son original.");
+          return;
+        }
+        const overlayResponse = await fetch(buildApiUrl(`/api/plans/${id}/revert-overlay/`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
+          body: JSON.stringify({ overlay_id: overlayServerId }),
+        });
+        const overlayData = await overlayResponse.json();
+        if (!overlayResponse.ok) {
+          alert(overlayData.error || "Impossible de restaurer le plan secondaire original.");
+          return;
+        }
+        replaceOverlayImage(targetOverlay.tempId, overlayData.image_url, {
+          persisted: true,
+          isOriginal: true,
+          canRevertOriginal: Boolean(overlayData.can_revert_original),
+        });
+        setSaveStatus("Plan secondaire original restauré !");
+        window.setTimeout(() => setSaveStatus(""), 3500);
+        return;
+      }
+
       const res = await fetch(buildApiUrl(`/api/plans/${id}/revert/`), {
         method: "POST",
         headers: getPlanAuthHeaders(),
@@ -2140,27 +2557,51 @@ export default function PlanEditorPage() {
 
   useEffect(() => {
     return () => {
-      if (grokPollRef.current) window.clearTimeout(grokPollRef.current);
+      if (grokPollRef.current !== null) window.clearTimeout(grokPollRef.current);
     };
   }, []);
 
   const launchGrokCleaning = async () => {
     const targetOverlay = planOverlays.find((overlay) => overlay.tempId === selectedCleanTargetId);
-    if (targetOverlay) {
-      setGrokError("Le traitement Grok est disponible uniquement pour le plan principal. Utilisez le nettoyage local pour un plan secondaire.");
-      return;
-    }
     if (!xaiHasSavedKey) return;
 
     setGrokCleaning(true);
     setGrokError("");
     setGrokJob(null);
+    if (grokPollRef.current !== null) {
+      window.clearTimeout(grokPollRef.current);
+      grokPollRef.current = null;
+    }
 
+    const launchController = new AbortController();
+    const launchTimeout = window.setTimeout(
+      () => launchController.abort(),
+      GROK_LAUNCH_REQUEST_TIMEOUT_MS,
+    );
     try {
+      const overlayServerId = targetOverlay
+        ? await ensureOverlayServerId(targetOverlay)
+        : null;
+      if (targetOverlay && !overlayServerId) {
+        setGrokError("Le plan secondaire n’a pas pu être enregistré avant le traitement.");
+        setGrokCleaning(false);
+        return;
+      }
+      const imageData = targetOverlay
+        ? await toDataUrl(targetOverlay.url, "#ffffff")
+        : undefined;
       const res = await fetch(buildApiUrl(`/api/plans/${id}/grok-clean/`), {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
-        body: JSON.stringify({ background_color: grokBackgroundColor, preset: grokPreset }),
+        signal: launchController.signal,
+        body: JSON.stringify({
+          background_color: grokBackgroundColor,
+          wall_color: grokWallColor,
+          preset: grokPreset,
+          target_kind: targetOverlay ? "overlay" : "main",
+          ...(overlayServerId ? { overlay_id: overlayServerId } : {}),
+          ...(imageData ? { image_data: imageData } : {}),
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -2168,21 +2609,54 @@ export default function PlanEditorPage() {
         setGrokCleaning(false);
         return;
       }
-      pollGrokJob(data.job_id);
-    } catch {
-      setGrokError("Impossible de joindre le serveur pour lancer le nettoyage.");
+      pollGrokJob(data.job_id, targetOverlay?.tempId || null, overlayServerId);
+    } catch (error) {
+      setGrokError(
+        error instanceof DOMException && error.name === "AbortError"
+          ? "Le serveur n’a pas répondu au lancement du nettoyage dans le délai prévu."
+          : "Impossible de joindre le serveur pour lancer le nettoyage."
+      );
       setGrokCleaning(false);
+    } finally {
+      window.clearTimeout(launchTimeout);
     }
   };
 
-  const pollGrokJob = (jobId: number) => {
+  const pollGrokJob = (
+    jobId: number,
+    overlayTempId: string | null = null,
+    overlayServerId: number | null = null,
+  ) => {
+    let pollAttempts = 0;
     const tick = async () => {
+      grokPollRef.current = null;
+      if (pollAttempts >= GROK_MAX_POLL_ATTEMPTS) {
+        setGrokError(
+          "Le nettoyage avec Grok a dépassé 12 minutes et a été arrêté. Veuillez réessayer."
+        );
+        setGrokCleaning(false);
+        return;
+      }
+      pollAttempts += 1;
+
+      const statusController = new AbortController();
+      const statusTimeout = window.setTimeout(
+        () => statusController.abort(),
+        GROK_STATUS_REQUEST_TIMEOUT_MS,
+      );
       try {
         const res = await fetch(
           buildApiUrl(`/api/plans/${id}/grok-clean-status/?job_id=${jobId}`),
-          { headers: getPlanAuthHeaders() }
+          { headers: getPlanAuthHeaders(), signal: statusController.signal }
         );
-        const data: GrokJob = await res.json();
+        const data = await res.json() as GrokJob & { detail?: string };
+        if (!res.ok) {
+          setGrokError(
+            `${data.error_code || ""} ${data.error || data.detail || "Impossible de vérifier l’état du nettoyage."}`.trim()
+          );
+          setGrokCleaning(false);
+          return;
+        }
         setGrokJob(data);
 
         if (data.status === "failed") {
@@ -2194,16 +2668,41 @@ export default function PlanEditorPage() {
           return;
         }
         if (data.status === "completed") {
-          // The backend already applied the cleaned image; refresh the plan + history.
           setGrokCleaning(false);
+          if (overlayTempId) {
+            if (!data.after_image) {
+              setGrokError("Le traitement est terminé, mais aucune image n’a été renvoyée.");
+              return;
+            }
+            replaceOverlayImage(overlayTempId, data.after_image, {
+              persisted: true,
+              isOriginal: false,
+              canRevertOriginal: true,
+            });
+            setSaveStatus("Plan secondaire traité avec l’IA et ajouté à l’historique !");
+            window.setTimeout(() => setSaveStatus(""), 4500);
+            if (overlayServerId) void fetchCleaningHistory(overlayServerId);
+            setCleanModalOpen(false);
+            return;
+          }
+          // Main-plan results are already applied by the backend.
           void fetchCleaningHistory();
           void refreshPlan();
+          setCleanModalOpen(false);
+          setSaveStatus("Plan nettoyé avec Grok et ajouté à l’historique !");
+          window.setTimeout(() => setSaveStatus(""), 4500);
           return;
         }
-        grokPollRef.current = window.setTimeout(tick, 2000);
-      } catch {
-        setGrokError("Perte de contact avec le serveur pendant le nettoyage.");
+        grokPollRef.current = window.setTimeout(tick, GROK_POLL_INTERVAL_MS);
+      } catch (error) {
+        setGrokError(
+          error instanceof DOMException && error.name === "AbortError"
+            ? "Le serveur n’a pas répondu pendant la vérification du nettoyage."
+            : "Perte de contact avec le serveur pendant le nettoyage."
+        );
         setGrokCleaning(false);
+      } finally {
+        window.clearTimeout(statusTimeout);
       }
     };
     void tick();
@@ -2223,7 +2722,9 @@ export default function PlanEditorPage() {
 
   const grokStepLabels: Record<"analyzing" | "generating", string> = {
     analyzing: "Analyse du plan par Grok",
-    generating: "Génération de la base architecturale",
+    generating: grokPreset === "sketch"
+      ? "Mise au propre du croquis en plan architectural"
+      : "Génération de la base architecturale",
   };
   const grokStepOrder: Array<"analyzing" | "generating"> = ["analyzing", "generating"];
 
@@ -2248,11 +2749,18 @@ export default function PlanEditorPage() {
     }).format(new Date(value));
   };
 
-  const fetchCleaningHistory = async () => {
+  const fetchCleaningHistory = async (overlayIdOverride?: number) => {
     if (!id) return;
+    const selectedOverlay = planOverlays.find((overlay) => overlay.tempId === selectedCleanTargetId);
+    const overlayId = overlayIdOverride ?? selectedOverlay?.serverId;
+    if (selectedOverlay && !overlayId) {
+      setCleaningHistory([]);
+      return;
+    }
     setCleaningHistoryLoading(true);
     try {
-      const res = await fetch(buildApiUrl(`/api/plans/${id}/cleaning-history/`), {
+      const query = overlayId ? `?overlay_id=${overlayId}` : "";
+      const res = await fetch(buildApiUrl(`/api/plans/${id}/cleaning-history/${query}`), {
         headers: getPlanAuthHeaders(),
         cache: "no-store",
       });
@@ -2267,6 +2775,7 @@ export default function PlanEditorPage() {
   };
 
   const handleUseHistory = async (historyItem: CleaningHistoryItem) => {
+    const selectedOverlay = planOverlays.find((overlay) => overlay.tempId === selectedCleanTargetId);
     setCleaningHistoryApplyingId(historyItem.id);
     try {
       const res = await fetch(buildApiUrl(`/api/plans/${id}/use-cleaning-history/`), {
@@ -2275,7 +2784,10 @@ export default function PlanEditorPage() {
           "Content-Type": "application/json",
           ...getPlanAuthHeaders(),
         },
-        body: JSON.stringify({ history_id: historyItem.id }),
+        body: JSON.stringify({
+          history_id: historyItem.id,
+          ...(selectedOverlay?.serverId ? { overlay_id: selectedOverlay.serverId } : {}),
+        }),
       });
 
       const data = await res.json();
@@ -2284,11 +2796,19 @@ export default function PlanEditorPage() {
         return;
       }
 
-      setPlan(data);
+      if (data.target_kind === "overlay" && data.overlay && selectedOverlay) {
+        replaceOverlayImage(selectedOverlay.tempId, data.overlay.image_url, {
+          persisted: true,
+          isOriginal: false,
+          canRevertOriginal: Boolean(data.overlay.can_revert_original),
+        });
+      } else {
+        setPlan(data);
+      }
       setCleanModalOpen(false);
       setSaveStatus("Version nettoyée de l'historique appliquée !");
       window.setTimeout(() => setSaveStatus(""), 3500);
-      void fetchCleaningHistory();
+      void fetchCleaningHistory(selectedOverlay?.serverId);
     } catch (err) {
       console.error(err);
       alert("Erreur lors de la communication avec le serveur.");
@@ -2303,9 +2823,24 @@ export default function PlanEditorPage() {
 
   const handleUpdateSelectedShape = (key: keyof CanvasShape, value: any) => {
     if (!selectedShapeId) return;
+    const styleAppliesToGroup = key === "color" || key === "stroke_width";
+    const objectGroupId = styleAppliesToGroup ? selectedShape?.object_group_id : "";
     setShapes((prev) =>
-      prev.map((s) => (s.tempId === selectedShapeId ? { ...s, [key]: value } : s))
+      prev.map((s) =>
+        s.tempId === selectedShapeId || (objectGroupId && s.object_group_id === objectGroupId)
+          ? { ...s, [key]: value }
+          : s
+      )
     );
+  };
+
+  const handleDeleteSelectedShapePoint = (pointIndex: number) => {
+    if (!selectedShapeId || !selectedShape || selectedShape.locked) return;
+    const updatedShape = shapeWithoutPoint(selectedShape, pointIndex);
+    if (!updatedShape) return;
+    setShapes((current) => current.map((shape) =>
+      shape.tempId === selectedShapeId ? updatedShape : shape
+    ));
   };
 
   const handleDeleteSelectedShape = () => {
@@ -2334,15 +2869,28 @@ export default function PlanEditorPage() {
   useEffect(() => {
     setExportPlanRotation(effectivePlanRotation);
   }, [effectivePlanRotation]);
-  const usedIconTypes = Array.from(new Set(icons.map((icon) => icon.icon_type)));
+  const usedIconTypes = Array.from(new Set(
+    icons.filter((icon) => icon.visible !== false).map((icon) => icon.icon_type)
+  ));
 
   // ── Sheet mode plumbing ────────────────────────────────────────────────────
   const sheetActive = sheetTemplate !== "none" && sheetBlocks.length > 0;
+  const currentSheetTemplateVersions = useMemo(
+    () => sheetTemplate === "none"
+      ? []
+      : storedSheetTemplateVersions.filter((version) => version.template === sheetTemplate),
+    [sheetTemplate, storedSheetTemplateVersions]
+  );
+  const activeSheetSize = useMemo(() => {
+    if (sheetTemplate === "none") return { width: SHEET_WIDTH, height: SHEET_HEIGHT };
+    const template = SHEET_TEMPLATES[sheetTemplate];
+    return { width: template.width, height: template.height };
+  }, [sheetTemplate]);
 
   /** Identity-stable so the canvas does not refit on every keystroke. */
   const sheetProp = useMemo(
-    () => (sheetActive ? { width: SHEET_WIDTH, height: SHEET_HEIGHT, blocks: sheetBlocks } : null),
-    [sheetActive, sheetBlocks]
+    () => (sheetActive ? { ...activeSheetSize, blocks: sheetBlocks } : null),
+    [sheetActive, activeSheetSize, sheetBlocks]
   );
 
   const selectedBlock = useMemo(
@@ -2360,16 +2908,487 @@ export default function PlanEditorPage() {
   const selectedOverlay = selectedOverlayId && selectedOverlayId !== MAIN_PLAN_ID
     ? planOverlays.find((overlay) => overlay.tempId === selectedOverlayId) ?? null
     : null;
+
+  const editorLayerItems = useMemo<EditorLayerItem[]>(() => {
+    const shapeLabels: Record<ShapeKind, string> = {
+      line: "Ligne",
+      rect: "Rectangle",
+      circle: "Cercle",
+      zone: "Zone",
+      polyline: "Polyligne",
+      polygon_zone: "Zone polygone",
+      free_polygon_zone: "Zone libre",
+      curve_polygon_zone: "Zone courbe",
+    };
+    const items: EditorLayerItem[] = [
+      {
+        id: MAIN_PLAN_ID,
+        kind: "main",
+        label: plan?.title || "Plan principal",
+        visible: mainPlanVisible,
+        locked: mainPlanLocked,
+        zIndex: mainPlanZIndex,
+      },
+      ...planOverlays.map((overlay, index) => ({
+        id: overlay.tempId,
+        kind: "overlay" as const,
+        label: overlay.label || `Plan secondaire ${index + 1}`,
+        visible: overlay.visible !== false,
+        locked: Boolean(overlay.locked),
+        zIndex: overlay.z_index ?? 100,
+      })),
+      ...shapes.map((shape, index) => ({
+        id: shape.tempId,
+        kind: "shape" as const,
+        label: `${shapeLabels[shape.shape_type]} ${index + 1}`,
+        visible: shape.visible !== false,
+        locked: Boolean(shape.locked),
+        zIndex: shape.z_index ?? 200,
+      })),
+      ...icons.map((icon, index) => ({
+        id: icon.tempId,
+        kind: "icon" as const,
+        label: icon.label || iconDefinitions[icon.icon_type]?.label || `Pictogramme ${index + 1}`,
+        visible: icon.visible !== false,
+        locked: Boolean(icon.locked),
+        zIndex: icon.z_index ?? 300,
+      })),
+      ...texts.map((text, index) => ({
+        id: text.tempId,
+        kind: "text" as const,
+        label: text.text.trim().slice(0, 40) || `Texte ${index + 1}`,
+        visible: text.visible !== false,
+        locked: Boolean(text.locked),
+        zIndex: text.z_index ?? 400,
+      })),
+    ];
+    // Illustrator convention: the first row is the front-most layer.
+    return items.sort((left, right) => right.zIndex - left.zIndex);
+  }, [plan?.title, mainPlanVisible, mainPlanLocked, mainPlanZIndex, planOverlays, shapes, icons, texts, iconDefinitions]);
+
+  const sheetLayerItems = useMemo<EditorLayerItem[]>(() =>
+    sheetBlocks
+      .map((block, index) => ({
+        id: block.id,
+        kind: block.kind === "plan"
+          ? "main" as const
+          : block.kind === "picto"
+            ? "icon" as const
+            : block.kind === "image" || block.kind === "background"
+              ? "overlay" as const
+              : "text" as const,
+        label: block.label,
+        visible: block.visible,
+        locked: Boolean(block.locked),
+        // Sheet blocks are rendered bottom-to-top in array order.
+        zIndex: index * 10,
+      }))
+      .sort((left, right) => right.zIndex - left.zIndex),
+    [sheetBlocks]
+  );
+
+  const activeLayerItems = sheetActive ? sheetLayerItems : editorLayerItems;
+  const selectedSheetLayerIndex = selectedBlockId
+    ? sheetLayerItems.findIndex((item) => item.id === selectedBlockId)
+    : -1;
+
+  const selectedLayerId = sheetActive
+    ? selectedBlockId
+    : selectedIconId || selectedTextId || selectedShapeId || selectedOverlayId;
+
+  const clearObjectSelections = () => {
+    setSelectedIconId(null);
+    setSelectedTextId(null);
+    setSelectedShapeId(null);
+    setSelectedOverlayId(null);
+    setSelectedBlockId(null);
+    setSelectedBatBlock(false);
+    setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+  };
+
+  const handleSelectLayer = (item: EditorLayerItem) => {
+    clearObjectSelections();
+    if (sheetActive) {
+      setSelectedBlockId(item.id);
+      return;
+    }
+    if (item.kind === "main" || item.kind === "overlay") setSelectedOverlayId(item.id);
+    else if (item.kind === "shape") setSelectedShapeId(item.id);
+    else if (item.kind === "icon") setSelectedIconId(item.id);
+    else setSelectedTextId(item.id);
+  };
+
+  const handleToggleLayerVisibility = (item: EditorLayerItem) => {
+    const visible = !item.visible;
+    if (sheetActive) {
+      if (!visible && selectedBlockId === item.id) setSelectedBlockId(null);
+      setSheetBlocks((current) => current.map((block) =>
+        block.id === item.id ? { ...block, visible } : block
+      ));
+      return;
+    }
+    if (!visible) {
+      if (selectedLayerId === item.id) clearObjectSelections();
+      setMultiSelection((current) => ({
+        iconIds: current.iconIds.filter((id) => id !== item.id),
+        shapeIds: current.shapeIds.filter((id) => id !== item.id),
+        textIds: current.textIds.filter((id) => id !== item.id),
+      }));
+    }
+    if (item.kind === "main") setMainPlanVisible(visible);
+    else if (item.kind === "overlay") {
+      setPlanOverlays((current) => current.map((overlay) =>
+        overlay.tempId === item.id ? { ...overlay, visible } : overlay
+      ));
+    } else if (item.kind === "shape") {
+      setShapes((current) => current.map((shape) =>
+        shape.tempId === item.id ? { ...shape, visible } : shape
+      ));
+    } else if (item.kind === "icon") {
+      setIcons((current) => current.map((icon) =>
+        icon.tempId === item.id ? { ...icon, visible } : icon
+      ));
+    } else {
+      setTexts((current) => current.map((text) =>
+        text.tempId === item.id ? { ...text, visible } : text
+      ));
+    }
+  };
+
+  const handleToggleLayerLock = (item: EditorLayerItem) => {
+    const locked = !item.locked;
+    if (sheetActive) {
+      setSheetBlocks((current) => current.map((block) =>
+        block.id === item.id ? { ...block, locked } : block
+      ));
+      return;
+    }
+    if (item.kind === "main") setMainPlanLocked(locked);
+    else if (item.kind === "overlay") {
+      setPlanOverlays((current) => current.map((overlay) =>
+        overlay.tempId === item.id ? { ...overlay, locked } : overlay
+      ));
+    } else if (item.kind === "shape") {
+      setShapes((current) => current.map((shape) =>
+        shape.tempId === item.id ? { ...shape, locked } : shape
+      ));
+    } else if (item.kind === "icon") {
+      setIcons((current) => current.map((icon) =>
+        icon.tempId === item.id ? { ...icon, locked } : icon
+      ));
+    } else {
+      setTexts((current) => current.map((text) =>
+        text.tempId === item.id ? { ...text, locked } : text
+      ));
+    }
+  };
+
+  const applyLayerOrder = (topToBottomIds: string[]) => {
+    const knownIds = new Set(editorLayerItems.map((item) => item.id));
+    const normalizedIds = [
+      ...topToBottomIds.filter((id, index) => knownIds.has(id) && topToBottomIds.indexOf(id) === index),
+      ...editorLayerItems.map((item) => item.id).filter((id) => !topToBottomIds.includes(id)),
+    ];
+    const bottomToTopIds = [...normalizedIds].reverse();
+    const zById = new Map(bottomToTopIds.map((id, index) => [id, index * 10]));
+    setMainPlanZIndex(zById.get(MAIN_PLAN_ID) ?? mainPlanZIndex);
+    setPlanOverlays((current) => current.map((overlay) => ({
+      ...overlay,
+      z_index: zById.get(overlay.tempId) ?? overlay.z_index,
+    })));
+    setShapes((current) => current.map((shape) => ({
+      ...shape,
+      z_index: zById.get(shape.tempId) ?? shape.z_index,
+    })));
+    setIcons((current) => current.map((icon) => ({
+      ...icon,
+      z_index: zById.get(icon.tempId) ?? icon.z_index,
+    })));
+    setTexts((current) => current.map((text) => ({
+      ...text,
+      z_index: zById.get(text.tempId) ?? text.z_index,
+    })));
+  };
+
+  const handleReorderLayers = (topToBottomIds: string[]) => {
+    if (sheetActive) {
+      const byId = new Map(sheetBlocks.map((block) => [block.id, block]));
+      const normalizedIds = [
+        ...topToBottomIds.filter((id, index) => byId.has(id) && topToBottomIds.indexOf(id) === index),
+        ...sheetLayerItems.map((item) => item.id).filter((id) => !topToBottomIds.includes(id)),
+      ];
+      setSheetBlocks([...normalizedIds].reverse().map((id) => byId.get(id)!).filter(Boolean));
+      return;
+    }
+    applyLayerOrder(topToBottomIds);
+  };
+
+  const handleMoveLayer = (id: string, direction: LayerMoveDirection) => {
+    const bottomToTop = [...activeLayerItems].reverse();
+    const currentIndex = bottomToTop.findIndex((item) => item.id === id);
+    if (currentIndex < 0) return;
+    const [item] = bottomToTop.splice(currentIndex, 1);
+    if (direction === "front") bottomToTop.push(item);
+    else if (direction === "back") bottomToTop.unshift(item);
+    else if (direction === "up") bottomToTop.splice(Math.min(bottomToTop.length, currentIndex + 1), 0, item);
+    else bottomToTop.splice(Math.max(0, currentIndex - 1), 0, item);
+    handleReorderLayers(bottomToTop.reverse().map((layer) => layer.id));
+  };
+
+  const cleanTargetOverlay = selectedCleanTargetId !== MAIN_PLAN_ID
+    ? planOverlays.find((overlay) => overlay.tempId === selectedCleanTargetId) ?? null
+    : null;
   const multiSelectionCount =
     multiSelection.iconIds.length + multiSelection.shapeIds.length + multiSelection.textIds.length;
-  const selectedMultiObjectGroupIds = Array.from(new Set([
-    ...icons.filter((icon) => multiSelection.iconIds.includes(icon.tempId)).map((icon) => icon.object_group_id || ""),
-    ...shapes.filter((shape) => multiSelection.shapeIds.includes(shape.tempId)).map((shape) => shape.object_group_id || ""),
-    ...texts.filter((text) => multiSelection.textIds.includes(text.tempId)).map((text) => text.object_group_id || ""),
-  ].filter(Boolean)));
-  const sharedObjectGroupId = multiSelectionCount > 0 && selectedMultiObjectGroupIds.length === 1
-    ? selectedMultiObjectGroupIds[0]
+  const selectedMultiIcons = icons.filter((icon) => multiSelection.iconIds.includes(icon.tempId));
+  const selectedMultiShapes = shapes.filter((shape) => multiSelection.shapeIds.includes(shape.tempId));
+  const selectedMultiTexts = texts.filter((text) => multiSelection.textIds.includes(text.tempId));
+  const selectedMultiObjectGroups = [
+    ...selectedMultiIcons.map((icon) => icon.object_group_id || ""),
+    ...selectedMultiShapes.map((shape) => shape.object_group_id || ""),
+    ...selectedMultiTexts.map((text) => text.object_group_id || ""),
+  ];
+  const selectedMultiObjectGroupIds = Array.from(new Set(selectedMultiObjectGroups.filter(Boolean)));
+  const sharedObjectGroupId = multiSelectionCount > 0
+    && selectedMultiObjectGroups.length === multiSelectionCount
+    && selectedMultiObjectGroups.every((groupId) => groupId && groupId === selectedMultiObjectGroups[0])
+    ? selectedMultiObjectGroups[0]
     : "";
+  const multiShapeColor = selectedMultiShapes[0]?.color || "#000000";
+  const multiShapeStrokeWidth = selectedMultiShapes[0]?.stroke_width ?? shapeStrokeWidth;
+  const multiShapeColorsMixed = selectedMultiShapes.some((shape) => shape.color !== multiShapeColor);
+  const multiShapeWidthsMixed = selectedMultiShapes.some((shape) => shape.stroke_width !== multiShapeStrokeWidth);
+
+  const handleUpdateMultiShapeStyle = (key: "color" | "stroke_width", value: string | number) => {
+    if (!multiSelection.shapeIds.length) return;
+    const shapeIds = new Set(multiSelection.shapeIds);
+    setShapes((current) => current.map((shape) =>
+      shapeIds.has(shape.tempId) ? { ...shape, [key]: value } : shape
+    ));
+  };
+
+  const getObjectGroupSelection = (groupId: string): CanvasMultiSelection => ({
+    iconIds: icons.filter((icon) => icon.object_group_id === groupId).map((icon) => icon.tempId),
+    shapeIds: shapes.filter((shape) => shape.object_group_id === groupId).map((shape) => shape.tempId),
+    textIds: texts.filter((text) => text.object_group_id === groupId).map((text) => text.tempId),
+  });
+
+  const buildShapeSvgPath = (shape: CanvasShape, previewPoint?: { x: number; y: number } | null) => {
+    const points = shape.points || [];
+    if (!points.length) return "";
+    const isOpen = shape.shape_type === "polyline";
+    const controlPoints = shape.control_points || {};
+    let data = `M ${svgNumber(points[0].x)} ${svgNumber(points[0].y)}`;
+    for (let index = 0; index < points.length - 1; index += 1) {
+      const next = points[index + 1];
+      const control = controlPoints[index];
+      data += control
+        ? ` Q ${svgNumber(control.x)} ${svgNumber(control.y)} ${svgNumber(next.x)} ${svgNumber(next.y)}`
+        : ` L ${svgNumber(next.x)} ${svgNumber(next.y)}`;
+    }
+    if (previewPoint) {
+      data += ` L ${svgNumber(previewPoint.x)} ${svgNumber(previewPoint.y)}`;
+    } else if (!isOpen && points.length >= 3) {
+      const control = controlPoints[points.length - 1];
+      data += control
+        ? ` Q ${svgNumber(control.x)} ${svgNumber(control.y)} ${svgNumber(points[0].x)} ${svgNumber(points[0].y)}`
+        : " Z";
+    }
+    return data;
+  };
+
+  const getShapeExportBounds = (shape: CanvasShape) => {
+    const pad = Math.max(2, shape.stroke_width || 0);
+    if (shape.points?.length) {
+      const allPoints = [
+        ...shape.points,
+        ...Object.values(shape.control_points || {})
+      ];
+      const bounds = boundsFromPoints(allPoints);
+      return {
+        x: bounds.x - pad,
+        y: bounds.y - pad,
+        width: bounds.width + pad * 2,
+        height: bounds.height + pad * 2
+      };
+    }
+    if (shape.shape_type === "line") {
+      const x = Math.min(shape.x, shape.x + shape.width) - pad;
+      const y = Math.min(shape.y, shape.y + shape.height) - pad;
+      return {
+        x,
+        y,
+        width: Math.abs(shape.width) + pad * 2,
+        height: Math.abs(shape.height) + pad * 2
+      };
+    }
+    return {
+      x: shape.x - pad,
+      y: shape.y - pad,
+      width: Math.abs(shape.width) + pad * 2,
+      height: Math.abs(shape.height) + pad * 2
+    };
+  };
+
+  const getTextExportBounds = (text: CanvasText) => {
+    const lines = text.text.split("\n");
+    const width = Math.max(1, ...lines.map((line) => line.length)) * text.font_size * 0.62;
+    const height = Math.max(text.font_size, lines.length * text.font_size * 1.25);
+    return { x: text.x, y: text.y, width, height };
+  };
+
+  const getSelectedSvgBounds = () => {
+    const boxes = [
+      ...selectedMultiIcons.flatMap((icon) => {
+        const boxes = [{ x: icon.x, y: icon.y, width: icon.width, height: icon.height }];
+        if (icon.anchor_x != null && icon.anchor_y != null) {
+          boxes.push({ x: icon.anchor_x - 4, y: icon.anchor_y - 4, width: 8, height: 8 });
+        }
+        return boxes;
+      }),
+      ...selectedMultiShapes.map(getShapeExportBounds),
+      ...selectedMultiTexts.map(getTextExportBounds),
+    ];
+    if (!boxes.length) return null;
+    const minX = Math.min(...boxes.map((box) => box.x));
+    const minY = Math.min(...boxes.map((box) => box.y));
+    const maxX = Math.max(...boxes.map((box) => box.x + box.width));
+    const maxY = Math.max(...boxes.map((box) => box.y + box.height));
+    return {
+      x: minX - SVG_EXPORT_PADDING,
+      y: minY - SVG_EXPORT_PADDING,
+      width: Math.max(1, maxX - minX + SVG_EXPORT_PADDING * 2),
+      height: Math.max(1, maxY - minY + SVG_EXPORT_PADDING * 2),
+    };
+  };
+
+  const shapeToSvg = (shape: CanvasShape) => {
+    const stroke = shape.stroke_width > 0
+      ? `stroke="${escapeSvgAttribute(shape.color || "#000000")}" stroke-width="${svgNumber(shape.stroke_width)}"`
+      : `stroke="none"`;
+    const fill = shape.fill_color
+      ? `fill="${escapeSvgAttribute(shape.fill_color)}" fill-opacity="${svgNumber(shape.fill_opacity !== undefined ? shape.fill_opacity : 0.35)}"`
+      : `fill="none"`;
+    const transform = shape.rotation
+      ? ` transform="rotate(${svgNumber(shape.rotation)} ${svgNumber(shape.x + shape.width / 2)} ${svgNumber(shape.y + shape.height / 2)})"`
+      : "";
+
+    if (shape.shape_type === "line") {
+      return `<line x1="${svgNumber(shape.x)}" y1="${svgNumber(shape.y)}" x2="${svgNumber(shape.x + shape.width)}" y2="${svgNumber(shape.y + shape.height)}" ${stroke} stroke-linecap="round" fill="none"${transform}/>`;
+    }
+    if (shape.shape_type === "circle") {
+      return `<ellipse cx="${svgNumber(shape.x + shape.width / 2)}" cy="${svgNumber(shape.y + shape.height / 2)}" rx="${svgNumber(Math.abs(shape.width) / 2)}" ry="${svgNumber(Math.abs(shape.height) / 2)}" ${fill} ${stroke}${transform}/>`;
+    }
+    if (shape.shape_type === "zone") {
+      const zoneFill = shape.fill_color || shape.color;
+      const opacity = shape.fill_opacity !== undefined ? shape.fill_opacity : 0.28;
+      return `<rect x="${svgNumber(shape.x)}" y="${svgNumber(shape.y)}" width="${svgNumber(Math.abs(shape.width))}" height="${svgNumber(Math.abs(shape.height))}" fill="${escapeSvgAttribute(zoneFill)}" fill-opacity="${svgNumber(opacity)}" ${stroke} stroke-dasharray="10 6"${transform}/>`;
+    }
+    if (isPolygonShape(shape.shape_type)) {
+      const data = buildShapeSvgPath(shape);
+      const open = shape.shape_type === "polyline";
+      return `<path d="${escapeSvgAttribute(data)}" ${open ? `fill="none"` : fill} ${stroke} stroke-linejoin="round" stroke-linecap="round"/>`;
+    }
+    return `<rect x="${svgNumber(shape.x)}" y="${svgNumber(shape.y)}" width="${svgNumber(Math.abs(shape.width))}" height="${svgNumber(Math.abs(shape.height))}" ${fill} ${stroke}${transform}/>`;
+  };
+
+  const iconToSvg = (icon: CanvasIcon) => {
+    const definition = iconDefinitions[icon.icon_type];
+    const leaderColor = definition?.color || "#22c55e";
+    const parts: string[] = [];
+    if (icon.anchor_x != null && icon.anchor_y != null) {
+      const centerX = icon.x + icon.width / 2;
+      const centerY = icon.y + icon.height / 2;
+      parts.push(`<line x1="${svgNumber(icon.anchor_x)}" y1="${svgNumber(icon.anchor_y)}" x2="${svgNumber(centerX)}" y2="${svgNumber(centerY)}" stroke="${escapeSvgAttribute(leaderColor)}" stroke-width="${svgNumber(icon.leader_width ?? 2)}" stroke-linecap="round"/>`);
+      parts.push(`<circle cx="${svgNumber(icon.anchor_x)}" cy="${svgNumber(icon.anchor_y)}" r="4" fill="${escapeSvgAttribute(leaderColor)}"/>`);
+    }
+
+    const centerX = icon.x + icon.width / 2;
+    const centerY = icon.y + icon.height / 2;
+    const flipX = icon.flip_x ? -1 : 1;
+    const flipY = icon.flip_y ? -1 : 1;
+    const transform = `translate(${svgNumber(centerX)} ${svgNumber(centerY)}) rotate(${svgNumber(icon.rotation || 0)}) scale(${flipX} ${flipY}) translate(${svgNumber(-icon.width / 2)} ${svgNumber(-icon.height / 2)})`;
+    const svg = definition?.svg || "";
+    const match = svg.match(/<svg\b([^>]*)>([\s\S]*?)<\/svg>/i);
+    const attrs = match?.[1] || "";
+    const inner = match?.[2] || svg;
+    const viewBox = attrs.match(/viewBox=["']([^"']+)["']/i)?.[1] || "0 0 100 100";
+    const imageUrl = getIconImageSource(icon.icon_type, iconDefinitions);
+
+    if (svg) {
+      parts.push(`<g transform="${transform}">${icon.framed ? `<rect x="0" y="0" width="${svgNumber(icon.width)}" height="${svgNumber(icon.height)}" rx="3" fill="#ffffff" stroke="${escapeSvgAttribute(leaderColor)}" stroke-width="2"/>` : ""}<svg x="0" y="0" width="${svgNumber(icon.width)}" height="${svgNumber(icon.height)}" viewBox="${escapeSvgAttribute(viewBox)}" preserveAspectRatio="xMidYMid meet">${inner}</svg></g>`);
+    } else if (imageUrl) {
+      parts.push(`<g transform="${transform}"><image href="${escapeSvgAttribute(imageUrl)}" x="0" y="0" width="${svgNumber(icon.width)}" height="${svgNumber(icon.height)}" preserveAspectRatio="xMidYMid meet"/></g>`);
+    } else {
+      parts.push(`<rect x="${svgNumber(icon.x)}" y="${svgNumber(icon.y)}" width="${svgNumber(icon.width)}" height="${svgNumber(icon.height)}" fill="${escapeSvgAttribute(leaderColor)}"/>`);
+    }
+
+    if (icon.label) {
+      parts.push(`<text x="${svgNumber(centerX)}" y="${svgNumber(icon.y + icon.height + 14)}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" fill="#111111">${escapeSvgText(icon.label)}</text>`);
+    }
+    return parts.join("\n");
+  };
+
+  const textToSvg = (item: CanvasText) => {
+    const bounds = getTextExportBounds(item);
+    const transform = item.rotation
+      ? ` transform="rotate(${svgNumber(item.rotation)} ${svgNumber(item.x)} ${svgNumber(item.y)})"`
+      : "";
+    const lines = item.text.split("\n");
+    const background = item.background_color
+      ? `<rect x="${svgNumber(bounds.x - 4)}" y="${svgNumber(bounds.y - 2)}" width="${svgNumber(bounds.width + 8)}" height="${svgNumber(bounds.height + 4)}" fill="${escapeSvgAttribute(item.background_color)}" rx="2"${transform}/>`
+      : "";
+    const fontStyle = item.italic ? ` font-style="italic"` : "";
+    const fontWeight = item.bold ? ` font-weight="700"` : "";
+    const textLines = lines.map((line, index) =>
+      `<tspan x="${svgNumber(item.x)}" dy="${index === 0 ? "0" : svgNumber(item.font_size * 1.25)}">${escapeSvgText(line)}</tspan>`
+    ).join("");
+    return `${background}<text x="${svgNumber(item.x)}" y="${svgNumber(item.y + item.font_size)}" font-family="${escapeSvgAttribute(item.font_family || "Arial")}" font-size="${svgNumber(item.font_size)}" fill="${escapeSvgAttribute(item.color)}"${fontWeight}${fontStyle}${transform}>${textLines}</text>`;
+  };
+
+  const handleExportSelectedGroupSvg = () => {
+    if (!multiSelectionCount) return;
+    const bounds = getSelectedSvgBounds();
+    if (!bounds) return;
+    const body = [
+      ...selectedMultiShapes
+        .filter((shape) => shape.visible !== false)
+        .map((shape) => ({
+          key: `shape-${shape.tempId}`,
+          zIndex: shape.z_index ?? 200,
+          svg: shapeToSvg(shape),
+        })),
+      ...selectedMultiIcons
+        .filter((icon) => icon.visible !== false)
+        .map((icon) => ({
+          key: `icon-${icon.tempId}`,
+          zIndex: icon.z_index ?? 300,
+          svg: iconToSvg(icon),
+        })),
+      ...selectedMultiTexts
+        .filter((text) => text.visible !== false)
+        .map((text) => ({
+          key: `text-${text.tempId}`,
+          zIndex: text.z_index ?? 400,
+          svg: textToSvg(text),
+        })),
+    ]
+      .sort((left, right) => left.zIndex - right.zIndex || left.key.localeCompare(right.key))
+      .map((item) => item.svg)
+      .join("\n");
+    const svg = [
+      `<?xml version="1.0" encoding="UTF-8"?>`,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${svgNumber(bounds.width)}" height="${svgNumber(bounds.height)}" viewBox="${svgNumber(bounds.x)} ${svgNumber(bounds.y)} ${svgNumber(bounds.width)} ${svgNumber(bounds.height)}">`,
+      body,
+      `</svg>`
+    ].join("\n");
+    const suffix = sharedObjectGroupId ? "groupe" : "selection";
+    const rawName = `${plan?.title || "icone"}-${suffix}`.toLowerCase();
+    const filename = `${rawName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "icone-groupe"}.svg`;
+    downloadTextFile(svg, filename, "image/svg+xml;charset=utf-8");
+    setSaveStatus("SVG du groupe exporté");
+    window.setTimeout(() => setSaveStatus(""), 2500);
+  };
 
   const activateAreaSelection = () => {
     const next = !areaSelectionMode;
@@ -2400,6 +3419,92 @@ export default function PlanEditorPage() {
         : "Aucun objet dans la zone"
     );
     window.setTimeout(() => setSaveStatus(""), 2800);
+  };
+
+  /**
+   * Arrow keys nudge whatever is selected. It follows the same rules as
+   * dragging: locked objects stay put, a grouped object carries its group, and
+   * an icon's anchor dot is left where it is so the leader line simply stretches.
+  * Shift takes bigger steps, for coarse placement.
+  */
+  const nudgeSelection = (dx: number, dy: number) => {
+    // Sheet blocks use the same keyboard gesture and history timeline as
+    // objects drawn directly on the plan. Give the active sheet selection
+    // priority in case a stale canvas selection still exists underneath it.
+    if (selectedBlockId) {
+      const block = sheetBlocks.find((item) => item.id === selectedBlockId);
+      if (!block || block.locked) return false;
+
+      historyDelayRef.current = NUDGE_HISTORY_COALESCE_MS;
+      setSheetBlocks((current) => current.map((item) =>
+        item.id === selectedBlockId
+          ? { ...item, x: item.x + dx, y: item.y + dy }
+          : item
+      ));
+      return true;
+    }
+
+    const iconIds = new Set(multiSelection.iconIds);
+    const shapeIds = new Set(multiSelection.shapeIds);
+    const textIds = new Set(multiSelection.textIds);
+    if (selectedIconId) iconIds.add(selectedIconId);
+    if (selectedShapeId) shapeIds.add(selectedShapeId);
+    if (selectedTextId) textIds.add(selectedTextId);
+    if (!iconIds.size && !shapeIds.size && !textIds.size) return false;
+
+    // Anything grouped drags its whole group along, exactly as on the canvas.
+    const groupIds = new Set<string>();
+    icons.forEach((icon) => {
+      if (iconIds.has(icon.tempId) && icon.object_group_id) groupIds.add(icon.object_group_id);
+    });
+    shapes.forEach((shape) => {
+      if (shapeIds.has(shape.tempId) && shape.object_group_id) groupIds.add(shape.object_group_id);
+    });
+    texts.forEach((text) => {
+      if (textIds.has(text.tempId) && text.object_group_id) groupIds.add(text.object_group_id);
+    });
+
+    const moves = (item: { tempId: string; object_group_id?: string; locked?: boolean }, ids: Set<string>) =>
+      !item.locked && (ids.has(item.tempId) || Boolean(item.object_group_id && groupIds.has(item.object_group_id)));
+
+    // Decided here, from the arrays already in scope. Reading a flag written
+    // inside a setState updater would always come back false: React runs those
+    // during the next render, not at the call site.
+    const moved =
+      icons.some((icon) => moves(icon, iconIds)) ||
+      shapes.some((shape) => moves(shape, shapeIds)) ||
+      texts.some((text) => moves(text, textIds));
+    if (!moved) return false;
+
+    historyDelayRef.current = NUDGE_HISTORY_COALESCE_MS;
+
+    setIcons((current) => current.map((icon) => {
+      if (!moves(icon, iconIds)) return icon;
+      return { ...icon, x: icon.x + dx, y: icon.y + dy };
+    }));
+    setShapes((current) => current.map((shape) => {
+      if (!moves(shape, shapeIds)) return shape;
+      const next = { ...shape, x: shape.x + dx, y: shape.y + dy };
+      // Polygons and polylines are drawn from absolute points, so the body of
+      // the shape has to travel with its bounding box.
+      if (shape.points?.length) {
+        next.points = shape.points.map((point) => ({ ...point, x: point.x + dx, y: point.y + dy }));
+      }
+      if (shape.control_points) {
+        next.control_points = Object.fromEntries(
+          Object.entries(shape.control_points).map(([index, point]) => [
+            index,
+            { ...point, x: point.x + dx, y: point.y + dy },
+          ])
+        );
+      }
+      return next;
+    }));
+    setTexts((current) => current.map((text) => {
+      if (!moves(text, textIds)) return text;
+      return { ...text, x: text.x + dx, y: text.y + dy };
+    }));
+    return true;
   };
 
   const handleGroupMultiSelection = () => {
@@ -2595,8 +3700,48 @@ export default function PlanEditorPage() {
     setWatermarkModalOpen(true);
   };
 
+  const setClientLogoForPlan = (source: string) => {
+    setExportClientLogo(source);
+    setWatermarkConfig((current) => ({ ...current, client_logo: source }));
+    setLogoSettingsError("");
+  };
+
+  const setStudioLogoPreference = (source: string) => {
+    const resolved = source || DEFAULT_STUDIO_LOGO;
+    setExportStudioLogo(resolved);
+    setWatermarkConfig((current) => ({ ...current, creator_logo: resolved }));
+    storeStudioLogo(resolved);
+    setLogoSettingsError("");
+  };
+
+  const importConfiguredLogo = async (target: "client" | "studio", file?: File) => {
+    if (!file) return;
+    setLogoSettingsError("");
+    try {
+      const source = await prepareLogoFile(file);
+      if (target === "client") {
+        setClientLogoForPlan(source);
+        setSaveStatus("Logo client modifié — sauvegardez le plan");
+      } else {
+        setStudioLogoPreference(source);
+        setSaveStatus("Logo studio mémorisé pour les prochains plans");
+      }
+      window.setTimeout(() => setSaveStatus(""), 3500);
+    } catch (error) {
+      setLogoSettingsError(error instanceof Error ? error.message : "Impossible d’importer le logo.");
+    }
+  };
+
   const applyWatermarkSettings = () => {
-    setWatermarkConfig({ ...watermarkDraft, enabled: true });
+    const next = {
+      ...watermarkDraft,
+      enabled: true,
+      creator_logo: watermarkDraft.creator_logo || DEFAULT_STUDIO_LOGO,
+    };
+    setWatermarkConfig(next);
+    setExportClientLogo(next.client_logo);
+    setExportStudioLogo(next.creator_logo);
+    storeStudioLogo(next.creator_logo);
     setWatermarkModalOpen(false);
   };
 
@@ -2681,6 +3826,7 @@ export default function PlanEditorPage() {
         imported.push(...await importOverlayFile(file));
       }
       const baseCount = planOverlays.length;
+      const firstZIndex = getNextLayerZIndex();
       const newOverlays: CanvasPlanOverlay[] = imported.map((item, index) => {
         const aspect = item.width / Math.max(1, item.height);
         const initialWidth = 450;
@@ -2694,7 +3840,11 @@ export default function PlanEditorPage() {
           rotation: 0,
           label: item.label,
           locked: false,
+          visible: true,
+          z_index: firstZIndex + index * 10,
           imageChanged: true,
+          isOriginal: true,
+          canRevertOriginal: false,
         };
       });
       setPlanOverlays((current) => [...current, ...newOverlays]);
@@ -2751,13 +3901,163 @@ export default function PlanEditorPage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   });
 
-  const applySheetTemplate = (template: SheetTemplateKey | "none") => {
-    setSheetTemplate(template);
+  const readStoredSheetTemplateVersions = (): StoredSheetTemplateVersion[] => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = window.localStorage.getItem(SHEET_TEMPLATE_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      const globalVersions = Array.isArray(parsed) ? parsed : [];
+      const legacyKey = `${LEGACY_SHEET_TEMPLATE_STORAGE_PREFIX}:${id}`;
+      const legacyRaw = window.localStorage.getItem(legacyKey);
+      if (!legacyRaw) return globalVersions;
+      const legacyParsed = JSON.parse(legacyRaw);
+      const legacyVersions = Array.isArray(legacyParsed) ? legacyParsed : [];
+      const byId = new Map<string, StoredSheetTemplateVersion>();
+      [...globalVersions, ...legacyVersions].forEach((version) => {
+        if (version?.id && version?.template && Array.isArray(version.blocks)) {
+          byId.set(version.id, version);
+        }
+      });
+      const merged = Array.from(byId.values());
+      window.localStorage.setItem(SHEET_TEMPLATE_STORAGE_KEY, JSON.stringify(merged));
+      window.localStorage.removeItem(legacyKey);
+      return merged;
+    } catch {
+      return [];
+    }
+  };
+
+  const writeStoredSheetTemplateVersions = (versions: StoredSheetTemplateVersion[]) => {
+    setStoredSheetTemplateVersions(versions);
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SHEET_TEMPLATE_STORAGE_KEY, JSON.stringify(versions));
+  };
+
+  const cloneSheetBlocks = (blocks: SheetBlock[]) =>
+    JSON.parse(JSON.stringify(blocks)) as SheetBlock[];
+
+  const saveTemplateDraft = (
+    template: SheetTemplateKey | "none" = sheetTemplate,
+    blocks: SheetBlock[] = sheetBlocks,
+    placement = sheetPlanPlacement
+  ) => {
+    if (template === "none" || !blocks.length) return;
+    const versions = readStoredSheetTemplateVersions();
+    const now = new Date().toISOString();
+    const draftId = `draft:${template}`;
+    const existing = versions.find((version) => version.id === draftId);
+    const draft: StoredSheetTemplateVersion = {
+      id: draftId,
+      template,
+      name: `Dernière modification - ${SHEET_TEMPLATES[template].label}`,
+      blocks: cloneSheetBlocks(blocks),
+      planPlacement: { ...placement },
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+    const nextVersions = [
+      ...versions.filter((version) => version.id !== draftId),
+      draft,
+    ];
+    writeStoredSheetTemplateVersions(nextVersions);
+    if (!activeSheetTemplateVersionId || activeSheetTemplateVersionId.startsWith("draft:")) {
+      setActiveSheetTemplateVersionId(draftId);
+    }
+  };
+
+  const getSavedTemplateDraft = (template: SheetTemplateKey) =>
+    readStoredSheetTemplateVersions().find((version) => version.id === `draft:${template}`);
+
+  useEffect(() => {
+    setStoredSheetTemplateVersions(readStoredSheetTemplateVersions());
+  }, [id]);
+
+  useEffect(() => {
+    if (sheetTemplate === "none" || !sheetBlocks.length) return;
+    const timer = window.setTimeout(() => {
+      saveTemplateDraft(sheetTemplate, sheetBlocks, sheetPlanPlacement);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [sheetTemplate, sheetBlocks, sheetPlanPlacement, id, activeSheetTemplateVersionId]);
+
+  const saveCurrentSheetTemplateVersion = () => {
+    if (sheetTemplate === "none" || !sheetBlocks.length) return;
+    const defaultName = `${SHEET_TEMPLATES[sheetTemplate].label} - version ${new Date().toLocaleDateString("fr-FR")}`;
+    const name = window.prompt("Nom de la nouvelle version du template :", defaultName);
+    if (!name?.trim()) return;
+    const versions = readStoredSheetTemplateVersions();
+    const now = new Date().toISOString();
+    const version: StoredSheetTemplateVersion = {
+      id: typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? `version:${crypto.randomUUID()}`
+        : `version:${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      template: sheetTemplate,
+      name: name.trim(),
+      blocks: cloneSheetBlocks(sheetBlocks),
+      planPlacement: { ...sheetPlanPlacement },
+      createdAt: now,
+      updatedAt: now,
+    };
+    writeStoredSheetTemplateVersions([...versions, version]);
+    setActiveSheetTemplateVersionId(version.id);
+    setSaveStatus("Version du template enregistrée");
+    window.setTimeout(() => setSaveStatus(""), 2500);
+  };
+
+  const applyStoredSheetTemplateVersion = (versionId: string) => {
+    if (!versionId) {
+      setActiveSheetTemplateVersionId("");
+      return;
+    }
+    const version = readStoredSheetTemplateVersions().find((item) => item.id === versionId);
+    if (!version) return;
+    saveTemplateDraft();
+    setSheetTemplate(version.template);
+    const templateConfig = SHEET_TEMPLATES[version.template];
+    if ("paper" in templateConfig) {
+      setExportPaperFormat(templateConfig.paper as ExportPaperFormat);
+    }
+    setSheetBlocks(cloneSheetBlocks(version.blocks));
+    setSheetPlanPlacement({ ...version.planPlacement });
+    setActiveSheetTemplateVersionId(version.id);
     setAreaSelectionMode(false);
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
     setSelectedBlockId(null);
+    window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
+  };
+
+  const deleteCurrentSheetTemplateVersion = () => {
+    if (!activeSheetTemplateVersionId || activeSheetTemplateVersionId.startsWith("draft:")) return;
+    if (!window.confirm("Supprimer cette version de template ?")) return;
+    const versions = readStoredSheetTemplateVersions().filter((version) => version.id !== activeSheetTemplateVersionId);
+    writeStoredSheetTemplateVersions(versions);
+    setActiveSheetTemplateVersionId("");
+    setSaveStatus("Version du template supprimée");
+    window.setTimeout(() => setSaveStatus(""), 2500);
+  };
+
+  const applySheetTemplate = (template: SheetTemplateKey | "none", options: { reset?: boolean } = {}) => {
+    saveTemplateDraft();
+    setSheetTemplate(template);
+    setExportOfficialFond("none");
+    setAreaSelectionMode(false);
+    setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+    setSelectedBlockId(null);
+    setActiveSheetTemplateVersionId("");
     if (template === "none") {
       setSheetBlocks([]);
+      return;
+    }
+    const templateConfig = SHEET_TEMPLATES[template];
+    if ("paper" in templateConfig) {
+      setExportPaperFormat(templateConfig.paper as ExportPaperFormat);
+    }
+    const savedDraft = options.reset ? null : getSavedTemplateDraft(template);
+    if (savedDraft) {
+      setSheetBlocks(cloneSheetBlocks(savedDraft.blocks));
+      setSheetPlanPlacement({ ...savedDraft.planPlacement });
+      setActiveSheetTemplateVersionId(savedDraft.id);
+      window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
       return;
     }
     setSheetBlocks(
@@ -2773,6 +4073,13 @@ export default function PlanEditorPage() {
     window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
   };
 
+  // Logo fields belong to the saved project state. Keeping the export preview
+  // derived from them also makes undo/redo restore the correct artwork.
+  useEffect(() => {
+    setExportClientLogo(watermarkConfig.client_logo || "");
+    setExportStudioLogo(watermarkConfig.creator_logo || getStoredStudioLogo());
+  }, [watermarkConfig.client_logo, watermarkConfig.creator_logo]);
+
   // Logos live as data URLs in the export settings; the sheet needs them decoded.
   useEffect(() => {
     let cancelled = false;
@@ -2787,7 +4094,7 @@ export default function PlanEditorPage() {
 
     void Promise.all([decode(exportClientLogo), decode(exportStudioLogo)]).then(([client, studio]) => {
       if (cancelled) return;
-      setSheetLogoImages({ clientLogo: client, studioLogo: studio });
+      setSheetLogoImages((current) => ({ ...current, clientLogo: client, studioLogo: studio }));
     });
 
     return () => {
@@ -2857,6 +4164,86 @@ export default function PlanEditorPage() {
     setSheetBlocks((blocks) => [...blocks, block]);
     setSelectedBlockId(block.id);
     setPlacementIconType(null);
+  };
+
+  /** A text placed outside the plan window belongs to the printed sheet. */
+  const handlePlaceSheetText = (x: number, y: number) => {
+    const block = createFreeTextBlock(
+      sheetBlocks.length + 1,
+      activeSheetSize.width,
+      activeSheetSize.height
+    );
+    block.x = Math.round(Math.max(0, Math.min(activeSheetSize.width - block.width, x - block.width / 2)));
+    block.y = Math.round(Math.max(0, Math.min(activeSheetSize.height - block.height, y - block.height / 2)));
+    setSheetBlocks((blocks) => [...blocks, block]);
+    setSelectedBlockId(block.id);
+    setPlacementText(false);
+  };
+
+  /** Convert drawing coordinates into a self-contained, resizable sheet block. */
+  const handlePlaceSheetShape = (shape: CanvasShape) => {
+    const isPath = isPolygonShape(shape.shape_type) || shape.shape_type === "line";
+    const absolutePoints = shape.points?.length
+      ? shape.points
+      : shape.shape_type === "line"
+        ? [
+            { x: shape.x, y: shape.y },
+            { x: shape.x + shape.width, y: shape.y + shape.height }
+          ]
+        : [];
+    const naturalBounds = isPath
+      ? boundsFromPoints(absolutePoints)
+      : { x: shape.x, y: shape.y, width: Math.abs(shape.width), height: Math.abs(shape.height) };
+    // A perfectly horizontal or vertical line still needs a small selectable
+    // bounding box. The line itself remains centred inside that box.
+    const width = Math.max(4, naturalBounds.width);
+    const height = Math.max(4, naturalBounds.height);
+    const x = naturalBounds.x - (width - naturalBounds.width) / 2;
+    const y = naturalBounds.y - (height - naturalBounds.height) / 2;
+    const shapeNumber = sheetBlocks.filter((block) => block.kind === "shape").length + 1;
+    const labels: Record<ShapeKind, string> = {
+      line: "Ligne",
+      rect: "Rectangle",
+      circle: "Cercle",
+      zone: "Zone",
+      polyline: "Polyligne",
+      polygon_zone: "Zone polygone",
+      free_polygon_zone: "Zone libre",
+      curve_polygon_zone: "Zone courbe"
+    };
+    const closedPath = isPolygonShape(shape.shape_type) && shape.shape_type !== "polyline";
+    const block: SheetBlock = {
+      id: `sheet-shape-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      kind: "shape",
+      label: `${labels[shape.shape_type]} ${shapeNumber}`,
+      x: Math.round(x),
+      y: Math.round(y),
+      width,
+      height,
+      rotation: shape.rotation,
+      visible: true,
+      shapeType: shape.shape_type,
+      shapePoints: absolutePoints.map((point) => ({
+        x: (point.x - x) / width,
+        y: (point.y - y) / height
+      })),
+      shapeTension: shape.shape_type === "curve_polygon_zone" ? shape.tension ?? 0.35 : shape.tension,
+      stroke: shape.color,
+      strokeWidth: shape.stroke_width,
+      fill:
+        shape.shape_type === "zone" || closedPath
+          ? shape.fill_color || shape.color
+          : shape.fill_color || undefined,
+      fillOpacity: shape.fill_opacity ?? (shape.shape_type === "zone" ? 0.28 : closedPath ? 0.35 : undefined)
+    };
+
+    setSheetBlocks((blocks) => [...blocks, block]);
+    setSelectedBlockId(block.id);
+    setSelectedIconId(null);
+    setSelectedShapeId(null);
+    setSelectedTextId(null);
+    setSelectedOverlayId(null);
+    setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
   };
 
   const handleUpdateSelectedIcon = (field: keyof CanvasIcon, value: any) => {
@@ -2990,7 +4377,9 @@ export default function PlanEditorPage() {
       width: source.width,
       height: source.height,
       rotation: source.rotation ?? 0,
-      label: source.label ?? ""
+      label: source.label ?? "",
+      visible: true,
+      z_index: getNextLayerZIndex(),
     };
 
     setIcons((currentIcons) => [...currentIcons, pasted]);
@@ -3005,11 +4394,51 @@ export default function PlanEditorPage() {
       tempId: makeIconTempId(),
       id: undefined,
       x: selectedIcon.x + 16,
-      y: selectedIcon.y + 16
+      y: selectedIcon.y + 16,
+      visible: true,
+      z_index: getNextLayerZIndex(),
     };
     setIcons((currentIcons) => [...currentIcons, duplicate]);
     setSelectedIconId(duplicate.tempId);
   };
+
+  // Arrow keys nudge the selection. Its own listener with no dependency array so
+  // it always reads the current selection, like the other editor shortcuts here.
+  useEffect(() => {
+    const NUDGE_STEP = 1;
+    const NUDGE_STEP_COARSE = 10;
+    const DELTAS: Record<string, [number, number]> = {
+      ArrowUp: [0, -1],
+      ArrowDown: [0, 1],
+      ArrowLeft: [-1, 0],
+      ArrowRight: [1, 0],
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const delta = DELTAS[event.key];
+      if (!delta) return;
+      // Ctrl/⌘ and Alt belong to the browser and to the canvas' own shortcuts.
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const element = event.target as HTMLElement | null;
+      if (
+        element &&
+        (element.tagName === "INPUT" ||
+          element.tagName === "TEXTAREA" ||
+          element.tagName === "SELECT" ||
+          element.isContentEditable)
+      ) {
+        return;
+      }
+
+      const step = event.shiftKey ? NUDGE_STEP_COARSE : NUDGE_STEP;
+      // Only swallow the arrow key when something actually moved, so the page
+      // keeps its normal keyboard behaviour when nothing is selected.
+      if (nudgeSelection(delta[0] * step, delta[1] * step)) event.preventDefault();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  });
 
   // Clipboard shortcuts. Kept apart from the tool shortcuts, which deliberately
   // ignore events carrying a modifier key.
@@ -3055,7 +4484,8 @@ export default function PlanEditorPage() {
   const openSheetSettings = () => {
     setExportSiteName((current) => current || plan?.building_name || "");
     setExportClientLogo((current) => current || watermarkConfig.client_logo);
-    setExportStudioLogo((current) => current || watermarkConfig.creator_logo);
+    setExportStudioLogo((current) => current || getStoredStudioLogo(watermarkConfig.creator_logo || DEFAULT_STUDIO_LOGO));
+    setLogoSettingsError("");
     setExportModalOpen(true);
   };
 
@@ -3399,6 +4829,7 @@ export default function PlanEditorPage() {
     key: string;
     image: HTMLImageElement | HTMLCanvasElement;
   } | null>(null);
+  const officialFondCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
 
   const getTrimmedPlanImage = async (pixelRatio: number, silent: boolean) => {
     const key = JSON.stringify({
@@ -3436,6 +4867,55 @@ export default function PlanEditorPage() {
     const trimmedPlan = trimWhiteMargins(planImage);
     planRenderCacheRef.current = { key, image: trimmedPlan };
     return trimmedPlan;
+  };
+
+  const loadOfficialFondImage = async (
+    fond: { file: string },
+    width: number,
+    height: number,
+    outputScale: number
+  ) => {
+    if (!fond.file) return null;
+    const cacheKey = `${fond.file}:${width}:${height}:${outputScale}`;
+    const cached = officialFondCacheRef.current.get(cacheKey);
+    if (cached) return cached;
+
+    const pdfjs = await import("pdfjs-dist");
+    pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+      "pdfjs-dist/build/pdf.worker.min.mjs",
+      import.meta.url
+    ).toString();
+    const pdf = await pdfjs.getDocument({ url: fond.file }).promise;
+    const page = await pdf.getPage(1);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const targetWidth = Math.max(1, Math.round(width * outputScale));
+    const targetHeight = Math.max(1, Math.round(height * outputScale));
+    const renderScale = Math.max(targetWidth / baseViewport.width, targetHeight / baseViewport.height);
+    const viewport = page.getViewport({ scale: renderScale });
+    const renderCanvas = document.createElement("canvas");
+    renderCanvas.width = Math.max(1, Math.round(viewport.width));
+    renderCanvas.height = Math.max(1, Math.round(viewport.height));
+    const renderContext = renderCanvas.getContext("2d");
+    if (!renderContext) throw new Error("Canvas PDF indisponible");
+
+    await page.render({ canvas: renderCanvas, canvasContext: renderContext, viewport }).promise;
+
+    const fittedCanvas = document.createElement("canvas");
+    fittedCanvas.width = targetWidth;
+    fittedCanvas.height = targetHeight;
+    const fittedContext = fittedCanvas.getContext("2d");
+    if (!fittedContext) throw new Error("Canvas PDF indisponible");
+    fittedContext.fillStyle = "#ffffff";
+    fittedContext.fillRect(0, 0, fittedCanvas.width, fittedCanvas.height);
+    const scale = Math.max(targetWidth / renderCanvas.width, targetHeight / renderCanvas.height);
+    const drawW = renderCanvas.width * scale;
+    const drawH = renderCanvas.height * scale;
+    fittedContext.drawImage(renderCanvas, (targetWidth - drawW) / 2, (targetHeight - drawH) / 2, drawW, drawH);
+    const image = await loadImage(fittedCanvas.toDataURL("image/png", 1));
+    officialFondCacheRef.current.set(cacheKey, image);
+    releaseCanvas(renderCanvas);
+    releaseCanvas(fittedCanvas);
+    return image;
   };
 
   /**
@@ -3535,15 +5015,64 @@ export default function PlanEditorPage() {
     const clientLogoScale = exportClientLogoScale / 100;
     const studioLogoScale = exportStudioLogoScale / 100;
 
+    const selectedOfficialFond = EXPORT_OFFICIAL_FONDS[exportOfficialFond];
+    const usesOfficialFond = exportOfficialFond !== "none" && Boolean(selectedOfficialFond.file);
+    const exportCanvasWidth = usesOfficialFond && selectedOfficialFond.orientation === "portrait"
+      ? EXPORT_CANVAS_HEIGHT
+      : EXPORT_CANVAS_WIDTH;
+    const exportCanvasHeight = usesOfficialFond && selectedOfficialFond.orientation === "portrait"
+      ? EXPORT_CANVAS_WIDTH
+      : EXPORT_CANVAS_HEIGHT;
+
     const canvas = document.createElement("canvas");
-    canvas.width = EXPORT_CANVAS_WIDTH * outputScale;
-    canvas.height = EXPORT_CANVAS_HEIGHT * outputScale;
+    canvas.width = exportCanvasWidth * outputScale;
+    canvas.height = exportCanvasHeight * outputScale;
     const context = canvas.getContext("2d");
     if (!context) return null;
 
     context.scale(outputScale, outputScale);
     context.textBaseline = "alphabetic";
     const palette = getExportPalette();
+
+    if (usesOfficialFond) {
+      const fondImage = await loadOfficialFondImage(selectedOfficialFond, exportCanvasWidth, exportCanvasHeight, outputScale);
+      if (fondImage) {
+        context.drawImage(fondImage, 0, 0, exportCanvasWidth, exportCanvasHeight);
+      } else {
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, exportCanvasWidth, exportCanvasHeight);
+      }
+
+      const hasSideInstructions = selectedOfficialFond.orientation === "landscape" && selectedOfficialFond.label.includes("PE");
+      const planX = selectedOfficialFond.orientation === "portrait"
+        ? 58
+        : hasSideInstructions ? 360 : 52;
+      const planY = selectedOfficialFond.orientation === "portrait" ? 135 : 150;
+      const planW = selectedOfficialFond.orientation === "portrait"
+        ? exportCanvasWidth - 116
+        : exportCanvasWidth - planX - 52;
+      const planH = selectedOfficialFond.orientation === "portrait"
+        ? exportCanvasHeight - planY - 72
+        : exportCanvasHeight - planY - 72;
+      const baseScale = Math.min(planW / trimmedPlan.width, planH / trimmedPlan.height);
+      const scale = baseScale * (exportPlanScale / 100);
+      const drawW = trimmedPlan.width * scale;
+      const drawH = trimmedPlan.height * scale;
+      const drawX = planX + planW / 2 + exportPlanOffsetX;
+      const drawY = planY + planH / 2 + exportPlanOffsetY;
+
+      context.save();
+      if (!exportDisablePlanClipping) {
+        context.beginPath();
+        context.rect(planX, planY, planW, planH);
+        context.clip();
+      }
+      context.translate(drawX, drawY);
+      context.drawImage(trimmedPlan, -drawW / 2, -drawH / 2, drawW, drawH);
+      context.restore();
+
+      return canvas.toDataURL("image/png", 1);
+    }
 
     if (exportTheme === "nfx08070") {
       context.fillStyle = palette.sheet;
@@ -5228,13 +6757,19 @@ export default function PlanEditorPage() {
   };
 
   const buildTemplatePdf = (dataUrl: string) => {
-    const paper = EXPORT_PAPER_SIZES[exportPaperFormat];
+    const selectedOfficialFond = EXPORT_OFFICIAL_FONDS[exportOfficialFond];
+    const usesOfficialFond = exportOfficialFond !== "none" && Boolean(selectedOfficialFond.file);
+    const selectedPaperFormat = usesOfficialFond ? selectedOfficialFond.paper : exportPaperFormat;
+    const paper = EXPORT_PAPER_SIZES[selectedPaperFormat];
+    const orientation = usesOfficialFond && selectedOfficialFond.orientation === "portrait" ? "portrait" : "landscape";
+    const pageWidth = orientation === "portrait" ? paper.heightMm : paper.widthMm;
+    const pageHeight = orientation === "portrait" ? paper.widthMm : paper.heightMm;
     const pdf = new jsPDF({
-      orientation: "landscape",
+      orientation,
       unit: "mm",
-      format: exportPaperFormat
+      format: [pageWidth, pageHeight]
     });
-    pdf.addImage(dataUrl, "PNG", 0, 0, paper.widthMm, paper.heightMm);
+    pdf.addImage(dataUrl, "PNG", 0, 0, pageWidth, pageHeight);
     return pdf;
   };
 
@@ -5271,6 +6806,7 @@ export default function PlanEditorPage() {
     cleaning,
     icons,
     exportTheme,
+    exportOfficialFond,
     exportUseCustomColors,
     exportCustomColors,
     exportPlanTitle,
@@ -5395,9 +6931,9 @@ export default function PlanEditorPage() {
       return stage.toDataURL({
         x: 0,
         y: 0,
-        width: SHEET_WIDTH,
-        height: SHEET_HEIGHT,
-        pixelRatio: fitPixelRatio(SHEET_WIDTH, SHEET_HEIGHT, targetLongEdgePx)
+        width: activeSheetSize.width,
+        height: activeSheetSize.height,
+        pixelRatio: fitPixelRatio(activeSheetSize.width, activeSheetSize.height, targetLongEdgePx)
       });
     } finally {
       stage.position({ x: previousView.x, y: previousView.y });
@@ -5425,6 +6961,14 @@ export default function PlanEditorPage() {
     const jpeg = canvas.toDataURL("image/jpeg", 0.94);
     releaseCanvas(canvas);
     return jpeg;
+  };
+
+  const handleOfficialFondChange = (key: ExportOfficialFondKey) => {
+    setExportOfficialFond(key);
+    const fond = EXPORT_OFFICIAL_FONDS[key];
+    if (fond.paper !== "a4") {
+      setExportPaperFormat(fond.paper);
+    }
   };
 
   const exportStudio = async (format: "png" | "jpeg" | "pdf") => {
@@ -5468,10 +7012,17 @@ export default function PlanEditorPage() {
 
       if (sheetActive) {
         // A template is drawn at the paper's own proportions: it fills the page.
-        const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: exportPaperFormat });
+        const sheetLandscape = activeSheetSize.width >= activeSheetSize.height;
+        const pdfWidth = sheetLandscape ? paper.widthMm : paper.heightMm;
+        const pdfHeight = sheetLandscape ? paper.heightMm : paper.widthMm;
+        const pdf = new jsPDF({
+          orientation: sheetLandscape ? "landscape" : "portrait",
+          unit: "mm",
+          format: exportPaperFormat
+        });
         // "FAST" is deflate: a plan is mostly white, and storing the image raw
         // is what turned a perfectly ordinary sheet into hundreds of megabytes.
-        pdf.addImage(dataUrl, "PNG", 0, 0, paper.widthMm, paper.heightMm, undefined, "FAST");
+        pdf.addImage(dataUrl, "PNG", 0, 0, pdfWidth, pdfHeight, undefined, "FAST");
         pdf.save(`${filename}.pdf`);
         return;
       }
@@ -5559,8 +7110,10 @@ export default function PlanEditorPage() {
     <div className="rounded-xl border border-slate-200 bg-white p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <h3 className="text-sm font-bold text-slate-950">Historique de nettoyage</h3>
-          <p className="mt-1 text-xs text-slate-500">Choisissez une version nettoyée pour la remettre comme fond de plan.</p>
+          <h3 className="text-sm font-bold text-slate-950">
+            Historique de nettoyage{cleanTargetOverlay ? ` — ${cleanTargetOverlay.label || "plan secondaire"}` : " — plan principal"}
+          </h3>
+          <p className="mt-1 text-xs text-slate-500">Choisissez une version nettoyée pour la remettre comme fond de ce plan.</p>
         </div>
         <button
           type="button"
@@ -5580,7 +7133,7 @@ export default function PlanEditorPage() {
         </div>
       ) : cleaningHistory.length === 0 ? (
         <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-medium text-slate-500">
-          Aucun plan nettoyé enregistré pour ce plan.
+          Aucune version nettoyée enregistrée pour ce plan.
         </div>
       ) : (
         <div className="grid max-h-96 gap-3 overflow-y-auto pr-1 md:grid-cols-2">
@@ -5633,8 +7186,9 @@ export default function PlanEditorPage() {
         className="studio-shell flex min-h-0 min-w-0 flex-col bg-[#1b1b1d] text-neutral-200"
       >
         {/* ───────────────── Top bar ───────────────── */}
-        <header className="flex min-h-16 w-full max-w-full min-w-0 shrink-0 items-center justify-between gap-2 overflow-hidden border-b border-black/50 bg-[#2d2d30] px-2 py-0.5">
+        <header className="flex min-h-16 w-full max-w-full min-w-0 shrink-0 items-center justify-between gap-2 overflow-hidden border-b border-brand-orange/40 bg-[#2d2d30] px-2 py-0.5 shadow-[inset_0_2px_0_rgba(255,116,0,0.85)]">
           <div className="flex w-56 min-w-[200px] shrink-0 items-center gap-2">
+            <BrandLogo compact className="h-8 w-8 shrink-0" priority />
             <button
               type="button"
               onClick={() => {
@@ -5650,7 +7204,7 @@ export default function PlanEditorPage() {
             <button
               type="button"
               onClick={() => setLeftDockOpen((open) => !open)}
-              title={leftDockOpen ? "Masquer les équipements" : "Afficher les équipements"}
+              title={leftDockOpen ? "Masquer le panneau Bibliothèque / Calques" : "Afficher le panneau Bibliothèque / Calques"}
               className={`flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors ${
                 leftDockOpen ? "bg-white/10 text-neutral-100" : "text-neutral-500 hover:bg-white/10"
               }`}
@@ -5764,12 +7318,47 @@ export default function PlanEditorPage() {
               {sheetActive && (
                 <button
                   type="button"
-                  onClick={() => applySheetTemplate(sheetTemplate as SheetTemplateKey)}
+                  onClick={() => applySheetTemplate(sheetTemplate as SheetTemplateKey, { reset: true })}
                   title="Réinitialiser la mise en page du modèle"
                   className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
                 >
                   <RefreshCw className="h-3 w-3" />
                 </button>
+              )}
+              {sheetActive && (
+                <>
+                  <select
+                    value={activeSheetTemplateVersionId}
+                    onChange={(event) => applyStoredSheetTemplateVersion(event.target.value)}
+                    title="Charger une version enregistrée de ce template"
+                    className="max-w-40 cursor-pointer rounded bg-transparent px-1 py-0.5 text-[11px] font-semibold text-neutral-200 outline-none hover:bg-white/10"
+                  >
+                    <option value="" className="bg-[#2d2d30]">Versions</option>
+                    {currentSheetTemplateVersions.map((version) => (
+                      <option key={version.id} value={version.id} className="bg-[#2d2d30]">
+                        {version.id.startsWith("draft:") ? "Dernière modif" : version.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={saveCurrentSheetTemplateVersion}
+                    title="Enregistrer cette mise en page comme une nouvelle version"
+                    className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+                  >
+                    <Save className="h-3 w-3" />
+                  </button>
+                  {activeSheetTemplateVersionId && !activeSheetTemplateVersionId.startsWith("draft:") && (
+                    <button
+                      type="button"
+                      onClick={deleteCurrentSheetTemplateVersion}
+                      title="Supprimer la version sélectionnée"
+                      className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-500 transition-colors hover:bg-red-500/15 hover:text-red-300"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  )}
+                </>
               )}
               <button
                 type="button"
@@ -5932,6 +7521,17 @@ export default function PlanEditorPage() {
                 <span>Dissocier les objets</span>
               </button>
             )}
+            {multiSelectionCount > 0 && (
+              <button
+                type="button"
+                onClick={handleExportSelectedGroupSvg}
+                title="Exporter la sélection ou le groupe d’objets en SVG"
+                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1.5 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span>Exporter SVG</span>
+              </button>
+            )}
 
             {selectedOverlayId && (
               <button
@@ -6044,9 +7644,14 @@ export default function PlanEditorPage() {
               <span>Nettoyer</span>
             </button>
 
-            {plan?.use_cleaned_background && (
+            {(selectedOverlay
+              ? selectedOverlay.canRevertOriginal && !selectedOverlay.isOriginal
+              : plan?.use_cleaned_background) && (
               <button
-                onClick={() => setRevertConfirmOpen(true)}
+                onClick={() => {
+                  setSelectedCleanTargetId(selectedOverlay?.tempId || MAIN_PLAN_ID);
+                  setRevertConfirmOpen(true);
+                }}
                 disabled={cleaning}
                 title="Revenir au plan original"
                 className="flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
@@ -6065,17 +7670,56 @@ export default function PlanEditorPage() {
           {/* Left dock — fixed width, never scrolls the page */}
           <aside
             style={{ width: leftDockOpen ? 208 : 0, minWidth: leftDockOpen ? 208 : 0, flex: leftDockOpen ? "0 0 208px" : "0 0 0px" }}
-            className="shrink-0 overflow-hidden border-r border-black/50"
+            className="flex shrink-0 flex-col overflow-hidden border-r border-black/50 bg-[#252527]"
           >
-            <IconToolbar
-              onAddIcon={handleAddIcon}
-              activeIconType={placementIconType}
-              onCancelPlacement={() => setPlacementIconType(null)}
-              iconDefinitions={availableIconDefinitions}
-              onAddText={handleAddText}
-              placementTextActive={placementText}
-              onCancelTextPlacement={() => setPlacementText(false)}
-            />
+            <div className="grid h-9 shrink-0 grid-cols-2 border-b border-black/50 bg-[#202022] p-1">
+              <button
+                type="button"
+                onClick={() => setLeftDockTab("library")}
+                className={`flex cursor-pointer items-center justify-center gap-1 rounded text-[10px] font-semibold transition-colors ${
+                  leftDockTab === "library" ? "bg-white/10 text-white" : "text-neutral-500 hover:text-neutral-200"
+                }`}
+              >
+                <Library className="h-3.5 w-3.5" />
+                Bibliothèque
+              </button>
+              <button
+                type="button"
+                onClick={() => setLeftDockTab("layers")}
+                className={`flex cursor-pointer items-center justify-center gap-1 rounded text-[10px] font-semibold transition-colors ${
+                  leftDockTab === "layers" ? "bg-sky-600 text-white" : "text-neutral-500 hover:text-neutral-200"
+                }`}
+              >
+                <Layers3 className="h-3.5 w-3.5" />
+                Calques
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              {leftDockTab === "library" ? (
+                <IconToolbar
+                  onAddIcon={handleAddIcon}
+                  activeIconType={placementIconType}
+                  onCancelPlacement={() => setPlacementIconType(null)}
+                  iconDefinitions={availableIconDefinitions}
+                  onAddSvg={handleAddSvgPictogram}
+                  onDeleteSvg={handleDeleteSvgPictogram}
+                  onRenameSvg={handleRenameSvgPictogram}
+                  onAddText={handleAddText}
+                  placementTextActive={placementText}
+                  onCancelTextPlacement={() => setPlacementText(false)}
+                />
+              ) : (
+                <LayerPanel
+                  items={activeLayerItems}
+                  selectedId={selectedLayerId}
+                  onSelect={handleSelectLayer}
+                  onToggleVisibility={handleToggleLayerVisibility}
+                  onToggleLock={handleToggleLayerLock}
+                  onMove={handleMoveLayer}
+                  onReorder={handleReorderLayers}
+                />
+              )}
+            </div>
           </aside>
 
           {/* Canvas — the only fluid region. At 100% CSS flex gives it exactly
@@ -6132,12 +7776,16 @@ export default function PlanEditorPage() {
                   sheetLegendEntries={sheetLegendEntries}
                   sheetPictoImages={sheetLegendImages}
                   onPlaceSheetIcon={handlePlaceSheetIcon}
+                  onPlaceSheetText={handlePlaceSheetText}
+                  onPlaceSheetShape={handlePlaceSheetShape}
                   planReframeMode={sheetReframeMode}
                   planPlacement={sheetPlanPlacement}
                   onPlanPlacementChange={setSheetPlanPlacement}
                   mainPlanTransform={mainPlanTransform}
                   onMainPlanTransformChange={setMainPlanTransform}
                   mainPlanLocked={mainPlanLocked}
+                  mainPlanVisible={mainPlanVisible}
+                  mainPlanZIndex={mainPlanZIndex}
                   mainPlanGroupId={mainPlanGroupId}
                   mainPlanGroupingEnabled={mainPlanGroupingEnabled}
                   areaSelectionMode={areaSelectionMode}
@@ -6177,8 +7825,10 @@ export default function PlanEditorPage() {
                   canvasRef={planCanvasRef}
                   eraserSize={eraserSize}
                   eraserShape={eraserShape}
+                  eraserTarget={eraserTarget}
                   undoEraseSignal={undoEraseSignal}
                   resetEraseSignal={resetEraseSignal}
+                  eraseStrokeTarget={eraseStrokeTarget}
                   onEraseStrokesChange={setEraseStrokeCount}
                   shapes={shapes}
                   onShapesChange={setShapes}
@@ -6186,7 +7836,12 @@ export default function PlanEditorPage() {
                   onSelectShape={(shapeId) => {
                     setSelectedShapeId(shapeId);
                     if (shapeId) {
-                      setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+                      const clickedShape = shapes.find((shape) => shape.tempId === shapeId);
+                      setMultiSelection(
+                        clickedShape?.object_group_id
+                          ? getObjectGroupSelection(clickedShape.object_group_id)
+                          : { iconIds: [], shapeIds: [], textIds: [] }
+                      );
                       setSelectedBatBlock(false);
                       setSelectedIconId(null);
                       setSelectedTextId(null);
@@ -6295,7 +7950,8 @@ export default function PlanEditorPage() {
 
                   {selectedBlock.kind !== "plan" &&
                     selectedBlock.kind !== "image" &&
-                    selectedBlock.kind !== "picto" && (
+                    selectedBlock.kind !== "picto" &&
+                    selectedBlock.kind !== "shape" && (
                     <>
                       {selectedBlock.title !== undefined && (
                         <label className="block">
@@ -6397,7 +8053,76 @@ export default function PlanEditorPage() {
                     </>
                   )}
 
-                  {selectedBlock.kind !== "image" && selectedBlock.kind !== "picto" && (
+                  {selectedBlock.kind === "shape" && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                            Trait
+                          </span>
+                          <input
+                            type="color"
+                            value={selectedBlock.stroke || "#000000"}
+                            onChange={(event) => updateSelectedBlock({ stroke: event.target.value })}
+                            className="h-7 w-full cursor-pointer rounded border border-white/10 bg-black/30"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                            Remplissage
+                          </span>
+                          <input
+                            type="color"
+                            value={selectedBlock.fill || selectedBlock.stroke || "#000000"}
+                            onChange={(event) => updateSelectedBlock({ fill: event.target.value })}
+                            className="h-7 w-full cursor-pointer rounded border border-white/10 bg-black/30"
+                          />
+                        </label>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                            Épaisseur
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={60}
+                            value={selectedBlock.strokeWidth ?? 3}
+                            onChange={(event) => updateSelectedBlock({ strokeWidth: Number(event.target.value) })}
+                            className="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] text-neutral-100 outline-none focus:border-emerald-500"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                            Opacité {Math.round((selectedBlock.fillOpacity ?? 0.35) * 100)}%
+                          </span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={selectedBlock.fillOpacity ?? 0.35}
+                            onChange={(event) => updateSelectedBlock({ fillOpacity: Number(event.target.value) })}
+                            className="mt-2 w-full accent-emerald-500"
+                          />
+                        </label>
+                      </div>
+                      {selectedBlock.shapeType !== "line" && selectedBlock.shapeType !== "polyline" && (
+                        <button
+                          type="button"
+                          onClick={() => updateSelectedBlock({
+                            fill: selectedBlock.fill ? undefined : selectedBlock.stroke || "#000000"
+                          })}
+                          className="w-full rounded border border-white/10 py-1.5 text-[10px] font-semibold text-neutral-300 transition-colors hover:bg-white/10"
+                        >
+                          {selectedBlock.fill ? "Retirer le remplissage" : "Ajouter un remplissage"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {selectedBlock.kind !== "image" && selectedBlock.kind !== "picto" && selectedBlock.kind !== "shape" && (
                     <div className="grid grid-cols-2 gap-2">
                       {([
                         { key: "color" as const, label: "Texte" },
@@ -6426,6 +8151,84 @@ export default function PlanEditorPage() {
                         ))}
                     </div>
                   )}
+
+                  {selectedBlock.kind === "picto" && (
+                    <div className="border-t border-white/10 pt-3">
+                      <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                        Couleur du pictogramme
+                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => updateSelectedBlock({ color: undefined })}
+                          className={`rounded border px-2 py-1 text-[10px] font-medium transition-colors ${
+                            !selectedBlock.color
+                              ? "border-sky-500 bg-sky-500/20 text-sky-300"
+                              : "border-black/50 bg-[#1b1b1d] text-neutral-300 hover:bg-white/10"
+                          }`}
+                          title="Rendre au pictogramme sa couleur d’origine"
+                        >
+                          D&apos;origine
+                        </button>
+                        {ICON_COLOR_SWATCHES.map((swatch) => (
+                          <button
+                            key={swatch.value}
+                            type="button"
+                            onClick={() => updateSelectedBlock({ color: swatch.value })}
+                            className={`h-6 w-6 cursor-pointer rounded border transition-transform hover:scale-110 ${
+                              selectedBlock.color?.toLowerCase() === swatch.value
+                                ? "border-white ring-2 ring-sky-400"
+                                : "border-black/50"
+                            }`}
+                            style={{ backgroundColor: swatch.value }}
+                            title={swatch.label}
+                            aria-label={swatch.label}
+                          />
+                        ))}
+                        <input
+                          type="color"
+                          value={selectedBlock.color || "#ef4444"}
+                          onChange={(event) => updateSelectedBlock({ color: event.target.value.toLowerCase() })}
+                          className="h-6 w-8 cursor-pointer rounded border border-black/50 bg-transparent p-0"
+                          title="Choisir une couleur libre"
+                        />
+                      </div>
+                      {selectedBlock.color ? (
+                        <p className="mt-1.5 text-[10px] leading-snug text-amber-400/90">
+                          Une teinte modifiée peut ne plus être conforme à la couleur réglementaire du pictogramme.
+                        </p>
+                      ) : null}
+                    </div>
+                  )}
+
+                  <div className="border-t border-white/10 pt-3">
+                    <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                      Ordre du calque
+                    </span>
+                    <div className="grid grid-cols-4 gap-1">
+                      {([
+                        { direction: "front" as const, label: "Tout devant", symbol: "⇈", disabled: selectedSheetLayerIndex <= 0 },
+                        { direction: "up" as const, label: "Avancer", symbol: "↑", disabled: selectedSheetLayerIndex <= 0 },
+                        { direction: "down" as const, label: "Reculer", symbol: "↓", disabled: selectedSheetLayerIndex < 0 || selectedSheetLayerIndex >= sheetLayerItems.length - 1 },
+                        { direction: "back" as const, label: "Tout derrière", symbol: "⇊", disabled: selectedSheetLayerIndex < 0 || selectedSheetLayerIndex >= sheetLayerItems.length - 1 },
+                      ]).map((control) => (
+                        <button
+                          key={control.direction}
+                          type="button"
+                          disabled={control.disabled}
+                          onClick={() => handleMoveLayer(selectedBlock.id, control.direction)}
+                          title={control.label}
+                          aria-label={control.label}
+                          className="flex h-7 cursor-pointer items-center justify-center rounded border border-white/10 text-sm font-semibold text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
+                        >
+                          {control.symbol}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="mt-1.5 text-[9px] leading-snug text-neutral-500">
+                      Le calque placé le plus haut apparaît devant les autres blocs de la feuille.
+                    </p>
+                  </div>
 
                   <div className="grid grid-cols-2 gap-2 border-t border-white/10 pt-3">
                     {([
@@ -6472,6 +8275,145 @@ export default function PlanEditorPage() {
                       </button>
                     )}
                   </div>
+                </div>
+              </div>
+            ) : multiSelectionCount > 0 ? (
+              <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
+                <div className="flex items-center gap-3 border-b border-black/40 px-3 py-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded border border-violet-500/30 bg-violet-500/10 text-violet-300">
+                    <GroupIcon className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-semibold text-neutral-100">
+                      {sharedObjectGroupId ? "Groupe d’objets" : "Sélection multiple"}
+                    </p>
+                    <p className="text-[10px] text-neutral-500">
+                      {multiSelectionCount} objet{multiSelectionCount > 1 ? "s" : ""} · {selectedMultiShapes.length} tracé{selectedMultiShapes.length > 1 ? "s" : ""}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-4 p-3">
+                  <div className="rounded border border-violet-500/20 bg-violet-500/5 p-2.5">
+                    <p className="text-[10px] leading-relaxed text-neutral-400">
+                      {sharedObjectGroupId
+                        ? "Ce groupe se déplace comme un seul objet. La couleur et l’épaisseur ci-dessous s’appliquent à tous ses tracés."
+                        : "Regroupez la sélection pour la déplacer comme un seul objet et retrouver ses tracés en un clic."}
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      {multiSelectionCount >= 2 && (
+                        <button
+                          type="button"
+                          onClick={handleGroupMultiSelection}
+                          className={`flex cursor-pointer items-center justify-center gap-1.5 rounded border py-1.5 text-[10px] font-semibold transition-colors ${
+                            sharedObjectGroupId
+                              ? "border-violet-500/40 bg-violet-500/20 text-violet-200"
+                              : "border-white/10 bg-white/5 text-neutral-300 hover:bg-white/10"
+                          }`}
+                        >
+                          <GroupIcon className="h-3.5 w-3.5" />
+                          {sharedObjectGroupId ? "Groupe actif" : "Grouper"}
+                        </button>
+                      )}
+                      {selectedMultiObjectGroupIds.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleUngroupMultiSelection}
+                          className="flex cursor-pointer items-center justify-center gap-1.5 rounded border border-white/10 bg-white/5 py-1.5 text-[10px] font-semibold text-neutral-300 transition-colors hover:bg-white/10"
+                        >
+                          <Ungroup className="h-3.5 w-3.5" />
+                          Dissocier
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleExportSelectedGroupSvg}
+                        className="flex cursor-pointer items-center justify-center gap-1.5 rounded border border-white/10 bg-white/5 py-1.5 text-[10px] font-semibold text-neutral-300 transition-colors hover:bg-white/10"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        Exporter SVG
+                      </button>
+                    </div>
+                  </div>
+
+                  {selectedMultiShapes.length > 0 ? (
+                    <>
+                      <div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                            Couleur des tracés
+                          </span>
+                          {multiShapeColorsMixed && (
+                            <span className="text-[9px] font-medium text-amber-400">Couleurs mixtes</span>
+                          )}
+                        </div>
+                        <div className="mt-1.5 flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={multiShapeColor}
+                            onChange={(event) => handleUpdateMultiShapeStyle("color", event.target.value)}
+                            className="h-7 w-9 shrink-0 cursor-pointer rounded border border-black/50 bg-transparent"
+                          />
+                          <input
+                            type="text"
+                            value={multiShapeColor}
+                            onChange={(event) => handleUpdateMultiShapeStyle("color", event.target.value)}
+                            className="w-full rounded border border-black/50 bg-[#1b1b1d] px-2 py-1 text-[11px] tabular-nums text-neutral-200 focus:border-violet-500/60 focus:outline-none"
+                          />
+                        </div>
+                        <div className="mt-2.5 grid grid-cols-6 gap-1.5">
+                          {PRESET_COLORS.map((preset) => (
+                            <button
+                              key={`multi-stroke-${preset.hex}`}
+                              type="button"
+                              title={`${preset.name} — appliquer aux ${selectedMultiShapes.length} tracés`}
+                              onClick={() => handleUpdateMultiShapeStyle("color", preset.hex)}
+                              className={`h-6 w-full rounded border transition-transform hover:scale-105 focus:outline-none ${
+                                !multiShapeColorsMixed && multiShapeColor === preset.hex
+                                  ? "border-violet-400 ring-2 ring-violet-400/50"
+                                  : "border-white/20"
+                              }`}
+                              style={{ backgroundColor: preset.hex }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                            Épaisseur commune
+                          </span>
+                          <span className={`text-[10px] tabular-nums ${multiShapeWidthsMixed ? "text-amber-400" : "text-neutral-400"}`}>
+                            {multiShapeWidthsMixed ? "Mixte" : `${multiShapeStrokeWidth} px`}
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={40}
+                          value={multiShapeStrokeWidth}
+                          onChange={(event) => handleUpdateMultiShapeStyle("stroke_width", Number(event.target.value))}
+                          className="mt-1.5 h-1 w-full cursor-pointer accent-violet-500"
+                        />
+                        <div className="mt-2 flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={0}
+                            max={40}
+                            value={multiShapeStrokeWidth}
+                            onChange={(event) => handleUpdateMultiShapeStyle("stroke_width", Number(event.target.value))}
+                            className="w-20 rounded border border-black/50 bg-[#1b1b1d] px-2 py-1 text-[11px] tabular-nums text-neutral-200 focus:border-violet-500/60 focus:outline-none"
+                          />
+                          <span className="text-[10px] text-neutral-500">px pour tous les tracés</span>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="rounded border border-white/10 bg-black/15 p-2.5 text-[10px] leading-relaxed text-neutral-500">
+                      Cette sélection ne contient aucune ligne. Les commandes de couleur et d’épaisseur apparaissent dès qu’un tracé est inclus.
+                    </p>
+                  )}
                 </div>
               </div>
             ) : selectedIcon ? (
@@ -6695,6 +8637,55 @@ export default function PlanEditorPage() {
                         <span>Miroir ↕</span>
                       </button>
                     </div>
+                  </div>
+
+                  {/* Pictogram colour */}
+                  <div className="border-t border-black/40 pt-3">
+                    <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                      Couleur du pictogramme
+                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateSelectedIcon("color", "")}
+                        className={`rounded border px-2 py-1 text-[10px] font-medium transition-colors ${
+                          !selectedIcon.color
+                            ? "border-sky-500 bg-sky-500/20 text-sky-300"
+                            : "border-black/50 bg-[#1b1b1d] text-neutral-300 hover:bg-white/10"
+                        }`}
+                        title="Rendre au pictogramme sa couleur réglementaire"
+                      >
+                        D&apos;origine
+                      </button>
+                      {ICON_COLOR_SWATCHES.map((swatch) => (
+                        <button
+                          key={swatch.value}
+                          type="button"
+                          onClick={() => handleUpdateSelectedIcon("color", swatch.value)}
+                          className={`h-6 w-6 cursor-pointer rounded border transition-transform hover:scale-110 ${
+                            selectedIcon.color?.toLowerCase() === swatch.value
+                              ? "border-white ring-2 ring-sky-400"
+                              : "border-black/50"
+                          }`}
+                          style={{ backgroundColor: swatch.value }}
+                          title={swatch.label}
+                          aria-label={swatch.label}
+                        />
+                      ))}
+                      <input
+                        type="color"
+                        value={selectedIcon.color || "#ef4444"}
+                        onChange={(event) => handleUpdateSelectedIcon("color", event.target.value.toLowerCase())}
+                        className="h-6 w-8 cursor-pointer rounded border border-black/50 bg-transparent p-0"
+                        title="Choisir une couleur libre"
+                      />
+                    </div>
+                    {selectedIcon.color ? (
+                      <p className="mt-1.5 text-[10px] leading-snug text-amber-400/90">
+                        Les couleurs des pictogrammes sont normalisées (NF X08-070) : une
+                        teinte modifiée peut ne plus être conforme.
+                      </p>
+                    ) : null}
                   </div>
 
                   {/* Offset with a leader line */}
@@ -7005,6 +8996,8 @@ export default function PlanEditorPage() {
                         ? "Zone libre"
                         : selectedShape.shape_type === "curve_polygon_zone"
                         ? "Zone courbe"
+                        : selectedShape.shape_type === "polyline"
+                        ? "Polyligne ouverte"
                         : selectedShape.shape_type === "polygon_zone"
                         ? "Zone polygone"
                         : selectedShape.shape_type === "zone"
@@ -7092,8 +9085,54 @@ export default function PlanEditorPage() {
                     />
                   </div>
 
+                  {isPolygonShape(selectedShape.shape_type) && selectedShape.points?.length && (
+                    <div className="rounded border border-white/10 bg-black/15 p-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-400">
+                          Points du tracé
+                        </span>
+                        <span className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] tabular-nums text-neutral-500">
+                          {selectedShape.points.length} points
+                        </span>
+                      </div>
+                      <p className="mt-1.5 text-[9px] leading-3.5 text-neutral-500">
+                        Double-cliquez un point blanc sur le plan ou utilisez sa corbeille ci-dessous.
+                      </p>
+                      <div className="mt-2 max-h-36 space-y-1 overflow-y-auto pr-0.5">
+                        {selectedShape.points.map((point, index) => {
+                          const minimumPoints = selectedShape.shape_type === "polyline" ? 2 : 3;
+                          const cannotDelete = Boolean(selectedShape.locked) || selectedShape.points!.length <= minimumPoints;
+                          return (
+                            <div
+                              key={`${selectedShape.tempId}-point-row-${index}`}
+                              className="flex items-center gap-2 rounded border border-white/5 bg-[#1b1b1d] px-2 py-1.5"
+                            >
+                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-sky-400/60 bg-sky-500/10 text-[9px] font-bold text-sky-300">
+                                {pointLabel(index)}
+                              </span>
+                              <span className="min-w-0 flex-1 truncate font-mono text-[9px] text-neutral-500">
+                                X {Math.round(point.x)} · Y {Math.round(point.y)}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={cannotDelete}
+                                onClick={() => handleDeleteSelectedShapePoint(index)}
+                                title={cannotDelete
+                                  ? `Le tracé doit conserver au moins ${minimumPoints} points`
+                                  : `Supprimer le point ${pointLabel(index)}`}
+                                className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-red-400 transition-colors hover:bg-red-500/15 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-25"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Fill Color (Background) */}
-                  {selectedShape.shape_type !== "line" && (
+                  {selectedShape.shape_type !== "line" && selectedShape.shape_type !== "polyline" && (
                     <div>
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
@@ -7245,7 +9284,11 @@ export default function PlanEditorPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    const block = createFreeTextBlock(sheetBlocks.length + 1);
+                    const block = createFreeTextBlock(
+                      sheetBlocks.length + 1,
+                      activeSheetSize.width,
+                      activeSheetSize.height
+                    );
                     setSheetBlocks((blocks) => [...blocks, block]);
                     setSelectedBlockId(block.id);
                   }}
@@ -7287,7 +9330,10 @@ export default function PlanEditorPage() {
               zoom={zoom}
               onZoomChange={setZoom}
               mode={mode}
-              onModeChange={setMode}
+              onModeChange={(nextMode) => {
+                if (nextMode === "erase") setShapeTool(null);
+                setMode(nextMode);
+              }}
               onFitToView={() => setFitSignal((signal) => signal + 1)}
             />
 
@@ -7300,7 +9346,7 @@ export default function PlanEditorPage() {
                 { kind: "rect" as ShapeKind, Icon: Square, label: "Carré" },
                 { kind: "circle" as ShapeKind, Icon: Circle, label: "Cercle" },
                 { kind: "zone" as ShapeKind, Icon: PaintBucket, label: "Zone" },
-                { kind: "polygon_zone" as ShapeKind, Icon: Waypoints, label: "Zone poly." },
+                { kind: "polyline" as ShapeKind, Icon: Waypoints, label: "Polyligne" },
                 { kind: "free_polygon_zone" as ShapeKind, Icon: Waypoints, label: "Zone libre" },
                 { kind: "curve_polygon_zone" as ShapeKind, Icon: Waypoints, label: "Zone courbe" }
               ]).map(({ kind, Icon, label }) => (
@@ -7310,8 +9356,13 @@ export default function PlanEditorPage() {
                     setShapeTool((current) => (current === kind ? null : kind));
                     setMode("select");
                     setPlacementIconType(null);
+                    setPlacementText(false);
                   }}
-                  title={`${label} — glissez sur le plan pour tracer`}
+                  title={kind === "polyline"
+                    ? `${label} — Maj trace à 0°/90°; cliquez le dernier point, Entrée ou double-clic pour terminer; la plume reste active pour la ligne suivante`
+                    : isPolygonTool(kind)
+                    ? `${label} — cliquez pour ajouter des points, puis Entrée ou double-clic pour terminer`
+                    : `${label} — glissez sur le plan ou sur le template pour tracer`}
                   className={`flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
                     shapeTool === kind
                       ? "bg-sky-600 text-white"
@@ -7355,6 +9406,33 @@ export default function PlanEditorPage() {
               <>
                 <span className="h-4 w-px bg-white/10" />
                 <div className="flex items-center gap-2">
+                  <div className="flex overflow-hidden rounded border border-black/50 bg-[#1b1b1d]">
+                    <button
+                      type="button"
+                      onClick={() => setEraserTarget("lines")}
+                      className={`h-6 cursor-pointer px-2 text-[10px] font-semibold transition-colors ${
+                        eraserTarget === "lines"
+                          ? "bg-amber-500 text-white"
+                          : "text-neutral-500 hover:bg-white/10 hover:text-neutral-200"
+                      }`}
+                      title="Découper les lignes dessinées pour créer des ouvertures"
+                    >
+                      Ouvertures
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEraserTarget("background")}
+                      className={`h-6 cursor-pointer border-l border-black/50 px-2 text-[10px] font-semibold transition-colors ${
+                        eraserTarget === "background"
+                          ? "bg-amber-500 text-white"
+                          : "text-neutral-500 hover:bg-white/10 hover:text-neutral-200"
+                      }`}
+                      title="Effacer directement une partie de l’image du plan"
+                    >
+                      Fond du plan
+                    </button>
+                  </div>
+
                   <label className="flex items-center gap-1.5 text-[11px] text-neutral-500">
                     <Eraser className="h-3.5 w-3.5 text-amber-400" />
                     <input
@@ -7369,62 +9447,79 @@ export default function PlanEditorPage() {
                     <span className="w-8 tabular-nums text-neutral-400">{eraserSize}</span>
                   </label>
 
-                  <div className="flex overflow-hidden rounded border border-black/50 bg-[#1b1b1d]">
-                    <button
-                      type="button"
-                      onClick={() => setEraserShape("square")}
-                      className={`flex h-6 w-8 cursor-pointer items-center justify-center transition-colors ${
-                        eraserShape === "square"
-                          ? "bg-amber-500 text-white"
-                          : "text-neutral-500 hover:bg-white/10 hover:text-neutral-200"
-                      }`}
-                      title="Gomme carrée"
-                      aria-label="Gomme carrée"
-                    >
-                      <Square className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEraserShape("circle")}
-                      className={`flex h-6 w-8 cursor-pointer items-center justify-center border-l border-black/50 transition-colors ${
-                        eraserShape === "circle"
-                          ? "bg-amber-500 text-white"
-                          : "text-neutral-500 hover:bg-white/10 hover:text-neutral-200"
-                      }`}
-                      title="Gomme ronde"
-                      aria-label="Gomme ronde"
-                    >
-                      <Circle className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
+                  {eraserTarget === "background" ? (
+                    <>
+                      <div className="flex overflow-hidden rounded border border-black/50 bg-[#1b1b1d]">
+                        <button
+                          type="button"
+                          onClick={() => setEraserShape("square")}
+                          className={`flex h-6 w-8 cursor-pointer items-center justify-center transition-colors ${
+                            eraserShape === "square"
+                              ? "bg-amber-500 text-white"
+                              : "text-neutral-500 hover:bg-white/10 hover:text-neutral-200"
+                          }`}
+                          title="Gomme carrée"
+                          aria-label="Gomme carrée"
+                        >
+                          <Square className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEraserShape("circle")}
+                          className={`flex h-6 w-8 cursor-pointer items-center justify-center border-l border-black/50 transition-colors ${
+                            eraserShape === "circle"
+                              ? "bg-amber-500 text-white"
+                              : "text-neutral-500 hover:bg-white/10 hover:text-neutral-200"
+                          }`}
+                          title="Gomme ronde"
+                          aria-label="Gomme ronde"
+                        >
+                          <Circle className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setUndoEraseSignal((signal) => signal + 1)}
-                    disabled={!eraseStrokeCount}
-                    className="cursor-pointer rounded px-2 py-1 text-[11px] font-medium text-neutral-400 transition-colors hover:bg-white/10 hover:text-neutral-100 disabled:opacity-30"
-                    title="Annuler le dernier trait"
-                  >
-                    Annuler
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setResetEraseSignal((signal) => signal + 1)}
-                    disabled={!eraseStrokeCount}
-                    className="cursor-pointer rounded px-2 py-1 text-[11px] font-medium text-neutral-400 transition-colors hover:bg-white/10 hover:text-neutral-100 disabled:opacity-30"
-                    title="Effacer tous les traits de gomme"
-                  >
-                    Tout rétablir
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSaveErasedPlan}
-                    disabled={!eraseStrokeCount || savingErase}
-                    className="flex cursor-pointer items-center gap-1.5 rounded bg-amber-600 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-amber-500 disabled:opacity-30"
-                  >
-                    {savingErase ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                    Appliquer{eraseStrokeCount ? ` (${eraseStrokeCount})` : ""}
-                  </button>
+                      <button
+                        type="button"
+                        onClick={() => setUndoEraseSignal((signal) => signal + 1)}
+                        disabled={!eraseStrokeCount}
+                        className="cursor-pointer rounded px-2 py-1 text-[11px] font-medium text-neutral-400 transition-colors hover:bg-white/10 hover:text-neutral-100 disabled:opacity-30"
+                        title="Annuler le dernier trait"
+                      >
+                        Annuler
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setResetEraseSignal((signal) => signal + 1)}
+                        disabled={!eraseStrokeCount}
+                        className="cursor-pointer rounded px-2 py-1 text-[11px] font-medium text-neutral-400 transition-colors hover:bg-white/10 hover:text-neutral-100 disabled:opacity-30"
+                        title="Effacer tous les traits de gomme"
+                      >
+                        Tout rétablir
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveErasedPlan}
+                        disabled={!eraseStrokeCount || savingErase}
+                        className="flex cursor-pointer items-center gap-1.5 rounded bg-amber-600 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-amber-500 disabled:opacity-30"
+                      >
+                        {savingErase ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                        Appliquer{eraseStrokeCount ? ` (${eraseStrokeCount})` : ""}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                    <button
+                      type="button"
+                      onClick={handleUndo}
+                      disabled={historyIndex <= 0}
+                      className="cursor-pointer rounded px-2 py-1 text-[11px] font-medium text-neutral-400 transition-colors hover:bg-white/10 hover:text-neutral-100 disabled:opacity-30"
+                      title="Annuler la dernière ouverture"
+                    >
+                      Annuler l&apos;ouverture
+                    </button>
+                    <span className="text-[9px] text-neutral-500">Puis utilisez Sauvegarder</span>
+                    </>
+                  )}
                 </div>
               </>
             )}
@@ -7533,10 +9628,7 @@ export default function PlanEditorPage() {
                         <button
                           key={overlay.tempId}
                           type="button"
-                          onClick={() => {
-                            setSelectedCleanTargetId(overlay.tempId);
-                            if (cleanMethod === "grok") setCleanMethod("local_plan");
-                          }}
+                          onClick={() => setSelectedCleanTargetId(overlay.tempId)}
                           className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
                             selectedCleanTargetId === overlay.tempId
                               ? "bg-sky-600 text-white shadow-sm"
@@ -7548,6 +9640,17 @@ export default function PlanEditorPage() {
                         </button>
                       ))}
                     </div>
+                    {cleanTargetOverlay?.canRevertOriginal && !cleanTargetOverlay.isOriginal && (
+                      <button
+                        type="button"
+                        onClick={() => setRevertConfirmOpen(true)}
+                        disabled={cleaning || grokCleaning}
+                        className="mt-3 inline-flex items-center gap-2 rounded-lg border border-sky-300 bg-white px-3 py-2 text-xs font-semibold text-sky-700 transition-colors hover:bg-sky-100 disabled:opacity-50"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Rétablir l&apos;original de ce plan secondaire
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -7594,17 +9697,14 @@ export default function PlanEditorPage() {
                     <p className="mt-2 text-xs leading-5 text-slate-500">Extraction locale des murs uniquement (OpenCV). Aucune donnée envoyée à un service externe.</p>
                   </button>
 
-                  {/* ── Option 3 : vider avec l'IA (Grok) ── */}
+                  {/* ── Option 3 : vider ou convertir avec l'IA (Grok) ── */}
                   <button
                     type="button"
                     onClick={() => setCleanMethod("grok")}
-                    disabled={cleanTargetIsOverlay}
                     className={`rounded-xl border p-4 text-left transition-colors ${
                       cleanMethod === "grok"
                         ? "border-safety-green bg-green-50 text-slate-950 shadow-sm"
-                        : cleanTargetIsOverlay
-                          ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 opacity-70"
-                          : "border-slate-200 bg-white text-slate-600 hover:border-green-200 hover:bg-green-50/50"
+                        : "border-slate-200 bg-white text-slate-600 hover:border-green-200 hover:bg-green-50/50"
                     }`}
                   >
                     <div className="flex items-center gap-3">
@@ -7613,12 +9713,10 @@ export default function PlanEditorPage() {
                       }`}>
                         {cleanMethod === "grok" ? <span className="h-2.5 w-2.5 rounded-full bg-safety-green" /> : null}
                       </span>
-                      <span className="text-sm font-bold">Vider avec l&apos;IA (Grok)</span>
+                      <span className="text-sm font-bold">Traitement avec l&apos;IA (Grok)</span>
                     </div>
                     <p className="mt-2 text-xs leading-5 text-slate-500">
-                      {cleanTargetIsOverlay
-                        ? "Disponible pour le plan principal uniquement."
-                        : "Transforme un plan d’évacuation existant en base architecturale vide, prête à recevoir une nouvelle signalétique."}
+                      Vide ou transforme le plan principal comme chaque plan secondaire présent dans le canvas.
                     </p>
                   </button>
                 </div>
@@ -7778,9 +9876,9 @@ export default function PlanEditorPage() {
                         Type de plan source
                       </label>
                       <p className="text-xs leading-4 text-slate-500">
-                        Choisissez le profil d&apos;analyse de l&apos;IA selon le type de document à vider.
+                        Choisissez le profil d&apos;analyse selon le document à vider ou à transformer.
                       </p>
-                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
                         <button
                           type="button"
                           disabled={grokCleaning}
@@ -7818,8 +9916,103 @@ export default function PlanEditorPage() {
                             Analyse 2-Step AutoCAD : supprime cotations, axes, cartouches, hachures, calques &amp; meubles.
                           </span>
                         </button>
+
+                        <button
+                          type="button"
+                          disabled={grokCleaning}
+                          onClick={() => setGrokPreset("sketch")}
+                          className={`flex flex-col items-start gap-1.5 rounded-xl border p-3 text-left transition-all ${
+                            grokPreset === "sketch"
+                              ? "border-amber-500 bg-white text-slate-950 shadow-sm ring-2 ring-amber-500/30"
+                              : "border-slate-200 bg-white/70 text-slate-600 hover:border-slate-300 hover:bg-white"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 text-xs font-bold text-slate-900">
+                            <Pencil className="h-4 w-4 text-amber-600" />
+                            <span>Croquis au stylo</span>
+                          </div>
+                          <span className="text-[11px] leading-4 text-slate-500">
+                            Transforme un dessin manuscrit ou une photo de croquis en plan architectural propre, prêt pour l&apos;évacuation.
+                          </span>
+                        </button>
                       </div>
                     </div>
+
+                    {/* ── Couleur des parois du croquis ── */}
+                    {grokPreset === "sketch" && (
+                      <div className="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <label className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                            Couleur des parois
+                          </label>
+                          <span className="font-mono text-xs font-bold uppercase text-slate-600">
+                            {grokWallColor}
+                          </span>
+                        </div>
+                        <p className="text-xs leading-4 text-slate-500">
+                          Choisissez la couleur des murs du plan reconstruit. Le noir sec pur{" "}
+                          <code className="font-mono text-[11px] font-bold text-slate-800">#000000</code>{" "}
+                          est utilisé par défaut.
+                        </p>
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          {[
+                            { label: "Noir sec", value: "#000000" },
+                            { label: "Anthracite", value: "#262626" },
+                            { label: "Gris foncé", value: "#4B5563" },
+                            { label: "Gris moyen", value: "#6B7280" },
+                          ].map((preset) => {
+                            const isSelected = grokWallColor.toUpperCase() === preset.value;
+                            return (
+                              <button
+                                key={preset.value}
+                                type="button"
+                                disabled={grokCleaning}
+                                onClick={() => setGrokWallColor(preset.value)}
+                                className={`flex flex-col items-center justify-center gap-1.5 rounded-xl border p-2.5 text-center text-xs font-semibold transition-all ${
+                                  isSelected
+                                    ? "border-safety-green bg-white text-slate-950 shadow-sm ring-2 ring-safety-green/30"
+                                    : "border-slate-200 bg-white/70 text-slate-600 hover:border-slate-300 hover:bg-white"
+                                }`}
+                              >
+                                <div className="flex items-center gap-1.5">
+                                  <span
+                                    className="h-4 w-4 shrink-0 rounded-full border border-slate-300 shadow-inner"
+                                    style={{ backgroundColor: preset.value }}
+                                  />
+                                  <span>{preset.label}</span>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="mt-2 flex items-center gap-2 border-t border-slate-200/60 pt-3">
+                          <span className="text-xs font-medium text-slate-600">Sur mesure :</span>
+                          <input
+                            type="color"
+                            value={grokWallColor}
+                            disabled={grokCleaning}
+                            onChange={(e) => setGrokWallColor(e.target.value.toUpperCase())}
+                            className="h-7 w-9 cursor-pointer rounded border border-slate-300 bg-white p-0.5"
+                            aria-label="Choisir la couleur des parois"
+                          />
+                          <input
+                            type="text"
+                            value={grokWallColor}
+                            disabled={grokCleaning}
+                            onChange={(e) => setGrokWallColor(e.target.value.toUpperCase())}
+                            placeholder="#000000"
+                            maxLength={7}
+                            className="w-24 rounded-md border border-slate-300 bg-white px-2.5 py-1 font-mono text-xs uppercase text-slate-800 focus:border-safety-green focus:outline-none"
+                            aria-label="Code HEX de la couleur des parois"
+                          />
+                        </div>
+                        {grokColorsConflict && (
+                          <p className="text-xs font-semibold text-red-600">
+                            La couleur des parois doit être différente de la couleur du fond.
+                          </p>
+                        )}
+                      </div>
+                    )}
 
                     {/* ── Couleur de fond du plan ── */}
                     <div className="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -7891,13 +10084,13 @@ export default function PlanEditorPage() {
                     <button
                       type="button"
                       onClick={() => void launchGrokCleaning()}
-                      disabled={grokCleaning || (!xaiHasSavedKey && !cleanTargetIsOverlay)}
+                      disabled={grokCleaning || !xaiHasSavedKey || grokColorsConflict}
                       className="inline-flex items-center justify-center gap-2 rounded-xl bg-safety-green px-4 py-2.5 text-xs font-semibold text-white shadow-lg shadow-safety-green/20 transition-colors hover:bg-green-600 disabled:opacity-50"
                     >
                       {grokCleaning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                      Vider le plan avec l&apos;IA
+                      {grokPreset === "sketch" ? "Transformer le croquis en plan" : "Vider le plan avec l’IA"}
                     </button>
-                    {!xaiHasSavedKey && !xaiKeyConfigOpen && !cleanTargetIsOverlay && (
+                    {!xaiHasSavedKey && !xaiKeyConfigOpen && (
                       <p className="text-[11px] text-slate-500">
                         Configurez d&apos;abord votre clé API xAI pour activer cette option.
                       </p>
@@ -7915,9 +10108,13 @@ export default function PlanEditorPage() {
             <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
               <div className="mb-4 flex items-start justify-between gap-4">
                 <div>
-                  <h2 className="text-lg font-bold text-slate-950">Rétablir le plan original ?</h2>
+                  <h2 className="text-lg font-bold text-slate-950">
+                    {cleanTargetOverlay ? "Rétablir le plan secondaire original ?" : "Rétablir le plan original ?"}
+                  </h2>
                   <p className="mt-2 text-sm leading-6 text-slate-500">
-                    Le fond nettoyé sera désactivé et le plan original sera affiché. Les versions nettoyées restent disponibles dans l&apos;historique.
+                    {cleanTargetOverlay
+                      ? "L’image importée avant le premier nettoyage sera restaurée. Les versions nettoyées restent disponibles dans l’historique de ce plan secondaire."
+                      : "Le fond nettoyé sera désactivé et le plan original sera affiché. Les versions nettoyées restent disponibles dans l’historique."}
                   </p>
                 </div>
                 <button
@@ -8800,9 +10997,8 @@ export default function PlanEditorPage() {
                       {([
                         {
                           key: "client",
-                          label: "Logo client",
+                          label: "Logo client · ce plan",
                           value: exportClientLogo,
-                          setter: setExportClientLogo,
                           scale: exportClientLogoScale,
                           setScale: setExportClientLogoScale,
                           offsetX: exportClientLogoOffsetX,
@@ -8812,9 +11008,8 @@ export default function PlanEditorPage() {
                         },
                         {
                           key: "studio",
-                          label: "Logo studio",
+                          label: "Logo studio · tous les plans",
                           value: exportStudioLogo,
-                          setter: setExportStudioLogo,
                           scale: exportStudioLogoScale,
                           setScale: setExportStudioLogoScale,
                           offsetX: exportStudioLogoOffsetX,
@@ -8822,10 +11017,17 @@ export default function PlanEditorPage() {
                           offsetY: exportStudioLogoOffsetY,
                           setOffsetY: setExportStudioLogoOffsetY
                         }
-                      ] as const).map(({ key, label, value, setter, scale, setScale, offsetX, setOffsetX, offsetY, setOffsetY }) => (
+                      ] as const).map(({ key, label, value, scale, setScale, offsetX, setOffsetX, offsetY, setOffsetY }) => (
                         <div key={key} className="rounded-lg border border-slate-200 p-2.5">
                           <div className="mb-1.5 flex items-center justify-between">
-                            <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</span>
+                            <div>
+                              <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</span>
+                              <p className="mt-0.5 text-[9px] leading-3 text-slate-400">
+                                {key === "client"
+                                  ? "Changez-le pour chaque client; il est sauvegardé avec ce projet."
+                                  : "Mémorisé dans l’application jusqu’à votre prochaine modification."}
+                              </p>
+                            </div>
                             {value && (scale !== 100 || offsetX !== 0 || offsetY !== 0) && (
                               <button
                                 type="button"
@@ -8859,20 +11061,27 @@ export default function PlanEditorPage() {
                                   const file = event.target.files?.[0];
                                   event.target.value = "";
                                   if (!file) return;
-                                  const reader = new FileReader();
-                                  reader.onload = () => setter(typeof reader.result === "string" ? reader.result : "");
-                                  reader.readAsDataURL(file);
+                                  void importConfiguredLogo(key, file);
                                 }}
                               />
                             </label>
                             {value && (
                               <button
                                 type="button"
-                                onClick={() => setter("")}
-                                title="Retirer le logo"
+                                onClick={() => {
+                                  if (key === "studio") {
+                                    setStudioLogoPreference(DEFAULT_STUDIO_LOGO);
+                                    setSaveStatus("Logo studio PREV’ INC & CIE restauré");
+                                  } else {
+                                    setClientLogoForPlan("");
+                                    setSaveStatus("Logo client retiré — sauvegardez le plan");
+                                  }
+                                  window.setTimeout(() => setSaveStatus(""), 3000);
+                                }}
+                                title={key === "studio" ? "Rétablir le logo PREV’ INC & CIE" : "Retirer le logo client"}
                                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-300 text-slate-500 transition-colors hover:bg-red-50 hover:text-red-600"
                               >
-                                <Trash2 className="h-3.5 w-3.5" />
+                                {key === "studio" ? <RefreshCw className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
                               </button>
                             )}
                           </div>
@@ -8928,6 +11137,11 @@ export default function PlanEditorPage() {
                           )}
                         </div>
                       ))}
+                      {logoSettingsError ? (
+                        <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[11px] font-medium text-red-700">
+                          {logoSettingsError}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
 

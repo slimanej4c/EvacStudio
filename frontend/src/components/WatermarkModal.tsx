@@ -1,54 +1,11 @@
 "use client";
 
 import React, { useState } from "react";
-import { Check, ImagePlus, Loader2, Trash2, X } from "lucide-react";
+import { Check, ImagePlus, Loader2, RefreshCw, Trash2, X } from "lucide-react";
 import { WatermarkConfig } from "@/lib/watermark";
+import { DEFAULT_STUDIO_LOGO, prepareLogoFile } from "@/lib/brandLogos";
 
-const MAX_LOGO_FILE_BYTES = 5 * 1024 * 1024;
-const MAX_LOGO_SIDE = 800;
 type LogoKey = "client_logo" | "creator_logo";
-
-function rasterizeLogoFile(file: File): Promise<string> {
-  if (!file.type.startsWith("image/")) {
-    return Promise.reject(new Error("Sélectionnez une image PNG, JPEG, SVG ou WebP."));
-  }
-  if (file.size > MAX_LOGO_FILE_BYTES) {
-    return Promise.reject(new Error("Le logo ne doit pas dépasser 5 Mo."));
-  }
-
-  return new Promise((resolve, reject) => {
-    const objectUrl = URL.createObjectURL(file);
-    const image = new Image();
-    const cleanup = () => URL.revokeObjectURL(objectUrl);
-
-    image.onload = () => {
-      try {
-        const naturalWidth = image.naturalWidth || image.width || 1;
-        const naturalHeight = image.naturalHeight || image.height || 1;
-        const scale = Math.min(1, MAX_LOGO_SIDE / Math.max(naturalWidth, naturalHeight));
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, Math.round(naturalWidth * scale));
-        canvas.height = Math.max(1, Math.round(naturalHeight * scale));
-        const context = canvas.getContext("2d");
-        if (!context) throw new Error("Impossible de préparer le logo.");
-        context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL("image/webp", 0.9);
-        canvas.width = 0;
-        canvas.height = 0;
-        cleanup();
-        resolve(dataUrl);
-      } catch (error) {
-        cleanup();
-        reject(error);
-      }
-    };
-    image.onerror = () => {
-      cleanup();
-      reject(new Error("Ce fichier logo ne peut pas être lu."));
-    };
-    image.src = objectUrl;
-  });
-}
 
 interface WatermarkModalProps {
   open: boolean;
@@ -78,7 +35,7 @@ export function WatermarkModal({
     setLogoBusy(key);
     setLogoError("");
     try {
-      update(key, await rasterizeLogoFile(file));
+      update(key, await prepareLogoFile(file));
     } catch (error) {
       setLogoError(error instanceof Error ? error.message : "Impossible d’importer le logo.");
     } finally {
@@ -175,14 +132,14 @@ export function WatermarkModal({
             <div className="mb-3">
               <h3 className="text-xs font-bold text-neutral-200">Logos du BON À TIRER</h3>
               <p className="mt-1 text-[10px] leading-4 text-neutral-500">
-                Importez le logo du client et celui du créateur du plan. Ils apparaîtront dans le bloc BAT,
-                seront enregistrés avec le projet et inclus dans les exports. PNG, JPEG, SVG ou WebP, 5 Mo maximum.
+                Le logo client appartient au plan courant. Le logo studio est partagé par tous les plans et utilise
+                PREV&apos; INC &amp; CIE par défaut. PNG, JPEG, SVG ou WebP, 5 Mo maximum.
               </p>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               {([
-                ["client_logo", "Logo client"],
-                ["creator_logo", "Logo du créateur"],
+                ["client_logo", "Logo client · ce plan"],
+                ["creator_logo", "Logo studio · tous les plans"],
               ] as const).map(([key, label]) => {
                 const logo = value[key];
                 const busy = logoBusy === key;
@@ -195,11 +152,11 @@ export function WatermarkModal({
                       {logo && (
                         <button
                           type="button"
-                          onClick={() => update(key, "")}
-                          title={`Retirer le ${label.toLowerCase()}`}
+                          onClick={() => update(key, key === "creator_logo" ? DEFAULT_STUDIO_LOGO : "")}
+                          title={key === "creator_logo" ? "Rétablir le logo PREV’ INC & CIE" : "Retirer le logo client"}
                           className="rounded p-1 text-neutral-500 transition-colors hover:bg-red-500/10 hover:text-red-300"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          {key === "creator_logo" ? <RefreshCw className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
                         </button>
                       )}
                     </div>

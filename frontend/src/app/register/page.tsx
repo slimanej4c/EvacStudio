@@ -3,7 +3,8 @@
 import React, { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import Link from "next/link";
-import { AlertTriangle, Lock, Mail, ShieldCheck, User as UserIcon } from "lucide-react";
+import { AlertTriangle, Lock, Mail, User as UserIcon } from "lucide-react";
+import { BrandLogo } from "@/components/BrandLogo";
 
 export default function RegisterPage() {
   const { register } = useAuth();
@@ -27,17 +28,18 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-white px-4 py-12 sm:px-6 lg:px-8">
-      <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white p-8 shadow-xl">
+    <div className="brand-page-bg flex min-h-screen items-center justify-center px-4 py-12 sm:px-6 lg:px-8">
+      <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-brand-orange/20 bg-white p-8 shadow-[0_28px_80px_rgba(145,60,15,0.16)]">
+        <div className="absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-brand-red via-brand-orange to-brand-gold" />
 
         <div className="flex flex-col items-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-safety-green/10 text-safety-green mb-4 border border-safety-green/20 shadow-lg shadow-safety-green/5">
-            <ShieldCheck className="h-7 w-7 text-safety-green" />
+          <div className="mb-5 flex h-24 w-64 items-center justify-center rounded-xl bg-white">
+            <BrandLogo className="h-full w-full" priority />
           </div>
-          <h2 className="text-center text-3xl font-extrabold tracking-tight text-slate-950">
+          <h2 className="text-center text-3xl font-extrabold tracking-tight text-brand-ink">
             Plan intervention et évacuation
           </h2>
-          <p className="mt-2 text-center text-sm text-slate-500">
+          <p className="mt-2 text-center text-sm text-stone-500">
             Créez un compte pour centraliser les tâches HSE, les sites, les équipes et les actions de votre entreprise.
           </p>
         </div>
@@ -65,7 +67,7 @@ export default function RegisterPage() {
                     required
                     value={firstName}
                     onChange={(e) => setFirstName(e.target.value)}
-                    className="block w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-3 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none focus:ring-2 focus:ring-safety-green/20 sm:text-sm"
+                    className="block w-full rounded-xl border border-stone-300 bg-white py-3 pl-10 pr-3 text-brand-ink placeholder-stone-400 focus:border-brand-orange focus:outline-none focus:ring-2 focus:ring-brand-orange/20 sm:text-sm"
                     placeholder="Prénom"
                   />
                 </div>
@@ -84,7 +86,7 @@ export default function RegisterPage() {
                     required
                     value={lastName}
                     onChange={(e) => setLastName(e.target.value)}
-                    className="block w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-3 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none focus:ring-2 focus:ring-safety-green/20 sm:text-sm"
+                    className="block w-full rounded-xl border border-stone-300 bg-white py-3 pl-10 pr-3 text-brand-ink placeholder-stone-400 focus:border-brand-orange focus:outline-none focus:ring-2 focus:ring-brand-orange/20 sm:text-sm"
                     placeholder="Nom"
                   />
                 </div>
@@ -104,7 +106,7 @@ export default function RegisterPage() {
                   required
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  className="block w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-3 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none focus:ring-2 focus:ring-safety-green/20 sm:text-sm"
+                  className="block w-full rounded-xl border border-stone-300 bg-white py-3 pl-10 pr-3 text-brand-ink placeholder-stone-400 focus:border-brand-orange focus:outline-none focus:ring-2 focus:ring-brand-orange/20 sm:text-sm"
                   placeholder="Nom d'utilisateur"
                 />
               </div>
@@ -123,7 +125,7 @@ export default function RegisterPage() {
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="block w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-3 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none focus:ring-2 focus:ring-safety-green/20 sm:text-sm"
+                  className="block w-full rounded-xl border border-stone-300 bg-white py-3 pl-10 pr-3 text-brand-ink placeholder-stone-400 focus:border-brand-orange focus:outline-none focus:ring-2 focus:ring-brand-orange/20 sm:text-sm"
                   placeholder="nom@exemple.com"
                 />
               </div>
@@ -142,7 +144,7 @@ export default function RegisterPage() {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="block w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-3 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none focus:ring-2 focus:ring-safety-green/20 sm:text-sm"
+                  className="block w-full rounded-xl border border-stone-300 bg-white py-3 pl-10 pr-3 text-brand-ink placeholder-stone-400 focus:border-brand-orange focus:outline-none focus:ring-2 focus:ring-brand-orange/20 sm:text-sm"
                   placeholder="••••••••"
                 />
               </div>
@@ -153,16 +155,16 @@ export default function RegisterPage() {
             <button
               type="submit"
               disabled={loading}
-              className="group relative flex w-full cursor-pointer justify-center rounded-xl bg-safety-green px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-safety-green/20 transition-all duration-250 hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-safety-green focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              className="brand-action group relative flex w-full cursor-pointer justify-center rounded-xl px-4 py-3 text-sm font-semibold text-white transition-transform duration-200 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-brand-orange focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? "Création du compte..." : "S'inscrire"}
             </button>
           </div>
         </form>
 
-        <div className="mt-4 text-center text-sm text-slate-500">
+        <div className="mt-4 text-center text-sm text-stone-500">
           Déjà un compte ?{" "}
-          <Link href="/login" className="font-semibold text-safety-green transition-colors hover:text-green-700">
+          <Link href="/login" className="font-semibold text-brand-red transition-colors hover:text-brand-orange">
             Se connecter
           </Link>
         </div>

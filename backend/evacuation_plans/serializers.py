@@ -5,7 +5,18 @@ import io
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from PIL import Image, UnidentifiedImageError
-from .models import EvacuationPlan, PlanCleaningHistory, PlanIcon, PlanOverlay, PlanShape, PlanText, UserXaiSettings
+from .models import (
+    EvacuationPlan,
+    PlanCleaningHistory,
+    PlanIcon,
+    PlanOverlay,
+    PlanShape,
+    PlanText,
+    UserXaiSettings,
+    WorkspaceInvitation,
+    WorkspaceMembership,
+    user_can_edit_plan,
+)
 
 MAX_IMAGE_DATA_LENGTH = 20 * 1024 * 1024
 MAX_LOGO_DATA_LENGTH = 2 * 1024 * 1024
@@ -73,31 +84,61 @@ class PlanIconSerializer(serializers.ModelSerializer):
         model = PlanIcon
         fields = ['id', 'plan', 'icon_type', 'x', 'y', 'width', 'height', 'rotation', 'label',
                   'anchor_x', 'anchor_y', 'leader_width', 'framed', 'flip_x', 'flip_y', 'locked',
-                  'group_id', 'object_group_id',
+                  'visible', 'z_index', 'group_id', 'object_group_id', 'color',
                   'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_plan(self, plan):
+        """`plan` is writable here, so its owner has to be checked by hand.
+
+        Without this an authenticated user could post any plan id and drop icons
+        into — or move them onto — someone else's plan. The sibling serializers
+        keep `plan` read-only and get this for free; this one cannot, because
+        `/api/icons/` is a standalone endpoint that needs the field.
+        """
+        request = self.context.get('request')
+        if request is None or not request.user.is_authenticated:
+            raise serializers.ValidationError("Authentification requise.")
+        # Write access, not merely visibility: a read-only member of a shared
+        # workspace can see the plan but must not drop icons into it.
+        if not user_can_edit_plan(request.user, plan):
+            # Same message either way: do not confirm that the plan exists.
+            raise serializers.ValidationError("Plan introuvable.")
+        return plan
 
 class PlanShapeSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanShape
         fields = ['id', 'plan', 'shape_type', 'x', 'y', 'width', 'height', 'rotation',
                   'stroke_width', 'color', 'fill_color', 'fill_opacity', 'tension',
-                  'control_points', 'points', 'locked', 'group_id', 'object_group_id', 'created_at', 'updated_at']
+                  'control_points', 'points', 'locked', 'visible', 'z_index', 'group_id', 'object_group_id', 'created_at', 'updated_at']
         read_only_fields = ['id', 'plan', 'created_at', 'updated_at']
 
     def validate(self, attrs):
         shape_type = attrs.get('shape_type')
         points = attrs.get('points')
+        is_polyline = shape_type == PlanShape.SHAPE_POLYLINE
         is_polygon = shape_type in (
             PlanShape.SHAPE_POLYGON_ZONE,
             PlanShape.SHAPE_FREE_POLYGON_ZONE,
             PlanShape.SHAPE_CURVE_POLYGON_ZONE,
         )
-        if is_polygon:
+        if is_polyline:
+            if not points or not isinstance(points, list) or len(points) < 2:
+                raise serializers.ValidationError(
+                    {'points': 'Une polyligne nécessite au moins 2 points.'}
+                )
+            # A polyline is deliberately open and line-only. Ignore any stale
+            # or malicious fill values sent by a client.
+            attrs['fill_color'] = None
+            attrs['fill_opacity'] = 0
+            attrs['tension'] = 0
+        elif is_polygon:
             if not points or not isinstance(points, list) or len(points) < 3:
                 raise serializers.ValidationError(
                     {'points': 'Un polygone nécessite au moins 3 points.'}
                 )
+        if is_polyline or is_polygon:
             for index, point in enumerate(points):
                 if not isinstance(point, dict) or 'x' not in point or 'y' not in point:
                     raise serializers.ValidationError(
@@ -105,7 +146,7 @@ class PlanShapeSerializer(serializers.ModelSerializer):
                     )
         elif points is not None:
             raise serializers.ValidationError(
-                {'points': 'Les points ne sont autorisés que pour les zones polygonales.'}
+                {'points': 'Les points ne sont autorisés que pour les polylignes et les zones polygonales.'}
             )
         return attrs
 
@@ -114,7 +155,7 @@ class PlanTextSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanText
         fields = ['id', 'plan', 'text', 'x', 'y', 'font_size', 'font_family', 'color',
-                  'bold', 'italic', 'background_color', 'rotation', 'locked', 'group_id', 'object_group_id', 'created_at', 'updated_at']
+                  'bold', 'italic', 'background_color', 'rotation', 'locked', 'visible', 'z_index', 'group_id', 'object_group_id', 'created_at', 'updated_at']
         read_only_fields = ['id', 'plan', 'created_at', 'updated_at']
 
 
@@ -122,10 +163,14 @@ class PlanOverlaySerializer(serializers.ModelSerializer):
     """Read side of a secondary plan: the client only ever needs its URL."""
 
     image_url = serializers.SerializerMethodField()
+    can_revert_original = serializers.SerializerMethodField()
 
     class Meta:
         model = PlanOverlay
-        fields = ['id', 'image_url', 'x', 'y', 'width', 'height', 'rotation', 'label', 'locked', 'group_id']
+        fields = [
+            'id', 'image_url', 'x', 'y', 'width', 'height', 'rotation',
+            'label', 'locked', 'visible', 'z_index', 'group_id', 'is_original', 'can_revert_original',
+        ]
         read_only_fields = fields
 
     def get_image_url(self, obj):
@@ -134,6 +179,9 @@ class PlanOverlaySerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         url = obj.image_file.url
         return request.build_absolute_uri(url) if request else url
+
+    def get_can_revert_original(self, obj):
+        return bool(obj.original_image_file)
 
 
 class SyncPlanOverlaySerializer(serializers.Serializer):
@@ -153,6 +201,8 @@ class SyncPlanOverlaySerializer(serializers.Serializer):
     rotation = serializers.FloatField(required=False, default=0.0)
     label = serializers.CharField(required=False, allow_blank=True, default='', max_length=255)
     locked = serializers.BooleanField(required=False, default=False)
+    visible = serializers.BooleanField(required=False, default=True)
+    z_index = serializers.IntegerField(required=False, default=100)
     group_id = serializers.CharField(required=False, allow_blank=True, default='', max_length=64)
 
     def validate(self, attrs):
@@ -178,8 +228,18 @@ class SyncPlanIconSerializer(serializers.Serializer):
     flip_x = serializers.BooleanField(required=False, default=False)
     flip_y = serializers.BooleanField(required=False, default=False)
     locked = serializers.BooleanField(required=False, default=False)
+    visible = serializers.BooleanField(required=False, default=True)
+    z_index = serializers.IntegerField(required=False, default=300)
     group_id = serializers.CharField(required=False, allow_blank=True, default='', max_length=64)
     object_group_id = serializers.CharField(required=False, allow_blank=True, default='', max_length=64)
+    # Blank means "leave the pictogram's own colours alone".
+    color = serializers.RegexField(
+        r'^(#[0-9a-fA-F]{6})?$',
+        required=False,
+        allow_blank=True,
+        default='',
+        error_messages={'invalid': "La couleur doit être au format #rrggbb."},
+    )
 
 
 class WatermarkConfigSerializer(serializers.Serializer):
@@ -217,6 +277,8 @@ class EditorPlanSettingsSerializer(serializers.Serializer):
     main_plan_width = serializers.FloatField(required=False, min_value=0, default=0.0)
     main_plan_height = serializers.FloatField(required=False, min_value=0, default=0.0)
     main_plan_locked = serializers.BooleanField(required=False, default=False)
+    main_plan_visible = serializers.BooleanField(required=False, default=True)
+    main_plan_z_index = serializers.IntegerField(required=False, default=0)
     main_plan_group_id = serializers.CharField(required=False, allow_blank=True, default='', max_length=64)
     main_plan_grouping_enabled = serializers.BooleanField(required=False, default=False)
     watermark = WatermarkConfigSerializer(required=False, default=dict)
@@ -244,7 +306,8 @@ class EvacuationPlanSerializer(serializers.ModelSerializer):
         fields = ['id', 'user', 'title', 'building_name', 'floor_name', 'background_file',
                   'background_type', 'cleaned_background_file', 'use_cleaned_background',
                   'main_plan_x', 'main_plan_y', 'main_plan_width', 'main_plan_height',
-                  'main_plan_locked', 'main_plan_group_id', 'main_plan_grouping_enabled',
+                  'main_plan_locked', 'main_plan_visible', 'main_plan_z_index',
+                  'main_plan_group_id', 'main_plan_grouping_enabled',
                   'watermark_config', 'icons', 'shapes', 'texts',
                   'overlays', 'created_at', 'updated_at']
         read_only_fields = ['id', 'user', 'cleaned_background_file', 'created_at', 'updated_at']
@@ -296,6 +359,7 @@ class TestXaiKeySerializer(serializers.Serializer):
 
 class UseCleaningHistorySerializer(serializers.Serializer):
     history_id = serializers.IntegerField(min_value=1)
+    overlay_id = serializers.IntegerField(min_value=1, required=False)
 
 
 class ApplyManualPlanEditSerializer(serializers.Serializer):
@@ -311,3 +375,52 @@ class ApplyManualPlanEditSerializer(serializers.Serializer):
         if len(value) > MAX_IMAGE_DATA_LENGTH:
             raise serializers.ValidationError("Image retouchée trop volumineuse.")
         return value
+
+
+class WorkspaceMembershipSerializer(serializers.ModelSerializer):
+    member_username = serializers.CharField(source='member.username', read_only=True)
+    member_email = serializers.EmailField(source='member.email', read_only=True)
+
+    class Meta:
+        model = WorkspaceMembership
+        fields = ['id', 'member_username', 'member_email', 'role', 'created_at']
+        read_only_fields = fields
+
+
+class WorkspaceInvitationSerializer(serializers.ModelSerializer):
+    """Read side. The token is deliberately absent: it is shown once, at
+    creation, and only its hash is ever stored."""
+
+    status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WorkspaceInvitation
+        fields = ['id', 'email', 'role', 'status', 'created_at', 'expires_at']
+        read_only_fields = fields
+
+    def get_status(self, invitation):
+        if invitation.accepted_at:
+            return 'accepted'
+        if invitation.revoked_at:
+            return 'revoked'
+        if not invitation.is_pending:
+            return 'expired'
+        return 'pending'
+
+
+class CreateWorkspaceInvitationSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    role = serializers.ChoiceField(
+        choices=WorkspaceMembership.ROLE_CHOICES,
+        default=WorkspaceMembership.ROLE_VIEWER,
+    )
+
+    def validate_email(self, email):
+        owner = self.context['request'].user
+        if owner.email and email.lower() == owner.email.lower():
+            raise serializers.ValidationError("Vous ne pouvez pas vous inviter vous-même.")
+        return email.lower()
+
+
+class AcceptWorkspaceInvitationSerializer(serializers.Serializer):
+    token = serializers.CharField(max_length=128, trim_whitespace=True)

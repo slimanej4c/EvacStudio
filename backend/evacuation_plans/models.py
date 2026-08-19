@@ -2,10 +2,12 @@ import base64
 import hashlib
 import hmac
 import secrets
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import models
+from django.utils import timezone
 
 
 def _derive_xai_settings_keys():
@@ -70,6 +72,8 @@ class EvacuationPlan(models.Model):
     main_plan_width = models.FloatField(default=0.0)
     main_plan_height = models.FloatField(default=0.0)
     main_plan_locked = models.BooleanField(default=False)
+    main_plan_visible = models.BooleanField(default=True)
+    main_plan_z_index = models.IntegerField(default=0)
     # Optional explicit association between the main plan and the annotations
     # that must follow it. Older projects keep the historical "carry all"
     # behaviour until the user deliberately groups or ungroups the plan.
@@ -105,8 +109,14 @@ class PlanIcon(models.Model):
     flip_x = models.BooleanField(default=False)
     flip_y = models.BooleanField(default=False)
     locked = models.BooleanField(default=False)
+    visible = models.BooleanField(default=True)
+    z_index = models.IntegerField(default=300)
     group_id = models.CharField(max_length=64, blank=True, default='')
     object_group_id = models.CharField(max_length=64, blank=True, default='')
+    # Overrides the pictogram's own colour, as '#rrggbb'. Blank keeps the
+    # artwork exactly as drawn — which is what NF X08-070 expects, so this is
+    # meant for the plan's own annotations rather than regulated pictograms.
+    color = models.CharField(max_length=7, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -128,6 +138,8 @@ class PlanOverlay(models.Model):
 
     plan = models.ForeignKey(EvacuationPlan, on_delete=models.CASCADE, related_name='overlays')
     image_file = models.FileField(upload_to='plan_overlays/')
+    original_image_file = models.FileField(upload_to='plan_overlays_original/', null=True, blank=True)
+    is_original = models.BooleanField(default=True)
     x = models.FloatField(default=0.0)
     y = models.FloatField(default=0.0)
     width = models.FloatField()
@@ -135,6 +147,8 @@ class PlanOverlay(models.Model):
     rotation = models.FloatField(default=0.0)
     label = models.CharField(max_length=255, blank=True, default='')
     locked = models.BooleanField(default=False)
+    visible = models.BooleanField(default=True)
+    z_index = models.IntegerField(default=100)
     group_id = models.CharField(max_length=64, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -153,6 +167,7 @@ class PlanShape(models.Model):
     SHAPE_RECT = 'rect'
     SHAPE_CIRCLE = 'circle'
     SHAPE_ZONE = 'zone'
+    SHAPE_POLYLINE = 'polyline'
     SHAPE_POLYGON_ZONE = 'polygon_zone'
     SHAPE_FREE_POLYGON_ZONE = 'free_polygon_zone'
     SHAPE_CURVE_POLYGON_ZONE = 'curve_polygon_zone'
@@ -162,6 +177,7 @@ class PlanShape(models.Model):
         (SHAPE_RECT, 'Rectangle'),
         (SHAPE_CIRCLE, 'Circle'),
         (SHAPE_ZONE, 'Zone'),
+        (SHAPE_POLYLINE, 'Open polyline'),
         (SHAPE_POLYGON_ZONE, 'Polygon zone'),
         (SHAPE_FREE_POLYGON_ZONE, 'Free polygon zone'),
         (SHAPE_CURVE_POLYGON_ZONE, 'Curve polygon zone'),
@@ -180,9 +196,11 @@ class PlanShape(models.Model):
     fill_opacity = models.FloatField(null=True, blank=True, default=None)
     tension = models.FloatField(null=True, blank=True, default=None)
     control_points = models.JSONField(null=True, blank=True, default=dict)
-    # Absolute plan coordinates for polygon_zone shapes: [{x, y}, ...]
+    # Absolute plan coordinates for polylines and polygon-zone shapes: [{x, y}, ...]
     points = models.JSONField(null=True, blank=True, default=None)
     locked = models.BooleanField(default=False)
+    visible = models.BooleanField(default=True)
+    z_index = models.IntegerField(default=200)
     group_id = models.CharField(max_length=64, blank=True, default='')
     object_group_id = models.CharField(max_length=64, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -211,6 +229,8 @@ class PlanText(models.Model):
     background_color = models.CharField(max_length=16, null=True, blank=True)
     rotation = models.FloatField(default=0.0)
     locked = models.BooleanField(default=False)
+    visible = models.BooleanField(default=True)
+    z_index = models.IntegerField(default=400)
     group_id = models.CharField(max_length=64, blank=True, default='')
     object_group_id = models.CharField(max_length=64, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -229,6 +249,7 @@ class PlanCleaningHistory(models.Model):
     METHOD_LOCAL_WALLS = 'local_walls'
     METHOD_GROK = 'grok'
     METHOD_GROK_AUTOCAD = 'grok_autocad'
+    METHOD_GROK_SKETCH = 'grok_sketch'
     METHOD_MANUAL_EDIT = 'manual_edit'
 
     METHOD_CHOICES = [
@@ -236,6 +257,7 @@ class PlanCleaningHistory(models.Model):
         (METHOD_LOCAL_WALLS, 'Local walls cleanup'),
         (METHOD_GROK, 'Grok empty-base cleanup'),
         (METHOD_GROK_AUTOCAD, 'Grok AutoCAD cleanup'),
+        (METHOD_GROK_SKETCH, 'Grok hand-drawn sketch conversion'),
         (METHOD_MANUAL_EDIT, 'Manual eraser edit'),
     ]
 
@@ -294,8 +316,17 @@ class GrokCleaningJob(models.Model):
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='grok_cleaning_jobs')
     plan = models.ForeignKey(EvacuationPlan, on_delete=models.CASCADE, related_name='grok_cleaning_jobs')
+    target_overlay = models.ForeignKey(
+        PlanOverlay,
+        on_delete=models.SET_NULL,
+        related_name='grok_cleaning_jobs',
+        null=True,
+        blank=True,
+    )
     status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=STATUS_PENDING)
     preset = models.CharField(max_length=32, default='evacuation')
+    target_kind = models.CharField(max_length=16, default='main')
+    source_image_data = models.TextField(blank=True)
     error_code = models.CharField(max_length=64, blank=True)
     error_message = models.TextField(blank=True)
     diagnostic = models.CharField(max_length=255, blank=True)
@@ -305,6 +336,7 @@ class GrokCleaningJob(models.Model):
     generation_prompt = models.TextField(blank=True)
     model_used = models.CharField(max_length=64, blank=True)
     target_background_color = models.CharField(max_length=32, default='#FFFFFF')
+    target_wall_color = models.CharField(max_length=16, default='#000000')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -325,3 +357,102 @@ class GrokCleaningJob(models.Model):
 
     def __str__(self):
         return f"Grok cleaning job {self.id} for plan {self.plan_id}"
+
+
+class WorkspaceMembership(models.Model):
+    """Gives one account access to another's plan list.
+
+    Access is granted on the whole list rather than plan by plan: that is what
+    a shared workspace means here, and it keeps a single place to widen — a
+    per-plan grant would have to be re-checked at every endpoint.
+    """
+
+    ROLE_VIEWER = 'viewer'
+    ROLE_EDITOR = 'editor'
+    ROLE_CHOICES = (
+        (ROLE_VIEWER, 'Lecture seule'),
+        (ROLE_EDITOR, 'Édition'),
+    )
+
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='workspace_members')
+    member = models.ForeignKey(User, on_delete=models.CASCADE, related_name='workspace_memberships')
+    role = models.CharField(max_length=16, choices=ROLE_CHOICES, default=ROLE_VIEWER)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('owner', 'member')
+
+    def __str__(self):
+        return f"{self.member} on {self.owner}'s workspace ({self.role})"
+
+
+def hash_invitation_token(token):
+    """Invitations are stored hashed, like passwords.
+
+    The raw token is shown to the inviter once and never persisted, so a dump
+    of this table cannot be replayed to join someone's workspace.
+    """
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+class WorkspaceInvitation(models.Model):
+    """A single-use, expiring invitation to join `owner`'s plan list."""
+
+    VALIDITY_DAYS = 7
+
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_invitations')
+    email = models.EmailField()
+    role = models.CharField(
+        max_length=16,
+        choices=WorkspaceMembership.ROLE_CHOICES,
+        default=WorkspaceMembership.ROLE_VIEWER,
+    )
+    token_hash = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    accepted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='accepted_invitations'
+    )
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    @classmethod
+    def issue(cls, owner, email, role):
+        """Creates an invitation and returns it with its one-off raw token."""
+        token = secrets.token_urlsafe(32)
+        invitation = cls.objects.create(
+            owner=owner,
+            email=email,
+            role=role,
+            token_hash=hash_invitation_token(token),
+            expires_at=timezone.now() + timedelta(days=cls.VALIDITY_DAYS),
+        )
+        return invitation, token
+
+    @property
+    def is_pending(self):
+        return (
+            self.accepted_at is None
+            and self.revoked_at is None
+            and self.expires_at > timezone.now()
+        )
+
+    def __str__(self):
+        return f"Invitation to {self.email} for {self.owner}'s workspace"
+
+
+def accessible_plan_owner_ids(user, editable_only=False):
+    """Whose plan lists `user` may reach: their own, plus any shared with them.
+
+    `editable_only` narrows it to the lists they may write to, so read access
+    and write access are decided from one place instead of being re-derived —
+    and forgotten — at each endpoint.
+    """
+    memberships = WorkspaceMembership.objects.filter(member=user)
+    if editable_only:
+        memberships = memberships.filter(role=WorkspaceMembership.ROLE_EDITOR)
+    return {user.id, *memberships.values_list('owner_id', flat=True)}
+
+
+def user_can_edit_plan(user, plan):
+    return plan.user_id in accessible_plan_owner_ids(user, editable_only=True)

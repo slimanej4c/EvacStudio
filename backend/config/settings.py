@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from datetime import timedelta
 import dj_database_url
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -9,9 +10,19 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Load environmental variables from this Django backend only.
 load_dotenv(BASE_DIR / '.env')
 
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-8ww+72hh1przrg8mta#*%5qylxo4nf2nm2f=+7@%*2cx$#itc7')
-
 DEBUG = os.environ.get('DEBUG', 'True').lower() in ('true', '1', 't')
+
+# Convenience key for local work only. It is public — it lives in the repository —
+# so it signs nothing that matters: it is refused as soon as DEBUG is off.
+_INSECURE_DEV_SECRET_KEY = 'django-insecure-8ww+72hh1przrg8mta#*%5qylxo4nf2nm2f=+7@%*2cx$#itc7'
+
+SECRET_KEY = os.environ.get('SECRET_KEY') or _INSECURE_DEV_SECRET_KEY
+
+if not DEBUG and SECRET_KEY == _INSECURE_DEV_SECRET_KEY:
+    raise ImproperlyConfigured(
+        "SECRET_KEY doit être défini hors développement : la valeur de repli est "
+        "publique, et elle signe les jetons JWT ainsi que les clés API chiffrées."
+    )
 
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
 
@@ -117,7 +128,10 @@ REST_FRAMEWORK = {
 }
 
 # SimpleJWT configuration
-JWT_SECRET = os.environ.get('JWT_SECRET', SECRET_KEY)
+JWT_SECRET = os.environ.get('JWT_SECRET') or SECRET_KEY
+
+if not DEBUG and JWT_SECRET == _INSECURE_DEV_SECRET_KEY:
+    raise ImproperlyConfigured("JWT_SECRET doit être défini hors développement.")
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),

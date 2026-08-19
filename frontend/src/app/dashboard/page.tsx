@@ -41,24 +41,24 @@ export default function DashboardPage() {
         description="Gestion des plans d'évacuation et exports de sécurité incendie."
       />
 
-      <section className="min-h-[calc(100vh-97px)] space-y-8 bg-white p-8">
+      <section className="brand-page-bg min-h-[calc(100vh-97px)] space-y-8 p-8">
         <div className="grid gap-4 md:grid-cols-3">
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-2xl border border-brand-orange/15 bg-white p-5 shadow-sm">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-slate-500">Plans enregistrés</span>
-              <Files className="h-5 w-5 text-safety-green" />
+              <span className="text-sm text-stone-500">Plans enregistrés</span>
+              <span className="rounded-lg bg-brand-cream p-2 text-brand-orange"><Files className="h-5 w-5" /></span>
             </div>
-            <p className="mt-3 text-2xl font-bold text-slate-950">{planCount}</p>
+            <p className="mt-3 text-3xl font-bold text-brand-ink">{planCount}</p>
           </div>
-          <Link href="/evacuation-plans/new" className="rounded-xl border border-green-200 bg-green-50 p-5 shadow-sm transition-colors hover:bg-green-100">
-            <FilePlus2 className="h-6 w-6 text-safety-green" />
-            <h2 className="mt-4 text-lg font-bold text-slate-950">Créer un plan</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-500">Importer une image ou un PDF et placer les pictogrammes.</p>
+          <Link href="/evacuation-plans/new" className="group rounded-2xl border border-brand-orange/20 bg-brand-cream p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-brand-orange/40 hover:shadow-md">
+            <span className="inline-flex rounded-xl bg-white p-3 text-brand-orange shadow-sm"><FilePlus2 className="h-6 w-6" /></span>
+            <h2 className="mt-4 text-lg font-bold text-brand-ink">Créer un plan</h2>
+            <p className="mt-2 text-sm leading-6 text-stone-500">Importer une image ou un PDF et placer les pictogrammes.</p>
           </Link>
-          <Link href="/evacuation-plans" className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition-colors hover:border-safety-green/40 hover:bg-green-50/40">
-            <ShieldCheck className="h-6 w-6 text-safety-green" />
-            <h2 className="mt-4 text-lg font-bold text-slate-950">Gérer les plans</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-500">Ouvrir, éditer, supprimer ou exporter vos plans existants.</p>
+          <Link href="/evacuation-plans" className="group rounded-2xl border border-brand-red/15 bg-white p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-brand-red/35 hover:shadow-md">
+            <span className="inline-flex rounded-xl bg-red-50 p-3 text-brand-red"><ShieldCheck className="h-6 w-6" /></span>
+            <h2 className="mt-4 text-lg font-bold text-brand-ink">Gérer les plans</h2>
+            <p className="mt-2 text-sm leading-6 text-stone-500">Ouvrir, éditer, supprimer ou exporter vos plans existants.</p>
           </Link>
         </div>
       </section>

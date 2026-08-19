@@ -1,18 +1,24 @@
 @import "tailwindcss";
 
 :root {
-  --background: #0f172a;
-  --foreground: #f8fafc;
-  --card: #1e293b;
-  --card-foreground: #f8fafc;
-  --primary: #3b82f6;
+  --background: #fffaf3;
+  --foreground: #4b4036;
+  --card: #ffffff;
+  --card-foreground: #4b4036;
+  --primary: #f4511e;
   --primary-foreground: #ffffff;
-  --secondary: #64748b;
-  --safety-red: #ef4444;
-  --safety-green: #22c55e;
-  --safety-yellow: #f59e0b;
-  --border: #334155;
-  --input: #1e293b;
+  --secondary: #7b6b5d;
+  --safety-red: #df2717;
+  --safety-green: #f4511e;
+  --safety-yellow: #f6b82e;
+  --border: #eaded2;
+  --input: #ffffff;
+  --brand-ink: #4b4036;
+  --brand-red: #df2717;
+  --brand-orange: #ff7400;
+  --brand-gold: #f6b82e;
+  --brand-cream: #fff5e8;
+  --brand-peach: #ffe2cf;
 }
 
 @theme inline {
@@ -28,6 +34,12 @@
   --color-safety-yellow: var(--safety-yellow);
   --color-border: var(--border);
   --color-input: var(--input);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-red: var(--brand-red);
+  --color-brand-orange: var(--brand-orange);
+  --color-brand-gold: var(--brand-gold);
+  --color-brand-cream: var(--brand-cream);
+  --color-brand-peach: var(--brand-peach);
 }
 
 html,
@@ -36,6 +48,27 @@ body {
   min-width: 0;
   max-width: 100%;
   overflow-x: hidden;
+}
+
+::selection {
+  background: rgba(255, 116, 0, 0.2);
+  color: var(--brand-ink);
+}
+
+.brand-page-bg {
+  background:
+    radial-gradient(circle at 8% 10%, rgba(246, 184, 46, 0.16), transparent 30rem),
+    radial-gradient(circle at 92% 18%, rgba(223, 39, 23, 0.1), transparent 28rem),
+    linear-gradient(180deg, #fffdf9 0%, var(--brand-cream) 100%);
+}
+
+.brand-action {
+  background: linear-gradient(135deg, var(--brand-red), var(--brand-orange));
+  box-shadow: 0 12px 28px rgba(223, 39, 23, 0.18);
+}
+
+.brand-action:hover {
+  filter: saturate(1.08) brightness(0.97);
 }
 
 /* Safari can keep a horizontally scrollable visual viewport even when

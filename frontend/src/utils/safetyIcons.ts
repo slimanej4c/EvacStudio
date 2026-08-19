@@ -7,6 +7,8 @@ export interface SafetyIconDefinition {
   svg?: string;
   imageUrl?: string;
   fileName?: string;
+  /** True only for SVG files uploaded by a user and safe to remove from the library. */
+  deletable?: boolean;
 }
 
 /**
@@ -296,6 +298,116 @@ export function getSvgDataUrl(type: IconType): string {
   const definition = SAFETY_ICONS[type];
   if (!definition?.svg) return "";
   return `data:image/svg+xml;utf8,${encodeURIComponent(definition.svg)}`;
+}
+
+/**
+ * Colours a pictogram must keep whatever the user picks: the glyph itself is
+ * drawn in white (or black outline) on top of the coloured ground, and swapping
+ * it too would erase the drawing.
+ */
+const RECOLOR_PRESERVED = new Set([
+  "none", "transparent", "currentcolor",
+  "white", "#fff", "#ffffff",
+  "black", "#000", "#000000",
+]);
+
+const isPreservedColor = (value: string) => RECOLOR_PRESERVED.has(value.trim().toLowerCase());
+
+/**
+ * Repaints an SVG's ground colour.
+ *
+ * For the built-in library the definition states its own base colour, so the
+ * swap is exact. An uploaded pictogram declares nothing, so every fill and
+ * stroke that is not part of the glyph is repainted instead — a heuristic, but
+ * the only one available without knowing how the file was drawn.
+ */
+export function recolorSvgMarkup(svg: string, color: string, baseColor?: string): string {
+  if (!color) return svg;
+
+  if (baseColor && !isPreservedColor(baseColor)) {
+    const escaped = baseColor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return svg.replace(new RegExp(escaped, "gi"), color);
+  }
+
+  const attributePaints = Array.from(
+    svg.matchAll(/(?:fill|stroke)\s*=\s*(["'])(.*?)\1/gi),
+    (match) => match[2]
+  );
+  const stylesheetPaints = Array.from(
+    svg.matchAll(/(?:fill|stroke)\s*:\s*([^;}]+)/gi),
+    (match) => match[1].trim()
+  );
+  const hasChromaticPaint = [...attributePaints, ...stylesheetPaints].some(
+    (value) => !isPreservedColor(value)
+  );
+
+  // Black is normally useful as an outline and therefore stays untouched on
+  // a coloured pictogram. A black-only pictogram is different: black *is* its
+  // ground colour (and may even be the SVG default, with no fill attribute).
+  // In that case it must follow the colour selected by the user too.
+  const shouldRepaint = (value: string) => {
+    const normalized = value.trim().toLowerCase();
+    if (!isPreservedColor(normalized)) return true;
+    return !hasChromaticPaint && ["black", "#000", "#000000"].includes(normalized);
+  };
+
+  let recolored = svg
+    .replace(
+      /(fill|stroke)(\s*=\s*)(["'])(.*?)\3/gi,
+      (match, attribute, separator, quote, value) =>
+        shouldRepaint(value) ? `${attribute}${separator}${quote}${color}${quote}` : match
+    )
+    .replace(
+      /(fill|stroke)(\s*:\s*)([^;}]+)/gi,
+      (match, property, separator, value) =>
+        shouldRepaint(value) ? `${property}${separator}${color}` : match
+    );
+
+  if (!hasChromaticPaint) {
+    recolored = recolored.replace(/<svg\b([^>]*)>/i, (root, attributes) => {
+      const hasInheritedFill = /\bfill\s*=|\bstyle\s*=\s*(["'])[^"']*\bfill\s*:/i.test(attributes);
+      return hasInheritedFill ? root : `<svg${attributes} fill="${color}">`;
+    });
+  }
+
+  return recolored;
+}
+
+const svgToDataUrl = (svg: string) => `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+
+/**
+ * Source for a pictogram drawn in a chosen colour. Uploaded pictograms live as
+ * files, so their markup has to be fetched before it can be repainted; if that
+ * fails the original artwork is used rather than showing nothing.
+ */
+export async function buildRecoloredIconSource(
+  type: IconType,
+  color: string,
+  definitions: Record<string, SafetyIconDefinition> = SAFETY_ICONS
+): Promise<string> {
+  const definition = definitions[type];
+  if (!definition || !color) return getIconImageSource(type, definitions);
+
+  if (definition.svg) {
+    return svgToDataUrl(recolorSvgMarkup(definition.svg, color, definition.color));
+  }
+
+  if (definition.imageUrl) {
+    if (!definition.imageUrl.toLowerCase().includes(".svg")) {
+      // A raster pictogram carries no colours to swap.
+      return definition.imageUrl;
+    }
+    try {
+      const response = await fetch(definition.imageUrl);
+      if (!response.ok) return definition.imageUrl;
+      const markup = await response.text();
+      return svgToDataUrl(recolorSvgMarkup(markup, color));
+    } catch {
+      return definition.imageUrl;
+    }
+  }
+
+  return "";
 }
 
 export function getIconImageSource(

@@ -6,7 +6,8 @@ import { useAuth } from "@/context/AuthContext";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { buildApiUrl } from "@/lib/api";
-import { ArrowLeft, Upload, FileText, ImageIcon, CheckCircle } from "lucide-react";
+import { ArrowLeft, Upload, CheckCircle } from "lucide-react";
+import { BrandLogo } from "@/components/BrandLogo";
 
 export default function NewPlanPage() {
   const { getAuthHeaders } = useAuth();
@@ -88,20 +89,22 @@ export default function NewPlanPage() {
 
   return (
     <ProtectedRoute>
-      <div className="flex min-h-screen flex-col bg-white">
-        <header className="sticky top-0 z-40 w-full border-b border-slate-200 bg-white/90 backdrop-blur-md">
-          <div className="flex h-16 items-center px-6">
-            <Link href="/dashboard" className="flex items-center space-x-2 text-sm text-slate-600 transition-colors hover:text-safety-green">
+      <div className="brand-page-bg flex min-h-screen flex-col">
+        <header className="sticky top-0 z-40 w-full border-b border-brand-orange/15 bg-white/90 backdrop-blur-md">
+          <div className="flex h-20 items-center justify-between px-6">
+            <Link href="/dashboard" className="flex items-center space-x-2 text-sm text-stone-600 transition-colors hover:text-brand-red">
               <ArrowLeft className="h-4 w-4" />
               <span>Retour au tableau de bord</span>
             </Link>
+            <BrandLogo className="h-14 w-40 rounded-lg bg-white" priority />
           </div>
         </header>
 
         <main className="flex-1 flex items-center justify-center p-6">
-          <div className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-8 shadow-xl">
-            <h1 className="text-2xl font-bold text-slate-950 mb-2">Nouveau Plan d'Évacuation</h1>
-            <p className="text-slate-500 text-sm mb-6">Définissez les détails et importez le dessin de base de votre bâtiment.</p>
+          <div className="relative w-full max-w-2xl overflow-hidden rounded-3xl border border-brand-orange/20 bg-white p-8 shadow-[0_28px_80px_rgba(145,60,15,0.14)]">
+            <div className="absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-brand-red via-brand-orange to-brand-gold" />
+            <h1 className="mb-2 text-2xl font-bold text-brand-ink">Nouveau Plan d&apos;Évacuation</h1>
+            <p className="mb-6 text-sm text-stone-500">Définissez les détails et importez le dessin de base de votre bâtiment.</p>
 
             {error && (
               <div className="mb-6 rounded-lg bg-safety-red/10 border border-safety-red/20 p-4 text-sm text-safety-red">
@@ -120,7 +123,7 @@ export default function NewPlanPage() {
                     required
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
-                    className="block w-full rounded-xl border border-slate-300 bg-white py-3 px-4 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none focus:ring-2 focus:ring-safety-green/20 sm:text-sm"
+                    className="block w-full rounded-xl border border-stone-300 bg-white py-3 px-4 text-brand-ink placeholder-stone-400 focus:border-brand-orange focus:outline-none focus:ring-2 focus:ring-brand-orange/20 sm:text-sm"
                     placeholder="Ex: Plan d'Évacuation Principal - RDC"
                   />
                 </div>
@@ -134,7 +137,7 @@ export default function NewPlanPage() {
                     required
                     value={buildingName}
                     onChange={(e) => setBuildingName(e.target.value)}
-                    className="block w-full rounded-xl border border-slate-300 bg-white py-3 px-4 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none focus:ring-2 focus:ring-safety-green/20 sm:text-sm"
+                    className="block w-full rounded-xl border border-stone-300 bg-white py-3 px-4 text-brand-ink placeholder-stone-400 focus:border-brand-orange focus:outline-none focus:ring-2 focus:ring-brand-orange/20 sm:text-sm"
                     placeholder="Ex: Bâtiment A"
                   />
                 </div>
@@ -148,7 +151,7 @@ export default function NewPlanPage() {
                     required
                     value={floorName}
                     onChange={(e) => setFloorName(e.target.value)}
-                    className="block w-full rounded-xl border border-slate-300 bg-white py-3 px-4 text-slate-950 placeholder-slate-400 focus:border-safety-green focus:outline-none focus:ring-2 focus:ring-safety-green/20 sm:text-sm"
+                    className="block w-full rounded-xl border border-stone-300 bg-white py-3 px-4 text-brand-ink placeholder-stone-400 focus:border-brand-orange focus:outline-none focus:ring-2 focus:ring-brand-orange/20 sm:text-sm"
                     placeholder="Ex: Rez-de-chaussée"
                   />
                 </div>
@@ -158,7 +161,7 @@ export default function NewPlanPage() {
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-2">
                   Fichier de fond de plan (Image ou PDF)
                 </label>
-                <div className="group relative mt-1 flex cursor-pointer justify-center rounded-xl border-2 border-dashed border-green-200 bg-green-50/40 px-6 pb-6 pt-5 transition-colors hover:border-safety-green">
+                <div className="group relative mt-1 flex cursor-pointer justify-center rounded-xl border-2 border-dashed border-brand-orange/30 bg-brand-cream/70 px-6 pb-6 pt-5 transition-colors hover:border-brand-orange">
                   <input
                     type="file"
                     accept="image/*,application/pdf"
@@ -169,19 +172,19 @@ export default function NewPlanPage() {
                   <div className="space-y-1 text-center">
                     {file ? (
                       <div className="flex flex-col items-center">
-                        <CheckCircle className="mx-auto h-12 w-12 text-safety-green mb-2" />
+                        <CheckCircle className="mx-auto mb-2 h-12 w-12 text-brand-orange" />
                         <p className="text-sm font-semibold text-slate-950 truncate max-w-xs">{file.name}</p>
                         <p className="text-xs text-slate-500 mt-1">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
                       </div>
                     ) : (
                       <>
-                        <Upload className="mx-auto h-12 w-12 text-safety-green transition-colors" />
+                        <Upload className="mx-auto h-12 w-12 text-brand-orange transition-colors" />
                         <div className="flex text-sm text-slate-500 justify-center">
-                          <span className="relative rounded-md font-semibold text-safety-green transition-colors group-hover:text-green-700">
+                          <span className="relative rounded-md font-semibold text-brand-red transition-colors group-hover:text-brand-orange">
                             Sélectionner un fichier
                           </span>
                         </div>
-                        <p className="text-xs text-slate-500">PNG, JPG, SVG ou PDF jusqu'à 10MB</p>
+                        <p className="text-xs text-slate-500">PNG, JPG, SVG ou PDF jusqu&apos;à 10MB</p>
                       </>
                     )}
                   </div>
@@ -192,7 +195,7 @@ export default function NewPlanPage() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="flex cursor-pointer items-center justify-center space-x-2 rounded-xl bg-safety-green px-6 py-3 font-semibold text-white shadow-lg shadow-safety-green/10 transition-all hover:bg-green-600 disabled:opacity-50"
+                  className="brand-action flex cursor-pointer items-center justify-center space-x-2 rounded-xl px-6 py-3 font-semibold text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
                 >
                   {loading ? "Création en cours..." : "Créer le plan & Ouvrir l'éditeur"}
                 </button>

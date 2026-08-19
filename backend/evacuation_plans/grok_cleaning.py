@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_ANALYSIS_MODEL = "grok-4.5"
 DEFAULT_EDIT_MODEL = "grok-imagine-image-quality"
 DEFAULT_RESOLUTION = "2k"
+DEFAULT_XAI_REQUEST_TIMEOUT_SECONDS = 300
 MAX_EDIT_PROMPT_LENGTH = 7500
 
 
@@ -46,6 +47,22 @@ def _get_edit_model() -> str:
 
 def _get_resolution() -> str:
     return os.environ.get("XAI_RESOLUTION", DEFAULT_RESOLUTION)
+
+
+def _get_request_timeout() -> int:
+    """Return a bounded per-request timeout for the xAI SDK.
+
+    The SDK default is 27 minutes. This pipeline makes two sequential calls,
+    so relying on that default can leave an editor polling for almost an hour.
+    """
+    try:
+        timeout = int(os.environ.get(
+            "XAI_REQUEST_TIMEOUT_SECONDS",
+            DEFAULT_XAI_REQUEST_TIMEOUT_SECONDS,
+        ))
+    except (TypeError, ValueError):
+        return DEFAULT_XAI_REQUEST_TIMEOUT_SECONDS
+    return max(30, min(timeout, 900))
 
 
 # ── Instruction d'analyse (reproduit à l'identique le script de référence) ──
@@ -495,7 +512,7 @@ def _clean_json_response(text: str) -> str:
     return text
 
 
-def _download_image(url: str, timeout: int = 180) -> bytes:
+def _download_image(url: str, timeout: int = 60) -> bytes:
     """Télécharge l'image générée depuis son URL temporaire."""
     response = urlopen(Request(url), timeout=timeout)
     try:
@@ -1113,6 +1130,228 @@ Do not invent information that is not visible in the supplied image.
 """
 
 
+SKETCH_ANALYSIS_INSTRUCTION = r"""
+You are an expert architectural drafter specialized in converting hand-drawn
+floor-plan sketches into clean technical drawings that can be used as the
+architectural base of an evacuation plan.
+
+Analyze ONLY the supplied source image. The source may be a scan or photograph
+of a sketch drawn with pen or pencil on plain, lined or graph paper.
+
+Your task is NOT to invent a building. Your task is to generate a precise,
+source-specific image-editing prompt that transforms the visible sketch into a
+professional empty architectural floor-plan base.
+
+Critical interpretation rule: infer the intended designed architecture rather
+than reproducing the literal coordinates of shaky strokes. Treat small angle,
+alignment and straightness errors as drawing noise. Explicitly inspect the
+outer perimeter, every interior wall, every opening and the room topology.
+Identify which rare slanted or curved exterior boundaries are clearly
+intentional so they remain deliberate geometry; all ordinary interior walls
+must be reconstructed on a precise orthogonal architectural grid.
+
+
+======================================================================
+GEOMETRIC AUTHORITY
+======================================================================
+
+The supplied sketch is the sole authority for topology and intended relative
+geometry. Preserve the following architectural information whenever visible,
+but do not preserve accidental hand-drawn deviations from straightness,
+parallelism, alignment or right angles:
+
+- the number and arrangement of rooms and spaces;
+- exterior footprint and irregular contours;
+- wall, partition and corridor positions;
+- openings, passages, doors and door-swing direction;
+- windows, stairs, landings, elevators, shafts and columns;
+- adjacency between rooms and circulation paths;
+- relative proportions, orientation and position of all areas;
+- separate floor-plan areas and their relative placement on the sheet.
+
+Never add a room, door, window, stair, corridor, exit or technical space that
+is not supported by visible strokes. Never make the layout symmetrical, merge
+rooms or close openings merely to make the result prettier. Minor snapping and
+alignment corrections are required when they recover the clearly intended
+architectural geometry without changing topology.
+
+
+======================================================================
+INTERPRETING HAND-DRAWN STROKES
+======================================================================
+
+Distinguish intentional architectural strokes from paper defects, shadows,
+folds, stains, handwriting and accidental marks.
+
+Convert clearly intentional architecture into clean technical linework:
+
+- straighten a shaky line only when it clearly represents a straight wall;
+- retain intentional angled, curved or irregular walls;
+- default every ordinary interior wall to exactly horizontal or exactly
+  vertical; retain an interior diagonal only when it is unmistakably intended;
+- snap every ordinary interior corner and T-junction to an exact 90-degree
+  architectural angle;
+- align nearly collinear wall segments to the same exact horizontal or vertical
+  axis and make walls intended as parallel perfectly parallel;
+- replace bowed or wavy intended straight walls with one best-fit straight line;
+- join and close wall corners or wall ends that visibly meet, without closing
+  intentional doors, windows, passages or other openings;
+- make L-, T- and cross-junctions meet flush, with no gap, overlap, protruding
+  cap, hook or overshoot;
+- reconstruct walls as solid, continuous, fully opaque technical linework with
+  clean edges and consistent thickness;
+- reject thin gray, broken, fuzzy, translucent, paint-like or duplicated ghost
+  outlines instead of reproducing them from the sketch;
+- interpret two parallel wall boundaries as the edges of one wall mass and fill
+  the complete space between them with one solid wall color;
+- never render a wall as a hollow background-colored strip enclosed by contours,
+  parallel outline rails or an empty rectangle;
+- when the sketch uses a single wall stroke, rebuild it as one solid filled band
+  of suitable uniform thickness rather than adding a hollow second outline;
+- do not invent wall thickness when the sketch gives no reliable evidence;
+- convert clear door leaves and swing arcs into crisp conventional geometry;
+- redraw clear windows, stairs and treads faithfully at the same locations;
+- preserve incomplete or uncertain geometry rather than guessing its meaning.
+
+If the source is photographed, correct obvious camera perspective, rotation and
+paper skew only enough to present the same geometry orthogonally. Do not use
+perspective correction as permission to reshape the plan.
+
+
+======================================================================
+REMOVE FROM THE FINAL BASE
+======================================================================
+
+Remove only non-architectural material when visible:
+
+- paper texture, graph lines, ruled lines, shadows, folds and stains;
+- pen pressure variations, ink bleed, smudges and scanning noise;
+- handwritten notes, dimensions, arrows and correction marks;
+- legends, title blocks, borders, logos, dates and signatures;
+- existing evacuation pictograms, routes, safety colors and YOU ARE HERE marks;
+- loose furniture only when it is clearly not part of the architecture.
+
+When text or a mark crosses a wall, restore only the short continuation strongly
+supported by immediately visible endpoints. Never hallucinate hidden geometry.
+
+
+======================================================================
+TARGET APPEARANCE
+======================================================================
+
+The result must be a clean professional 2D architectural base ready for the
+editor to receive evacuation pictograms and routes:
+
+- same canvas coverage and same relative scale as the source;
+- pure flat uniform background with no paper texture or shadow;
+- crisp, solid, continuous and fully opaque architectural linework;
+- wall bodies filled edge-to-edge with the requested wall color and no hollow center;
+- clear walls, openings, doors, stairs and circulation;
+- no perspective presentation, 3D effect, color rendering or decoration;
+- no evacuation symbols, arrows, labels, legend or YOU ARE HERE marker yet;
+- no cropped architectural area and no watermark.
+
+This is a faithful drafting conversion, not a redesign and not a generic floor
+plan generated from imagination.
+
+
+======================================================================
+OUTPUT
+======================================================================
+
+Return ONLY one valid JSON object with this structure:
+
+{
+  "source_summary": "",
+  "recognized_architecture": [],
+  "hand_drawn_artifacts_to_remove": [],
+  "uncertain_areas": [],
+  "compact_edit_prompt": ""
+}
+
+The compact_edit_prompt must be source-specific, technically precise and less
+than 6000 characters. Mention the actual visible plan organization, the
+architectural features to redraw, artifacts to remove and every uncertain area.
+
+The compact_edit_prompt MUST begin exactly with:
+
+"Transform the supplied hand-drawn floor-plan sketch into a clean professional architectural base suitable for creating an evacuation plan."
+
+It must explicitly state that the sketch is the sole geometric reference, that
+only clearly intended architectural strokes may be regularized, and that no
+hidden geometry may be invented.
+
+Terminate compact_edit_prompt EXACTLY with:
+
+"Use a clean uniform background and retain crisp high-contrast architectural linework.
+Return only the cleaned architectural base image."
+
+Base all source-specific information ONLY on what is actually visible.
+"""
+
+
+# This block is injected directly into the image-generation prompt. It is kept
+# separate from the vision-analysis instruction so the image model receives the
+# anti-sketch requirements even if the analysis response paraphrases or omits
+# part of them.
+SKETCH_GENERATION_REQUIREMENTS = r"""
+Convert this hand-drawn floor sketch into a clean, professional high-contrast CAD-style architectural floor plan.
+
+CRITICAL INSTRUCTIONS:
+- Use the source sketch only as a geometric reference and reconstruct the plan.
+- Do NOT trace the sketch literally or reproduce its drawing style.
+- Infer the intended professional architecture; do NOT preserve accidental crooked lines, approximate angles, poor alignment or freehand deformation.
+- Do NOT reproduce the hand-drawn style, shaky strokes, irregular pen pressure or paint-like appearance.
+- Do NOT keep sketch-like, thin, broken, fuzzy, translucent or double-outline lines.
+- Do NOT draw walls as hollow outlined shapes, two parallel rails or contours with the background visible at their center.
+- Do NOT produce pencil, paint, artistic, illustrated, hand-rendered or traced-paint effects.
+
+GEOMETRY — PRESERVE THE INTENDED DESIGN:
+- Preserve the intended layout, topology, room adjacency and relative proportions, not the accidental wobble of the drawn strokes.
+- Preserve the intended outer perimeter, including only clearly deliberate slanted, angled, irregular and curved boundaries.
+- Preserve every interior wall and opening in its intended relative position while correcting small drawing inaccuracies.
+- Preserve clear doors, door swings, windows, stairs, landings, shafts and columns at their original positions.
+- Do not move, merge, add or remove spaces, walls, openings or architectural features.
+- Never invent hidden geometry or technical details that are not supported by the source.
+
+MANDATORY ARCHITECTURAL ORTHOGONALIZATION:
+- Reconstruct all ordinary interior walls on a precise horizontal-and-vertical architectural grid.
+- Every ordinary interior corner must be exactly 90 degrees. Do not output approximate 88°, 92° or other almost-square angles.
+- Every intended horizontal wall must be mathematically straight and level; every intended vertical wall must be mathematically straight and upright.
+- Walls intended to be parallel must be perfectly parallel. Nearly collinear segments must snap to the exact same axis.
+- Replace every bowed, wavy, leaning or irregular intended straight stroke with one clean best-fit straight wall.
+- Keep an interior diagonal only when the source makes it unmistakably intentional. Never infer a diagonal merely from an imprecise hand-drawn line.
+- Keep a deliberate curved exterior boundary, but redraw it as one smooth controlled curve without bumps, flat spots or kinks.
+- Make every L-, T- and cross-junction meet exactly and flush, with no gaps, overlaps, hooks, protruding ends or overshoots.
+- Keep door and passage openings clear and correctly aligned; do not close them while joining walls.
+
+LINE RECONSTRUCTION:
+- Convert every intended straight wall into a crisp, perfectly straight horizontal, vertical or deliberately angled architectural line.
+- Keep curves only where the source clearly shows a deliberately curved boundary.
+- REQUIRED WALL COLOR: {wall_color}. Use this exact HEX color for every wall and architectural line.
+- Use solid, continuous, fully opaque wall linework in exactly {wall_color}, with clean edges and uniform, consistent thickness.
+- Render every wall as a SOLID FILLED BAND. The complete wall thickness must be {wall_color} from edge to edge.
+- If two wall boundaries are visible, treat them as the limits of one wall and fill all space between them with {wall_color}.
+- The background color inside a wall thickness is strictly forbidden. The background may appear only in rooms, corridors and intentional openings.
+- Do not substitute black, another gray or any approximate shade when {wall_color} is requested. No faded, semi-transparent, fuzzy or fragmented linework.
+- Replace rough strokes with a single clean architectural result; remove duplicate, offset or ghost outlines caused by the sketch.
+- Exterior walls may be thicker than interior partitions, but both must remain completely filled with {wall_color} and have no hollow center.
+- Door leaves and swing arcs may remain crisp single technical lines in {wall_color}; the surrounding wall bodies must remain solid filled bands.
+- Join and close wall corners and wall ends where the source shows that they meet. Never close an intentional door, window, passage or opening.
+
+CLEANUP AND OUTPUT:
+- Correct paper or camera rotation and perspective without altering the plan geometry.
+- Remove handwritten labels, notes, dimensions, arrows and correction marks.
+- Remove paper texture, graph or ruled lines, shadows, stains, folds, ink noise and camera background.
+- Produce a clean top-down orthographic plan on the exact flat background {background_color}, using only {wall_color} for architectural linework.
+- No unintended colors, pencil effect, sketch effect, paint effect, textures, hatching or shading.
+- No furniture, dimensions, title, border, logo or watermark.
+- No evacuation pictograms, routes or symbols yet.
+
+The final result must look like a digitally drafted CAD-style architectural base plan: precise, high-contrast, clean and suitable for evacuation-plan preparation. It must never look like a traced sketch.
+""".strip()
+
+
 def _run_analysis(client, source_data_url: str, analysis_model: str, instruction: str = ANALYSIS_INSTRUCTION) -> dict:
     from xai_sdk.chat import image, user
     chat = client.chat.create(model=analysis_model)
@@ -1133,22 +1372,48 @@ def _run_analysis(client, source_data_url: str, analysis_model: str, instruction
         return {"compact_edit_prompt": content.strip()}
 
 
-def _format_background_color_instruction(background_color: str = "#FFFFFF") -> str:
+def normalize_hex_color(value: str, default: str) -> str:
+    """Return an uppercase six-digit HEX color, or ``default`` when invalid."""
+    color = str(value or "").strip().upper()
+    if len(color) == 4 and color.startswith("#"):
+        color = "#" + "".join(character * 2 for character in color[1:])
+    if len(color) == 7 and color.startswith("#") and all(
+        character in "0123456789ABCDEF" for character in color[1:]
+    ):
+        return color
+    return default.upper()
+
+
+def _format_background_color_instruction(
+    background_color: str = "#FFFFFF",
+    wall_color: str = "#000000",
+    preset: str = "evacuation",
+) -> str:
     color = (background_color or "#FFFFFF").strip().upper()
+    line_instruction = (
+        f"Use exact wall and architectural-line color {wall_color}; keep it fully opaque and uniform."
+        if preset == "sketch"
+        else "Retain only crisp high-contrast black architectural linework."
+    )
     if color in ("#FFFFFF", "WHITE", "#FFF", "PURE WHITE", "BLANC SEC"):
         return (
             "CRITICAL BACKGROUND RULE: Use a 100% pure flat solid white background (#FFFFFF) with ZERO off-white tint, ZERO paper texture, ZERO shadows, and ZERO background noise.\n"
-            "Retain only crisp high-contrast black architectural linework.\n"
+            f"{line_instruction}\n"
             "Return only the cleaned architectural base image."
         )
     return (
         f"CRITICAL BACKGROUND RULE: Use a clean uniform solid background of exact color {color} with ZERO paper texture and ZERO shadows.\n"
-        "Retain crisp high-contrast architectural linework.\n"
+        f"{line_instruction}\n"
         "Return only the cleaned architectural base image."
     )
 
 
-def _validate_analysis(analysis: dict, background_color: str = "#FFFFFF") -> str:
+def _validate_analysis(
+    analysis: dict,
+    background_color: str = "#FFFFFF",
+    wall_color: str = "#000000",
+    preset: str = "evacuation",
+) -> str:
     """Extrait et valide le ``compact_edit_prompt``. Renvoie le prompt."""
     if not isinstance(analysis, dict):
         raise GrokCleaningError(
@@ -1165,7 +1430,21 @@ def _validate_analysis(analysis: dict, background_color: str = "#FFFFFF") -> str
             user_message="L'analyse n'a pas produit d'instructions assez spécifiques.",
         )
 
-    color_instruction = _format_background_color_instruction(background_color)
+    background_color = normalize_hex_color(background_color, "#FFFFFF")
+    wall_color = normalize_hex_color(wall_color, "#000000")
+
+    if preset == "sketch":
+        prompt = (
+            f"{SKETCH_GENERATION_REQUIREMENTS.format(wall_color=wall_color, background_color=background_color)}\n\n"
+            "SOURCE-SPECIFIC GEOMETRY ANALYSIS:\n"
+            f"{prompt}"
+        )
+
+    color_instruction = _format_background_color_instruction(
+        background_color,
+        wall_color=wall_color,
+        preset=preset,
+    )
     standard_ending = (
         "Use a clean pure white background and retain crisp black architectural linework.\n"
         "Return only the cleaned architectural base image."
@@ -1183,11 +1462,16 @@ def _validate_analysis(analysis: dict, background_color: str = "#FFFFFF") -> str
 
 
 def analyze_and_clean_plan(
-    image_bytes: bytes, api_key: str, background_color: str = "#FFFFFF", preset: str = "evacuation"
+    image_bytes: bytes,
+    api_key: str,
+    background_color: str = "#FFFFFF",
+    wall_color: str = "#000000",
+    preset: str = "evacuation",
+    on_generation_started=None,
 ) -> GrokCleaningResult:
     """Pipeline complet : analyse Grok → prompt compact → génération image 2K.
 
-    Supporte preset="evacuation" ou preset="autocad".
+    Supporte preset="evacuation", preset="autocad" ou preset="sketch".
     Lève :class:`GrokCleaningError` (ou :class:`MissingXaiApiKeyError`) à tout
     stade en cas d'échec.
     """
@@ -1198,11 +1482,16 @@ def analyze_and_clean_plan(
     edit_model = _get_edit_model()
     resolution = _get_resolution()
 
-    instruction = AUTOCAD_ANALYSIS_INSTRUCTION if preset == "autocad" else ANALYSIS_INSTRUCTION
+    instructions = {
+        "evacuation": ANALYSIS_INSTRUCTION,
+        "autocad": AUTOCAD_ANALYSIS_INSTRUCTION,
+        "sketch": SKETCH_ANALYSIS_INSTRUCTION,
+    }
+    instruction = instructions.get(preset, ANALYSIS_INSTRUCTION)
 
     source_data_url = image_bytes_to_data_url(image_bytes)
     from xai_sdk import Client
-    client = Client(api_key=api_key)
+    client = Client(api_key=api_key, timeout=_get_request_timeout())
 
     # ── Étape 1 : analyse ────────────────────────────────────────────────
     try:
@@ -1219,9 +1508,17 @@ def analyze_and_clean_plan(
             user_message="L'analyse du plan a échoué.",
         ) from exc
 
-    generation_prompt = _validate_analysis(analysis, background_color=background_color)
+    generation_prompt = _validate_analysis(
+        analysis,
+        background_color=background_color,
+        wall_color=wall_color,
+        preset=preset,
+    )
 
     # ── Étape 2 : génération de l'image nettoyée ─────────────────────────
+    if on_generation_started is not None:
+        on_generation_started()
+
     # On demande directement les bytes (base64) au SDK : l'URL temporaire
     # renvoyée par xAI est éphémère et son téléchargement échoue souvent
     # (expiration, redirect, en-têtes). Récupérer .image évite ce aller-retour.

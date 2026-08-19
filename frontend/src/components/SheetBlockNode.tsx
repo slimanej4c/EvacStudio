@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Group, Rect, Text, Line, Image as KonvaImage } from "react-konva";
+import { Group, Rect, Text, Line, Ellipse, Image as KonvaImage } from "react-konva";
 import { SheetBlock } from "@/lib/sheetTemplates";
 import { IconType } from "@/utils/safetyIcons";
 
@@ -20,6 +20,10 @@ interface SheetBlockNodeProps {
   images: Partial<Record<string, HTMLImageElement | null>>;
   /** Pictogram artwork, keyed by icon type, for `picto` blocks. */
   pictoImages: Partial<Record<string, HTMLImageElement | null>>;
+  /** Recoloured pictograms, keyed by `iconType|#rrggbb`. */
+  recoloredPictoImages?: Partial<Record<string, HTMLImageElement | null>>;
+  /** Stable Konva name used to reorder this block with the other sheet layers. */
+  layerName?: string;
   onSelect: (id: string) => void;
   onChange: (id: string, patch: Partial<SheetBlock>) => void;
   /** Double-click opens the in-place text editor on blocks that carry copy. */
@@ -46,6 +50,8 @@ export function SheetBlockNode({
   legendEntries,
   images,
   pictoImages,
+  recoloredPictoImages = {},
+  layerName,
   onSelect,
   onChange,
   onEditText
@@ -60,7 +66,7 @@ export function SheetBlockNode({
   const select = () => onSelect(block.id);
 
   const frame =
-    block.fill || block.stroke ? (
+    block.kind === "shape" ? null : block.fill || block.stroke ? (
       <Rect
         width={width}
         height={height}
@@ -123,7 +129,59 @@ export function SheetBlockNode({
 
   let content: React.ReactNode = null;
 
-  if (block.kind === "legend") {
+  if (block.kind === "shape") {
+    const stroke = block.stroke ?? block.color ?? "#000000";
+    const fill = block.fill || undefined;
+    const fillOpacity = block.fillOpacity ?? (block.shapeType === "zone" ? 0.28 : 0.35);
+    const points = (block.shapePoints ?? []).flatMap((point) => [
+      point.x * width,
+      point.y * height
+    ]);
+    const strokeWidth = block.strokeWidth ?? 3;
+
+    if (block.shapeType === "circle") {
+      content = (
+        <Ellipse
+          x={width / 2}
+          y={height / 2}
+          radiusX={width / 2}
+          radiusY={height / 2}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
+          fill={fill}
+          fillOpacity={fill ? fillOpacity : undefined}
+        />
+      );
+    } else if (block.shapeType === "rect" || block.shapeType === "zone") {
+      content = (
+        <Rect
+          width={width}
+          height={height}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
+          fill={fill}
+          fillOpacity={fill ? fillOpacity : undefined}
+          dash={block.shapeType === "zone" ? [10, 6] : undefined}
+        />
+      );
+    } else {
+      const closed = block.shapeType !== "line" && block.shapeType !== "polyline";
+      content = (
+        <Line
+          points={points}
+          closed={closed}
+          tension={block.shapeType === "curve_polygon_zone" ? block.shapeTension ?? 0.35 : block.shapeTension ?? 0}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
+          fill={closed ? fill : undefined}
+          fillOpacity={closed && fill ? fillOpacity : undefined}
+          lineCap="round"
+          lineJoin="round"
+          hitStrokeWidth={Math.max(16, strokeWidth + 10)}
+        />
+      );
+    }
+  } else if (block.kind === "legend") {
     const rows = legendEntries.length;
     const available = height - titleHeight - padding;
     // Rows share the space left under the title, capped so a short legend does
@@ -187,7 +245,11 @@ export function SheetBlockNode({
       </>
     );
   } else if (block.kind === "picto") {
-    const image = block.iconType ? pictoImages[block.iconType] ?? null : null;
+    const image = block.iconType
+      ? (block.color
+          ? recoloredPictoImages[`${block.iconType}|${block.color}`] ?? pictoImages[block.iconType]
+          : pictoImages[block.iconType]) ?? null
+      : null;
     content = image ? (
       <KonvaImage image={image} width={width} height={height} listening={false} />
     ) : (
@@ -252,7 +314,7 @@ export function SheetBlockNode({
   return (
     <Group
       id={block.id}
-      name={block.id}
+      name={[block.id, layerName].filter(Boolean).join(" ")}
       x={block.x}
       y={block.y}
       rotation={block.rotation}
@@ -261,8 +323,8 @@ export function SheetBlockNode({
       onTouchStart={select}
       onClick={select}
       onTap={select}
-      onDblClick={() => onEditText?.(block.id)}
-      onDblTap={() => onEditText?.(block.id)}
+      onDblClick={() => block.kind !== "shape" && onEditText?.(block.id)}
+      onDblTap={() => block.kind !== "shape" && onEditText?.(block.id)}
       onDragEnd={(event) =>
         onChange(block.id, { x: Math.round(event.target.x()), y: Math.round(event.target.y()) })
       }
@@ -281,12 +343,14 @@ export function SheetBlockNode({
         });
       }}
     >
-      {/* Nothing spills outside the block the user sized. */}
-      <Group clipX={0} clipY={0} clipWidth={width} clipHeight={height}>
-        {frame}
-        {titleBar}
-        {content}
-      </Group>
+      {block.kind === "shape" ? content : (
+        /* Nothing spills outside the block the user sized. */
+        <Group clipX={0} clipY={0} clipWidth={width} clipHeight={height}>
+          {frame}
+          {titleBar}
+          {content}
+        </Group>
+      )}
     </Group>
   );
 }

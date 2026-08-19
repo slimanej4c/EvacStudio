@@ -2,15 +2,19 @@ import os
 import base64
 import binascii
 import io
+import re
+import xml.etree.ElementTree as ET
 import cv2
 import logging
 import threading
 import numpy as np
 import fitz # PyMuPDF
+from datetime import timedelta
 from PIL import Image, UnidentifiedImageError
 from urllib.parse import quote
 from django.conf import settings
 from django.db import close_old_connections, transaction
+from django.utils import timezone
 from django.core.files.base import ContentFile
 from rest_framework import viewsets, permissions, status, generics
 from rest_framework.views import APIView
@@ -26,11 +30,18 @@ from .models import (
     PlanShape,
     PlanText,
     UserXaiSettings,
+    WorkspaceInvitation,
+    WorkspaceMembership,
+    accessible_plan_owner_ids,
+    hash_invitation_token,
+    user_can_edit_plan,
 )
 from .grok_cleaning import (
     GrokCleaningError,
     MissingXaiApiKeyError,
+    _get_request_timeout,
     analyze_and_clean_plan,
+    normalize_hex_color,
 )
 from .serializers import (
     UserRegistrationSerializer,
@@ -41,6 +52,9 @@ from .serializers import (
     PlanShapeSerializer,
     PlanTextSerializer,
     SyncEditorSerializer,
+    AcceptWorkspaceInvitationSerializer,
+    CreateWorkspaceInvitationSerializer,
+    SyncPlanIconSerializer,
     SyncPlanOverlaySerializer,
     MAX_IMAGE_DATA_LENGTH,
     SaveUserXaiSettingsSerializer,
@@ -49,14 +63,55 @@ from .serializers import (
     ApplyManualPlanEditSerializer,
     UseCleaningHistorySerializer,
     UserXaiSettingsSerializer,
+    WorkspaceInvitationSerializer,
+    WorkspaceMembershipSerializer,
 )
 
 PLAN_PICTOGRAM_DIRS = ('plan_picto', 'nf_x-picto')
 PLAN_PICTOGRAM_EXTENSIONS = {'.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif'}
+MAX_PICTOGRAM_SVG_BYTES = 250 * 1024
+SVG_DANGEROUS_TAGS = {
+    'script', 'foreignobject', 'iframe', 'object', 'embed', 'image', 'audio',
+    'video', 'canvas', 'a', 'animate', 'animatemotion', 'animatetransform', 'set',
+}
 logger = logging.getLogger(__name__)
 
 MAX_OVERLAY_IMAGE_SIDE = 20_000
 MAX_OVERLAY_IMAGE_PIXELS = 80_000_000
+DEFAULT_GROK_JOB_STALE_SECONDS = 420
+
+
+def get_grok_job_stale_seconds():
+    """Maximum time a Grok job may remain in one stage without progress."""
+    try:
+        timeout = int(os.environ.get(
+            "GROK_JOB_STALE_SECONDS",
+            DEFAULT_GROK_JOB_STALE_SECONDS,
+        ))
+    except (TypeError, ValueError):
+        return DEFAULT_GROK_JOB_STALE_SECONDS
+    return max(60, min(timeout, 1800))
+
+
+def expire_stalled_grok_job(job):
+    """Turn an abandoned active job into a terminal failure for pollers."""
+    active_statuses = {
+        GrokCleaningJob.STATUS_PENDING,
+        GrokCleaningJob.STATUS_ANALYZING,
+        GrokCleaningJob.STATUS_GENERATING,
+    }
+    if job.status not in active_statuses:
+        return False
+    stale_before = timezone.now() - timedelta(seconds=get_grok_job_stale_seconds())
+    if job.updated_at > stale_before:
+        return False
+    stalled_status = job.status
+    job.mark_failed(
+        "XAI_TIMEOUT",
+        "Le nettoyage avec Grok a dépassé le délai d’attente. Veuillez réessayer.",
+        f"job_stalled:{stalled_status}",
+    )
+    return True
 
 
 def validate_overlay_image_bytes(image_bytes):
@@ -78,39 +133,125 @@ def validate_overlay_image_bytes(image_bytes):
     return True, None
 
 
-def get_plan_pictogram_directory():
-    for directory in PLAN_PICTOGRAM_DIRS:
-        path = os.path.join(settings.MEDIA_ROOT, directory)
-        if os.path.isdir(path):
-            return directory, path
-    return PLAN_PICTOGRAM_DIRS[0], os.path.join(settings.MEDIA_ROOT, PLAN_PICTOGRAM_DIRS[0])
-
 def build_plan_pictogram_url(request, relative_path):
     media_path = '/'.join(relative_path.split(os.sep))
     url = settings.MEDIA_URL + quote(media_path)
     return request.build_absolute_uri(url)
 
-def list_plan_pictograms(request):
-    directory, root = get_plan_pictogram_directory()
-    if not os.path.isdir(root):
-        return []
 
+def _svg_local_name(value):
+    return value.rsplit('}', 1)[-1].lower()
+
+
+def validate_and_sanitize_pictogram_svg(svg_bytes):
+    """Return a safe, square SVG or a user-facing validation error."""
+    if not svg_bytes:
+        return None, "Le fichier SVG est vide."
+    if len(svg_bytes) > MAX_PICTOGRAM_SVG_BYTES:
+        return None, "Le SVG dépasse la taille maximale de 250 Ko."
+
+    try:
+        source = svg_bytes.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        return None, "Le SVG doit être encodé en UTF-8."
+
+    lowered = source.lower()
+    if '<!doctype' in lowered or '<!entity' in lowered:
+        return None, "Les déclarations DOCTYPE et ENTITY ne sont pas autorisées."
+
+    try:
+        root = ET.fromstring(source)
+    except ET.ParseError:
+        return None, "Le contenu n'est pas un SVG valide."
+
+    if _svg_local_name(root.tag) != 'svg':
+        return None, "Le document doit commencer par un élément <svg>."
+
+    view_box = root.attrib.get('viewBox') or root.attrib.get('viewbox')
+    if not view_box:
+        return None, 'Le SVG doit contenir un viewBox carré, par exemple "0 0 170 170".'
+    try:
+        values = [float(part) for part in re.split(r'[\s,]+', view_box.strip()) if part]
+    except ValueError:
+        values = []
+    if len(values) != 4 or values[2] <= 0 or values[3] <= 0:
+        return None, "Le viewBox du SVG est invalide."
+    if abs(values[2] - values[3]) > max(values[2], values[3]) * 0.01:
+        return None, "Le SVG doit être carré afin de ne pas être déformé dans la bibliothèque."
+
+    for element in root.iter():
+        tag = _svg_local_name(element.tag)
+        if tag in SVG_DANGEROUS_TAGS:
+            return None, f"L'élément SVG <{tag}> n'est pas autorisé."
+
+        if tag == 'style' and element.text:
+            css = element.text.lower()
+            if 'url(' in css or '@import' in css or 'javascript:' in css or 'expression(' in css:
+                return None, "Les styles SVG ne peuvent pas charger de contenu externe."
+
+        for attribute, value in list(element.attrib.items()):
+            attribute_name = _svg_local_name(attribute)
+            value_lower = str(value).strip().lower()
+            if attribute_name.startswith('on'):
+                return None, "Les événements JavaScript ne sont pas autorisés dans un SVG."
+            if attribute_name in {'href', 'src'} and value_lower and not value_lower.startswith('#'):
+                return None, "Les liens et images externes ne sont pas autorisés dans un SVG."
+            if 'javascript:' in value_lower or 'data:text/html' in value_lower:
+                return None, "Le SVG contient une valeur potentiellement dangereuse."
+            for url_target in re.findall(r'url\(([^)]+)\)', value_lower):
+                if not url_target.strip(' \"\'').startswith('#'):
+                    return None, "Les ressources externes ne sont pas autorisées dans un SVG."
+
+    ET.register_namespace('', 'http://www.w3.org/2000/svg')
+    sanitized = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+    return sanitized, None
+
+
+def normalize_pictogram_name(value):
+    name = os.path.basename(str(value or '')).rsplit('.', 1)[0]
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', ' ', name)
+    name = re.sub(r'\s+', ' ', name).strip(' .')
+    if not name:
+        return None
+    return name[:80].strip()
+
+
+def serialize_plan_pictogram(request, directory, filename):
+    name, _extension = os.path.splitext(filename)
+    relative_path = os.path.join(directory, filename)
+    return {
+        'type': name,
+        'label': name,
+        'file_name': filename,
+        'url': build_plan_pictogram_url(request, relative_path),
+        'deletable': directory == PLAN_PICTOGRAM_DIRS[0] and filename.lower().endswith('.svg'),
+    }
+
+
+def list_plan_pictograms(request):
     pictograms = []
-    for filename in sorted(os.listdir(root), key=str.casefold):
-        path = os.path.join(root, filename)
-        name, extension = os.path.splitext(filename)
-        if not os.path.isfile(path) or extension.lower() not in PLAN_PICTOGRAM_EXTENSIONS:
+    seen_names = set()
+    for directory in PLAN_PICTOGRAM_DIRS:
+        root = os.path.join(settings.MEDIA_ROOT, directory)
+        if not os.path.isdir(root):
             continue
 
-        relative_path = os.path.join(directory, filename)
-        pictograms.append({
-            'type': name,
-            'label': name,
-            'file_name': filename,
-            'url': build_plan_pictogram_url(request, relative_path),
-        })
+        for filename in sorted(os.listdir(root), key=str.casefold):
+            path = os.path.join(root, filename)
+            name, extension = os.path.splitext(filename)
+            normalized_name = name.casefold()
+            if (
+                not os.path.isfile(path)
+                or extension.lower() not in PLAN_PICTOGRAM_EXTENSIONS
+                or normalized_name in seen_names
+            ):
+                continue
+
+            seen_names.add(normalized_name)
+            pictograms.append(serialize_plan_pictogram(request, directory, filename))
 
     return pictograms
+
 
 def flatten_on_white(img):
     """Lays a transparent image on a white sheet, the way it is displayed.
@@ -181,6 +322,58 @@ def create_cleaning_history(plan, image_bytes, prefix, cleaning_method, title, o
     return history
 
 
+def save_cleaned_overlay_bytes(
+    overlay,
+    image_bytes,
+    prefix,
+    cleaning_method,
+    title,
+    options=None,
+    original_bytes=None,
+    create_history=True,
+):
+    """Persist a cleaned secondary plan while preserving its first original."""
+    image_array = np.frombuffer(image_bytes, dtype=np.uint8)
+    if cv2.imdecode(image_array, cv2.IMREAD_COLOR) is None:
+        return False
+
+    if not overlay.original_image_file:
+        source_bytes = original_bytes
+        if not source_bytes and overlay.image_file:
+            try:
+                with overlay.image_file.open('rb') as source_file:
+                    source_bytes = source_file.read()
+            except OSError:
+                source_bytes = None
+        if source_bytes:
+            overlay.original_image_file.save(
+                f"original_overlay_{overlay.pk}.png",
+                ContentFile(source_bytes),
+                save=False,
+            )
+
+    overlay.image_file.save(
+        f"{prefix}_overlay_{overlay.pk}.png",
+        ContentFile(image_bytes),
+        save=False,
+    )
+    overlay.is_original = False
+    overlay.save()
+
+    if create_history:
+        history_options = dict(options or {})
+        history_options.update({"target_kind": "overlay", "overlay_id": overlay.pk})
+        create_cleaning_history(
+            overlay.plan,
+            image_bytes,
+            f"{prefix}_overlay_{overlay.pk}",
+            cleaning_method,
+            title,
+            history_options,
+        )
+    return True
+
+
 def save_cleaned_plan(plan, image, prefix, cleaning_method=None, title=None, options=None):
     ret, buffer = cv2.imencode('.png', image)
     if not ret:
@@ -207,6 +400,33 @@ def encode_image_to_png_bytes(image):
 def image_bytes_to_data_url(image_bytes):
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return f"data:image/png;base64,{encoded}"
+
+
+def normalize_plan_image_data(image_data):
+    """Validate a browser image data URL and normalize it to a flat PNG."""
+    if not image_data or not isinstance(image_data, str):
+        return None, "Aucune image de plan secondaire n'a été fournie."
+    if len(image_data) > MAX_IMAGE_DATA_LENGTH:
+        return None, "L'image du plan secondaire est trop volumineuse."
+    if not image_data.startswith('data:image/') or ';base64,' not in image_data:
+        return None, "Image invalide : une data URL base64 est attendue."
+
+    try:
+        _, encoded = image_data.split(';base64,', 1)
+        image_bytes = base64.b64decode(encoded, validate=True)
+        valid, validation_error = validate_overlay_image_bytes(image_bytes)
+        if not valid:
+            return None, validation_error
+        image_array = np.frombuffer(image_bytes, np.uint8)
+        image = flatten_on_white(cv2.imdecode(image_array, cv2.IMREAD_UNCHANGED))
+        if image is None:
+            return None, "Le fichier du plan secondaire n'est pas une image valide."
+        normalized_bytes = encode_image_to_png_bytes(image)
+        if not normalized_bytes:
+            return None, "Impossible de préparer l'image du plan secondaire."
+        return normalized_bytes, None
+    except (ValueError, binascii.Error, OSError):
+        return None, "Impossible de décoder l'image du plan secondaire."
 
 
 def save_cleaned_plan_bytes(plan, image_bytes, prefix, cleaning_method=None, title=None, options=None, create_history=True):
@@ -303,29 +523,38 @@ def serialize_grok_cleaning_job(job):
         "job_id": job.id,
         "status": job.status,
         "preset": getattr(job, "preset", "evacuation"),
+        "target_kind": getattr(job, "target_kind", "main"),
+        "wall_color": getattr(job, "target_wall_color", "#000000"),
         "error_code": job.error_code or "",
         "error": job.error_message or "",
         "diagnostic": job.diagnostic or "",
     }
     if job.status == GrokCleaningJob.STATUS_COMPLETED:
         data.update({
-            "before_image": job.before_image_data,
-            "after_image": job.after_image_data,
             "analysis": job.analysis,
             "generation_prompt": job.generation_prompt,
             "model": job.model_used,
         })
+        # The main image is already persisted on the plan, so returning both
+        # multi-megabyte data URLs only makes the final poll slow (and can trip
+        # proxy response limits). A secondary plan still needs its image in the
+        # browser canvas, so only that target receives the generated data URL.
+        if getattr(job, "target_kind", "main") == "overlay":
+            data["after_image"] = job.after_image_data
     return data
 
 
 def run_grok_cleaning_job(job_id):
     """Background worker: analyse + image generation, then auto-apply the result."""
     close_old_connections()
+    job = None
     try:
-        job = GrokCleaningJob.objects.select_related("plan", "user").get(id=job_id)
+        job = GrokCleaningJob.objects.select_related("plan", "user", "target_overlay").get(id=job_id)
         plan = job.plan
         user = job.user
         preset = getattr(job, "preset", "evacuation")
+        target_kind = getattr(job, "target_kind", "main")
+        target_overlay = job.target_overlay
 
         settings_obj = UserXaiSettings.objects.filter(user=user).first()
         if not settings_obj:
@@ -333,17 +562,26 @@ def run_grok_cleaning_job(job_id):
             return
         api_key = settings_obj.get_api_key()
 
-        # 150 dpi keeps the analysis fast: the model downsamples to 2K anyway,
-        # so a heavier source only inflates transfer + reasoning time.
-        original_image, error = load_plan_image(plan, dpi=150, use_active_background=False)
-        if error:
-            job.mark_failed("IMAGE_SAVE_FAILED", error, "source_load_failed")
-            return
+        if target_kind == "overlay":
+            if target_overlay is None or target_overlay.plan_id != plan.id:
+                job.mark_failed("INVALID_TARGET", "Le plan secondaire ciblé n'existe plus.", "overlay_missing")
+                return
+            original_bytes, error = normalize_plan_image_data(job.source_image_data)
+            if error:
+                job.mark_failed("IMAGE_SAVE_FAILED", error, "overlay_source_load_failed")
+                return
+        else:
+            # 150 dpi keeps the analysis fast: the model downsamples to 2K anyway,
+            # so a heavier source only inflates transfer + reasoning time.
+            original_image, error = load_plan_image(plan, dpi=150, use_active_background=False)
+            if error:
+                job.mark_failed("IMAGE_SAVE_FAILED", error, "source_load_failed")
+                return
 
-        original_bytes = encode_image_to_png_bytes(original_image)
-        if original_bytes is None:
-            job.mark_failed("IMAGE_SAVE_FAILED", "Impossible de préparer le plan original.", "source_encode_failed")
-            return
+            original_bytes = encode_image_to_png_bytes(original_image)
+            if original_bytes is None:
+                job.mark_failed("IMAGE_SAVE_FAILED", "Impossible de préparer le plan original.", "source_encode_failed")
+                return
 
         before_image_data = image_bytes_to_data_url(original_bytes)
         job.before_image_data = before_image_data
@@ -352,10 +590,19 @@ def run_grok_cleaning_job(job_id):
         job.mark_status(GrokCleaningJob.STATUS_ANALYZING)
         try:
             result = analyze_and_clean_plan(
-                original_bytes, api_key, background_color=job.target_background_color or "#FFFFFF", preset=preset
+                original_bytes,
+                api_key,
+                background_color=job.target_background_color or "#FFFFFF",
+                wall_color=job.target_wall_color or "#000000",
+                preset=preset,
+                on_generation_started=lambda: job.mark_status(
+                    GrokCleaningJob.STATUS_GENERATING
+                ),
             )
         except (GrokCleaningError, MissingXaiApiKeyError) as exc:
-            job.mark_failed(exc.error_code, exc.user_message, exc.diagnostic)
+            job.refresh_from_db(fields=["status"])
+            if job.status != GrokCleaningJob.STATUS_FAILED:
+                job.mark_failed(exc.error_code, exc.user_message, exc.diagnostic)
             return
         except Exception as exc:
             logger.exception("grok_clean.job.unexpected_failed",
@@ -367,21 +614,68 @@ def run_grok_cleaning_job(job_id):
         if job.status == GrokCleaningJob.STATUS_FAILED:
             return
 
-        job.mark_status(GrokCleaningJob.STATUS_GENERATING)
+        # Test doubles and older pipeline implementations may not invoke the
+        # progress callback; keep the lifecycle valid in that case.
+        if job.status != GrokCleaningJob.STATUS_GENERATING:
+            job.mark_status(GrokCleaningJob.STATUS_GENERATING)
 
         after_image_data = image_bytes_to_data_url(result.cleaned_image_bytes)
         if not result.cleaned_image_bytes or not after_image_data:
             job.mark_failed("IMAGE_SAVE_FAILED", "Image nettoyée vide.", "empty_cleaned_image")
             return
 
-        # Apply the cleaned image immediately and record it in the shared history.
-        history_method = PlanCleaningHistory.METHOD_GROK_AUTOCAD if preset == "autocad" else PlanCleaningHistory.METHOD_GROK
-        history_title = "Base architecturale AutoCAD extraite par l'IA (Grok)" if preset == "autocad" else "Base architecturale extraite par l'IA (Grok)"
+        # The polling endpoint may have expired a genuinely stalled request.
+        # Never apply a late response after the job has become terminal.
+        job.refresh_from_db(fields=["status"])
+        if job.status == GrokCleaningJob.STATUS_FAILED:
+            return
 
-        if not save_cleaned_plan_bytes(
-            plan,
+        # Main-plan results are persisted immediately. A secondary plan still
+        # belongs to the browser canvas, so its result is returned through the
+        # job and the editor replaces only that overlay image.
+        history_profiles = {
+            "evacuation": (
+                PlanCleaningHistory.METHOD_GROK,
+                "Base architecturale extraite par l'IA (Grok)",
+                "grok_cleaned",
+            ),
+            "autocad": (
+                PlanCleaningHistory.METHOD_GROK_AUTOCAD,
+                "Base architecturale AutoCAD extraite par l'IA (Grok)",
+                "grok_autocad",
+            ),
+            "sketch": (
+                PlanCleaningHistory.METHOD_GROK_SKETCH,
+                "Croquis transformé en plan architectural par l'IA (Grok)",
+                "grok_sketch",
+            ),
+        }
+        history_method, history_title, output_prefix = history_profiles.get(
+            preset,
+            history_profiles["evacuation"],
+        )
+
+        if target_kind == "main":
+            if not save_cleaned_plan_bytes(
+                plan,
+                result.cleaned_image_bytes,
+                output_prefix,
+                history_method,
+                history_title,
+                options={
+                    "preset": preset,
+                    "analysis_model": result.analysis_model,
+                    "image_model": result.image_model,
+                    "target_background_color": job.target_background_color or "#FFFFFF",
+                    "target_wall_color": job.target_wall_color or "#000000",
+                },
+            ):
+                job.mark_failed("IMAGE_SAVE_FAILED", "Impossible d'enregistrer l'image nettoyée.", "save_failed")
+                return
+        elif not save_cleaned_overlay_bytes(
+            target_overlay,
             result.cleaned_image_bytes,
-            "grok_cleaned",
+            output_prefix,
             history_method,
             history_title,
             options={
@@ -389,9 +683,11 @@ def run_grok_cleaning_job(job_id):
                 "analysis_model": result.analysis_model,
                 "image_model": result.image_model,
                 "target_background_color": job.target_background_color or "#FFFFFF",
+                "target_wall_color": job.target_wall_color or "#000000",
             },
+            original_bytes=original_bytes,
         ):
-            job.mark_failed("IMAGE_SAVE_FAILED", "Impossible d'enregistrer l'image nettoyée.", "save_failed")
+            job.mark_failed("IMAGE_SAVE_FAILED", "Impossible d'enregistrer le plan secondaire nettoyé.", "overlay_save_failed")
             return
 
         # "completed" only flips after the image exists, so a client polling the
@@ -404,6 +700,7 @@ def run_grok_cleaning_job(job_id):
         job.error_code = ""
         job.error_message = ""
         job.diagnostic = ""
+        job.source_image_data = ""
         job.save(update_fields=[
             "status",
             "after_image_data",
@@ -413,8 +710,25 @@ def run_grok_cleaning_job(job_id):
             "error_code",
             "error_message",
             "diagnostic",
+            "source_image_data",
             "updated_at",
         ])
+    except Exception as exc:
+        logger.exception("grok_clean.job.worker_crashed", extra={"job_id": job_id})
+        if job is not None:
+            try:
+                job.refresh_from_db(fields=["status"])
+                if job.status not in {
+                    GrokCleaningJob.STATUS_COMPLETED,
+                    GrokCleaningJob.STATUS_FAILED,
+                }:
+                    job.mark_failed(
+                        "GROK_FAILED",
+                        "Erreur pendant le nettoyage avec l'IA.",
+                        f"worker_crashed:{exc.__class__.__name__}",
+                    )
+            except Exception:
+                logger.exception("grok_clean.job.failure_persist_failed", extra={"job_id": job_id})
     finally:
         close_old_connections()
 
@@ -493,7 +807,7 @@ class TestXaiKeyView(APIView):
             from xai_sdk import Client
             from xai_sdk.chat import user
 
-            client = Client(api_key=api_key)
+            client = Client(api_key=api_key, timeout=_get_request_timeout())
             chat = client.chat.create(model="grok-4.5")
             chat.append(user("Reply with the single word: ok"))
             chat.sample()
@@ -522,23 +836,260 @@ def _looks_like_grpc_error(exc: Exception) -> bool:
     return hasattr(exc, "code") and hasattr(exc, "details")
 
 
+class WorkspaceEditPermission(permissions.BasePermission):
+    """Read for any member of the workspace, writes for editors and the owner."""
+
+    message = "Vous n'avez qu'un accès en lecture à cette liste de plans."
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        plan = obj if isinstance(obj, EvacuationPlan) else getattr(obj, 'plan', None)
+        if plan is None:
+            return True
+        return user_can_edit_plan(request.user, plan)
+
+
 class EvacuationPlanViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, WorkspaceEditPermission]
     serializer_class = EvacuationPlanSerializer
 
-    def get_query_set(self):
-        # Compatibility helper
-        return EvacuationPlan.objects.filter(user=self.request.user)
-
     def get_queryset(self):
-        return EvacuationPlan.objects.filter(user=self.request.user)
+        return EvacuationPlan.objects.filter(
+            user_id__in=accessible_plan_owner_ids(self.request.user)
+        )
 
     def perform_create(self, serializer):
+        # A new plan always lands in the creator's own list, never in a list
+        # they merely have access to.
         serializer.save(user=self.request.user)
 
-    @action(detail=False, methods=['get'], url_path='pictograms')
+    @action(detail=False, methods=['get', 'post', 'patch', 'delete'], url_path='pictograms')
     def pictograms(self, request):
-        return Response(list_plan_pictograms(request), status=status.HTTP_200_OK)
+        if request.method == 'GET':
+            return Response(list_plan_pictograms(request), status=status.HTTP_200_OK)
+
+        custom_directory = PLAN_PICTOGRAM_DIRS[0]
+        custom_root = os.path.join(settings.MEDIA_ROOT, custom_directory)
+
+        if request.method == 'PATCH':
+            requested_filename = request.data.get('file_name', '')
+            filename = os.path.basename(requested_filename)
+            new_name = normalize_pictogram_name(request.data.get('name'))
+            if (
+                not filename
+                or filename != requested_filename
+                or not filename.lower().endswith('.svg')
+                or not new_name
+            ):
+                return Response(
+                    {"error": "Le fichier ou le nouveau nom du SVG est invalide."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if not os.path.isdir(custom_root):
+                return Response(
+                    {"error": "Ce pictogramme SVG personnalisé n'existe pas."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            stored_filename = next(
+                (item for item in os.listdir(custom_root) if item.casefold() == filename.casefold()),
+                None,
+            )
+            if not stored_filename:
+                return Response(
+                    {"error": "Ce pictogramme SVG personnalisé n'existe pas."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            old_name = os.path.splitext(stored_filename)[0]
+            new_filename = f'{new_name}.svg'
+            if new_filename == stored_filename:
+                return Response(
+                    serialize_plan_pictogram(request, custom_directory, stored_filename),
+                    status=status.HTTP_200_OK,
+                )
+
+            name_already_exists = any(
+                os.path.isdir(library_root)
+                and any(
+                    os.path.splitext(existing)[0].casefold() == new_name.casefold()
+                    and not (
+                        library_directory == custom_directory
+                        and existing == stored_filename
+                    )
+                    for existing in os.listdir(library_root)
+                )
+                for library_directory, library_root in (
+                    (
+                        directory,
+                        os.path.join(settings.MEDIA_ROOT, directory),
+                    )
+                    for directory in PLAN_PICTOGRAM_DIRS
+                )
+            )
+            if name_already_exists:
+                return Response(
+                    {"error": "Un pictogramme portant ce nom existe déjà."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            source_path = os.path.join(custom_root, stored_filename)
+            target_path = os.path.join(custom_root, new_filename)
+            file_was_renamed = False
+            try:
+                os.rename(source_path, target_path)
+                file_was_renamed = True
+                with transaction.atomic():
+                    PlanIcon.objects.filter(icon_type=old_name).update(icon_type=new_name)
+            except Exception:
+                if file_was_renamed and os.path.exists(target_path) and not os.path.exists(source_path):
+                    try:
+                        os.rename(target_path, source_path)
+                    except OSError:
+                        logger.exception("pictogram_rename.rollback_failed")
+                logger.exception("pictogram_rename.failed", extra={"user_id": request.user.id})
+                return Response(
+                    {"error": "Le pictogramme n'a pas pu être renommé."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            return Response(
+                serialize_plan_pictogram(request, custom_directory, new_filename),
+                status=status.HTTP_200_OK,
+            )
+
+        if request.method == 'DELETE':
+            requested_filename = request.query_params.get('file_name', '')
+            filename = os.path.basename(requested_filename)
+            if (
+                not filename
+                or filename != requested_filename
+                or not filename.lower().endswith('.svg')
+            ):
+                return Response(
+                    {"error": "Le nom du fichier SVG à supprimer est invalide."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if not os.path.isdir(custom_root):
+                return Response(
+                    {"error": "Ce pictogramme SVG personnalisé n'existe pas."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            stored_filename = next(
+                (item for item in os.listdir(custom_root) if item.casefold() == filename.casefold()),
+                None,
+            )
+            if not stored_filename:
+                return Response(
+                    {"error": "Ce pictogramme SVG personnalisé n'existe pas."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            icon_type = os.path.splitext(stored_filename)[0]
+            if PlanIcon.objects.filter(icon_type=icon_type).exists():
+                return Response(
+                    {"error": "Ce pictogramme est utilisé dans un ou plusieurs plans et ne peut pas être supprimé."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            target_path = os.path.join(custom_root, stored_filename)
+            if not os.path.isfile(target_path):
+                return Response(
+                    {"error": "Ce pictogramme SVG personnalisé n'existe pas."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            try:
+                os.remove(target_path)
+            except OSError:
+                logger.exception("pictogram_delete.failed", extra={"user_id": request.user.id})
+                return Response(
+                    {"error": "Le pictogramme n'a pas pu être supprimé."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        upload = request.FILES.get('file')
+        raw_svg = request.data.get('svg')
+        raw_name = request.data.get('name') or getattr(upload, 'name', '')
+        name = normalize_pictogram_name(raw_name)
+        if not name:
+            return Response(
+                {"error": "Indiquez un nom pour le pictogramme."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if upload is not None:
+            if not upload.name.lower().endswith('.svg'):
+                return Response(
+                    {"error": "Seuls les fichiers .svg sont acceptés."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if upload.size > MAX_PICTOGRAM_SVG_BYTES:
+                return Response(
+                    {"error": "Le SVG dépasse la taille maximale de 250 Ko."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            svg_bytes = upload.read(MAX_PICTOGRAM_SVG_BYTES + 1)
+        elif isinstance(raw_svg, str):
+            svg_bytes = raw_svg.encode('utf-8')
+        else:
+            return Response(
+                {"error": "Ajoutez un fichier SVG ou collez son code."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        sanitized_svg, validation_error = validate_and_sanitize_pictogram_svg(svg_bytes)
+        if validation_error:
+            return Response(
+                {"error": validation_error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        directory, root = custom_directory, custom_root
+        os.makedirs(root, exist_ok=True)
+        filename = f'{name}.svg'
+        name_already_exists = any(
+            os.path.isdir(library_root)
+            and any(
+                os.path.splitext(existing)[0].casefold() == name.casefold()
+                for existing in os.listdir(library_root)
+            )
+            for library_root in (
+                os.path.join(settings.MEDIA_ROOT, library_directory)
+                for library_directory in PLAN_PICTOGRAM_DIRS
+            )
+        )
+        if name_already_exists:
+            return Response(
+                {"error": "Un pictogramme portant ce nom existe déjà."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        target_path = os.path.join(root, filename)
+        try:
+            with open(target_path, 'xb') as svg_file:
+                svg_file.write(sanitized_svg)
+        except FileExistsError:
+            return Response(
+                {"error": "Un pictogramme portant ce nom existe déjà."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except OSError:
+            logger.exception("pictogram_upload.failed", extra={"user_id": request.user.id})
+            return Response(
+                {"error": "Le pictogramme n'a pas pu être enregistré."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            serialize_plan_pictogram(request, directory, filename),
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(detail=True, methods=['post'], url_path='clean')
     def clean_plan(self, request, pk=None):
@@ -589,12 +1140,21 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         Used by the secondary plans, which live in the browser until they are
         saved and so have no file on disk to point the other clean actions at.
         """
-        # Not needed to do the work, but it keeps the endpoint behind the same
-        # ownership check as the rest of the viewset.
-        self.get_object()
+        # The plan lookup keeps the endpoint behind the same ownership check as
+        # the rest of the viewset and scopes an optional secondary-plan target.
+        plan = self.get_object()
 
         image_data = request.data.get('image_data')
         method = request.data.get('method', 'plan')
+        overlay_id = request.data.get('overlay_id')
+        target_overlay = None
+        if overlay_id is not None:
+            target_overlay = PlanOverlay.objects.filter(id=overlay_id, plan=plan).first()
+            if target_overlay is None:
+                return Response(
+                    {"error": "Plan secondaire introuvable."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         if not image_data or not isinstance(image_data, str):
             return Response({"error": "No image_data provided."}, status=status.HTTP_400_BAD_REQUEST)
         if len(image_data) > MAX_IMAGE_DATA_LENGTH:
@@ -627,8 +1187,41 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         if not ret:
             return Response({"error": "Failed to encode cleaned image."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        cleaned_data_url = image_bytes_to_data_url(buffer.tobytes())
-        return Response({"cleaned_image_data": cleaned_data_url}, status=status.HTTP_200_OK)
+        cleaned_bytes = buffer.tobytes()
+        cleaned_data_url = image_bytes_to_data_url(cleaned_bytes)
+        if target_overlay is not None:
+            original_bytes = encode_image_to_png_bytes(img)
+            cleaning_method = (
+                PlanCleaningHistory.METHOD_LOCAL_WALLS
+                if method == 'walls'
+                else PlanCleaningHistory.METHOD_LOCAL
+            )
+            title = (
+                "Extraction locale des murs — plan secondaire"
+                if method == 'walls'
+                else "Nettoyage local — plan secondaire"
+            )
+            if not save_cleaned_overlay_bytes(
+                target_overlay,
+                cleaned_bytes,
+                "walls" if method == 'walls' else "cleaned",
+                cleaning_method,
+                title,
+                original_bytes=original_bytes,
+            ):
+                return Response(
+                    {"error": "Impossible d'enregistrer le plan secondaire nettoyé."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+        return Response({
+            "cleaned_image_data": cleaned_data_url,
+            "overlay": (
+                PlanOverlaySerializer(target_overlay, context={"request": request}).data
+                if target_overlay is not None
+                else None
+            ),
+        }, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='change-background')
     def change_background(self, request, pk=None):
@@ -718,19 +1311,62 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
             )
 
         background_color = "#FFFFFF"
+        wall_color = "#000000"
         preset = "evacuation"
+        target_kind = "main"
+        source_image_data = ""
+        target_overlay = None
         if isinstance(request.data, dict):
             if "background_color" in request.data:
                 background_color = str(request.data["background_color"]).strip() or "#FFFFFF"
+            if "wall_color" in request.data:
+                requested_wall_color = str(request.data["wall_color"]).strip()
+                wall_color = normalize_hex_color(requested_wall_color, "")
+                if not wall_color:
+                    return Response(
+                        {"error": "La couleur des parois doit être au format HEX, par exemple #000000.", "error_code": "INVALID_WALL_COLOR"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
             if "preset" in request.data:
                 preset = str(request.data["preset"]).strip() or "evacuation"
+            if "target_kind" in request.data:
+                target_kind = str(request.data["target_kind"]).strip() or "main"
+        if preset not in {"evacuation", "autocad", "sketch"}:
+            return Response(
+                {"error": "Le type de plan source est invalide.", "error_code": "INVALID_PRESET"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if target_kind not in {"main", "overlay"}:
+            return Response(
+                {"error": "La cible du traitement est invalide.", "error_code": "INVALID_TARGET"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if target_kind == "overlay":
+            overlay_id = request.data.get("overlay_id")
+            target_overlay = PlanOverlay.objects.filter(id=overlay_id, plan=plan).first()
+            if target_overlay is None:
+                return Response(
+                    {"error": "Le plan secondaire ciblé est introuvable.", "error_code": "INVALID_TARGET"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            normalized_bytes, image_error = normalize_plan_image_data(request.data.get("image_data"))
+            if image_error:
+                return Response(
+                    {"error": image_error, "error_code": "INVALID_IMAGE"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            source_image_data = image_bytes_to_data_url(normalized_bytes)
 
         job = GrokCleaningJob.objects.create(
             user=request.user,
             plan=plan,
             status=GrokCleaningJob.STATUS_PENDING,
             target_background_color=background_color,
+            target_wall_color=wall_color,
             preset=preset,
+            target_kind=target_kind,
+            source_image_data=source_image_data,
+            target_overlay=target_overlay,
         )
         thread = threading.Thread(target=run_grok_cleaning_job, args=(job.id,), daemon=True)
         thread.start()
@@ -750,6 +1386,7 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 {"error": "Traitement introuvable.", "error_code": "JOB_NOT_FOUND"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        expire_stalled_grok_job(job)
         return Response(serialize_grok_cleaning_job(job), status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['get'], url_path='cleaning-history')
@@ -759,6 +1396,26 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
             user=request.user,
             plan=plan,
         )
+        overlay_id = request.query_params.get("overlay_id")
+        if overlay_id:
+            overlay = PlanOverlay.objects.filter(id=overlay_id, plan=plan).first()
+            if overlay is None:
+                return Response(
+                    {"error": "Plan secondaire introuvable."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            history = history.filter(
+                options__target_kind="overlay",
+                options__overlay_id=overlay.id,
+            )
+        else:
+            # SQLite's JSON exclusion treats a missing key as SQL NULL, so a
+            # plain ``exclude`` would also hide legacy/main-plan rows. Filtering
+            # the already scoped queryset keeps those historical entries.
+            history = [
+                item for item in history
+                if item.options.get("target_kind") != "overlay"
+            ]
         serializer = PlanCleaningHistorySerializer(history, many=True, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -782,11 +1439,80 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
             logger.exception("use_cleaning_history.file_read_failed")
             return Response({"error": "Impossible de lire le fichier de l'historique."}, status=status.HTTP_400_BAD_REQUEST)
 
+        overlay_id = serializer.validated_data.get("overlay_id")
+        if overlay_id is not None:
+            overlay = PlanOverlay.objects.filter(id=overlay_id, plan=plan).first()
+            if (
+                overlay is None
+                or history.options.get("target_kind") != "overlay"
+                or history.options.get("overlay_id") != overlay.id
+            ):
+                return Response(
+                    {"error": "Historique du plan secondaire introuvable."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            if not save_cleaned_overlay_bytes(
+                overlay,
+                image_bytes,
+                "history_restored",
+                history.cleaning_method,
+                history.title,
+                create_history=False,
+            ):
+                return Response({"error": "Image historique invalide."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({
+                "target_kind": "overlay",
+                "overlay": PlanOverlaySerializer(overlay, context={"request": request}).data,
+            }, status=status.HTTP_200_OK)
+
+        if history.options.get("target_kind") == "overlay":
+            return Response(
+                {"error": "Sélectionnez le plan secondaire correspondant à cette version."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if not save_cleaned_plan_bytes(plan, image_bytes, "history_restored", create_history=False):
             return Response({"error": "Image historique invalide."}, status=status.HTTP_400_BAD_REQUEST)
 
         serializer = self.get_serializer(plan)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='revert-overlay')
+    def revert_overlay(self, request, pk=None):
+        plan = self.get_object()
+        overlay = PlanOverlay.objects.filter(id=request.data.get("overlay_id"), plan=plan).first()
+        if overlay is None:
+            return Response({"error": "Plan secondaire introuvable."}, status=status.HTTP_404_NOT_FOUND)
+        if not overlay.original_image_file:
+            return Response(
+                {"error": "Aucune version originale n'est enregistrée pour ce plan secondaire."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            with overlay.original_image_file.open('rb') as original_file:
+                original_bytes = original_file.read()
+            valid, validation_error = validate_overlay_image_bytes(original_bytes)
+            if not valid:
+                return Response({"error": validation_error}, status=status.HTTP_400_BAD_REQUEST)
+            original_extension = os.path.splitext(overlay.original_image_file.name)[1] or '.png'
+            overlay.image_file.save(
+                f"restored_original_overlay_{overlay.pk}{original_extension}",
+                ContentFile(original_bytes),
+                save=False,
+            )
+            overlay.is_original = True
+            overlay.save()
+        except OSError:
+            logger.exception("revert_overlay.file_read_failed", extra={"overlay_id": overlay.id})
+            return Response(
+                {"error": "Impossible de lire l'original du plan secondaire."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            PlanOverlaySerializer(overlay, context={"request": request}).data,
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=['post'], url_path='apply-manual-edit')
     def apply_manual_edit(self, request, pk=None):
@@ -1031,6 +1757,7 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 retained_ids = []
                 for overlay_id, image_bytes, extension, item in prepared_overlays:
                     overlay = existing_overlays.get(overlay_id) if overlay_id is not None else None
+                    is_new_overlay = overlay is None
                     if overlay is None:
                         overlay = PlanOverlay(plan=plan)
 
@@ -1042,14 +1769,30 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                     overlay.rotation = item.get('rotation', 0.0)
                     overlay.label = item.get('label', '')
                     overlay.locked = item.get('locked', False)
+                    overlay.visible = item.get('visible', True)
+                    overlay.z_index = item.get('z_index', 100)
                     overlay.group_id = item.get('group_id', '')
 
                     if image_bytes is not None:
+                        if not overlay.original_image_file:
+                            original_bytes = image_bytes
+                            if old_file_name:
+                                try:
+                                    with overlay.image_file.open('rb') as old_file:
+                                        original_bytes = old_file.read()
+                                except OSError:
+                                    original_bytes = image_bytes
+                            overlay.original_image_file.save(
+                                f"original_overlay_{overlay_id or 'new'}.{extension}",
+                                ContentFile(original_bytes),
+                                save=False,
+                            )
                         overlay.image_file.save(
                             f"overlay.{extension}",
                             ContentFile(image_bytes),
                             save=False,
                         )
+                        overlay.is_original = is_new_overlay
                         new_file_names.append(overlay.image_file.name)
                         if old_file_name and old_file_name != overlay.image_file.name:
                             files_to_delete.add(old_file_name)
@@ -1069,12 +1812,15 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 plan.main_plan_width = settings_data.get('main_plan_width', 0.0)
                 plan.main_plan_height = settings_data.get('main_plan_height', 0.0)
                 plan.main_plan_locked = settings_data.get('main_plan_locked', False)
+                plan.main_plan_visible = settings_data.get('main_plan_visible', True)
+                plan.main_plan_z_index = settings_data.get('main_plan_z_index', 0)
                 plan.main_plan_group_id = settings_data.get('main_plan_group_id', '')
                 plan.main_plan_grouping_enabled = settings_data.get('main_plan_grouping_enabled', False)
                 plan.watermark_config = dict(settings_data.get('watermark', {}))
                 plan.save(update_fields=[
                     'main_plan_x', 'main_plan_y', 'main_plan_width', 'main_plan_height',
-                    'main_plan_locked', 'main_plan_group_id', 'main_plan_grouping_enabled',
+                    'main_plan_locked', 'main_plan_visible', 'main_plan_z_index',
+                    'main_plan_group_id', 'main_plan_grouping_enabled',
                     'watermark_config', 'updated_at',
                 ])
 
@@ -1104,45 +1850,23 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='sync-icons')
     def sync_icons(self, request, pk=None):
-        """
-        Expects a list of icons: [{'icon_type': ..., 'x': ..., 'y': ..., 'width': ..., 'height': ..., 'rotation': ..., 'label': ...}]
-        Deletes all existing icons for this plan and inserts the new list.
+        """Replaces the plan's icons with the supplied list, all or nothing.
+
+        Validated first and wrapped in a transaction, like its sibling actions:
+        the old rows are deleted here, so a payload that fails halfway through
+        used to leave the plan stripped of the icons it started with.
         """
         plan = self.get_object()
-        icons_data = request.data
-        if not isinstance(icons_data, list):
-            return Response({"error": "Expected a list of icons"}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = SyncPlanIconSerializer(data=request.data, many=True)
+        serializer.is_valid(raise_exception=True)
 
-        # Clear existing icons
-        plan.icons.all().delete()
+        with transaction.atomic():
+            plan.icons.all().delete()
+            created = PlanIcon.objects.bulk_create([
+                PlanIcon(plan=plan, **item) for item in serializer.validated_data
+            ])
 
-        # Create new ones
-        created_icons = []
-        for icon_data in icons_data:
-            icon = PlanIcon(
-                plan=plan,
-                icon_type=icon_data.get('icon_type'),
-                x=icon_data.get('x'),
-                y=icon_data.get('y'),
-                width=icon_data.get('width'),
-                height=icon_data.get('height'),
-                rotation=icon_data.get('rotation', 0.0),
-                label=icon_data.get('label', ''),
-                anchor_x=icon_data.get('anchor_x'),
-                anchor_y=icon_data.get('anchor_y'),
-                leader_width=icon_data.get('leader_width', 2.0),
-                framed=icon_data.get('framed', False),
-                flip_x=icon_data.get('flip_x', False),
-                flip_y=icon_data.get('flip_y', False),
-                locked=icon_data.get('locked', False),
-                group_id=icon_data.get('group_id', ''),
-                object_group_id=icon_data.get('object_group_id', ''),
-            )
-            icon.save()
-            created_icons.append(icon)
-
-        serializer = PlanIconSerializer(created_icons, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(PlanIconSerializer(created, many=True).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='sync-texts')
     def sync_texts(self, request, pk=None):
@@ -1160,8 +1884,138 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         return Response(PlanTextSerializer(created, many=True).data, status=status.HTTP_200_OK)
 
 class PlanIconViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, WorkspaceEditPermission]
     serializer_class = PlanIconSerializer
 
     def get_queryset(self):
-        return PlanIcon.objects.filter(plan__user=self.request.user)
+        return PlanIcon.objects.filter(
+            plan__user_id__in=accessible_plan_owner_ids(self.request.user)
+        )
+
+
+class WorkspaceCollaboratorsView(APIView):
+    """The owner's side: who shares their plan list, and who has been invited."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        memberships = WorkspaceMembership.objects.filter(owner=request.user).select_related('member')
+        invitations = WorkspaceInvitation.objects.filter(owner=request.user).order_by('-created_at')
+        shared_with_me = WorkspaceMembership.objects.filter(member=request.user).select_related('owner')
+        return Response({
+            'members': WorkspaceMembershipSerializer(memberships, many=True).data,
+            'invitations': WorkspaceInvitationSerializer(invitations, many=True).data,
+            'shared_with_me': [
+                {'owner_username': item.owner.username, 'role': item.role}
+                for item in shared_with_me
+            ],
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        serializer = CreateWorkspaceInvitationSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+        role = serializer.validated_data['role']
+
+        # A pending invitation is replaced rather than stacked, so one address
+        # never ends up with several usable tokens at once.
+        WorkspaceInvitation.objects.filter(
+            owner=request.user, email=email, accepted_at__isnull=True, revoked_at__isnull=True
+        ).update(revoked_at=timezone.now())
+
+        invitation, token = WorkspaceInvitation.issue(request.user, email, role)
+        logger.info(
+            "workspace_invitation.created",
+            extra={"owner_id": request.user.id, "invitation_id": invitation.id},
+        )
+        return Response({
+            'invitation': WorkspaceInvitationSerializer(invitation).data,
+            # Shown once. Only its hash is stored, so it cannot be read back.
+            'token': token,
+        }, status=status.HTTP_201_CREATED)
+
+
+class RevokeWorkspaceAccessView(APIView):
+    """Withdraws a pending invitation, or an access already granted."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        invitation_id = request.data.get('invitation_id')
+        membership_id = request.data.get('membership_id')
+
+        if invitation_id is not None:
+            updated = WorkspaceInvitation.objects.filter(
+                id=invitation_id, owner=request.user, accepted_at__isnull=True
+            ).update(revoked_at=timezone.now())
+            if not updated:
+                return Response({"error": "Invitation introuvable."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        if membership_id is not None:
+            deleted, _ = WorkspaceMembership.objects.filter(
+                id=membership_id, owner=request.user
+            ).delete()
+            if not deleted:
+                return Response({"error": "Accès introuvable."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        return Response(
+            {"error": "Indiquez 'invitation_id' ou 'membership_id'."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+class AcceptWorkspaceInvitationView(APIView):
+    """The guest's side: redeem a token to join the inviter's plan list."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = AcceptWorkspaceInvitationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Looked up by hash: the raw token is never stored, so a leak of this
+        # table cannot be replayed.
+        invitation = WorkspaceInvitation.objects.filter(
+            token_hash=hash_invitation_token(serializer.validated_data['token'])
+        ).first()
+
+        # One message for every failure, so a wrong token cannot be told apart
+        # from an expired or already-used one.
+        invalid = Response(
+            {"error": "Cette invitation est invalide, expirée ou déjà utilisée."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+        if invitation is None or not invitation.is_pending:
+            return invalid
+        if invitation.owner_id == request.user.id:
+            return invalid
+
+        with transaction.atomic():
+            # Re-read under lock: two clicks on the same link must not both win.
+            locked = WorkspaceInvitation.objects.select_for_update().get(pk=invitation.pk)
+            if not locked.is_pending:
+                return invalid
+
+            membership, created = WorkspaceMembership.objects.get_or_create(
+                owner=locked.owner,
+                member=request.user,
+                defaults={'role': locked.role},
+            )
+            if not created and membership.role != locked.role:
+                membership.role = locked.role
+                membership.save(update_fields=['role'])
+
+            locked.accepted_at = timezone.now()
+            locked.accepted_by = request.user
+            locked.save(update_fields=['accepted_at', 'accepted_by'])
+
+        logger.info(
+            "workspace_invitation.accepted",
+            extra={"owner_id": invitation.owner_id, "member_id": request.user.id},
+        )
+        return Response({
+            'owner_username': invitation.owner.username,
+            'role': membership.role,
+        }, status=status.HTTP_200_OK)
