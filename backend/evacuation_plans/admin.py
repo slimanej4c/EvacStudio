@@ -5,6 +5,7 @@ from django.utils import timezone
 from .models import (
     EvacuationPlan,
     PlanIcon,
+    SheetTemplateVersion,
     WorkspaceInvitation,
     WorkspaceMembership,
 )
@@ -102,3 +103,12 @@ class EvacuationPlanAdmin(admin.ModelAdmin):
     autocomplete_fields = ('user',)
     ordering = ('-created_at',)
     inlines = [PlanIconInline]
+
+
+@admin.register(SheetTemplateVersion)
+class SheetTemplateVersionAdmin(admin.ModelAdmin):
+    list_display = ('name', 'user', 'template_key', 'source_updated_at')
+    list_filter = ('template_key', 'source_updated_at')
+    search_fields = ('name', 'version_id', 'user__username', 'user__email')
+    autocomplete_fields = ('user',)
+    ordering = ('-source_updated_at',)

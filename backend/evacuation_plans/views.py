@@ -29,6 +29,7 @@ from .models import (
     PlanOverlay,
     PlanShape,
     PlanText,
+    SheetTemplateVersion,
     UserXaiSettings,
     WorkspaceInvitation,
     WorkspaceMembership,
@@ -58,6 +59,8 @@ from .serializers import (
     SyncPlanOverlaySerializer,
     MAX_IMAGE_DATA_LENGTH,
     SaveUserXaiSettingsSerializer,
+    SheetTemplateSyncSerializer,
+    SheetTemplateVersionSerializer,
     TestXaiKeySerializer,
     PlanCleaningHistorySerializer,
     ApplyManualPlanEditSerializer,
@@ -865,6 +868,33 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         # as False, so explicitly show the newly imported main plan instead of
         # relying on the model's True default.
         serializer.save(user=self.request.user, main_plan_visible=True)
+
+    @action(detail=False, methods=['get', 'put'], url_path='sheet-templates')
+    def sheet_templates(self, request):
+        """Read or replace the authenticated user's reusable sheet layouts."""
+        if request.method == 'GET':
+            versions = SheetTemplateVersion.objects.filter(user=request.user)
+            return Response(SheetTemplateVersionSerializer(versions, many=True).data)
+
+        serializer = SheetTemplateSyncSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        submitted = serializer.validated_data['versions']
+        version_ids = [version['version_id'] for version in submitted]
+
+        with transaction.atomic():
+            for version in submitted:
+                version_id = version.pop('version_id')
+                SheetTemplateVersion.objects.update_or_create(
+                    user=request.user,
+                    version_id=version_id,
+                    defaults=version,
+                )
+            SheetTemplateVersion.objects.filter(user=request.user).exclude(
+                version_id__in=version_ids
+            ).delete()
+
+        versions = SheetTemplateVersion.objects.filter(user=request.user)
+        return Response(SheetTemplateVersionSerializer(versions, many=True).data)
 
     @action(detail=False, methods=['get', 'post', 'patch', 'delete'], url_path='pictograms')
     def pictograms(self, request):

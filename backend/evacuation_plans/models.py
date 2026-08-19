@@ -292,6 +292,39 @@ class UserXaiSettings(models.Model):
         return f"xAI settings for {self.user.username}"
 
 
+class SheetTemplateVersion(models.Model):
+    """A user's reusable sheet layout, mirrored by the browser local cache.
+
+    Template versions are account preferences rather than plan data: the same
+    layout can be reused on every plan and survives application deployments.
+    The source timestamps come from the browser copy and let a newer offline
+    edit win when local and server copies are merged again.
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sheet_template_versions')
+    version_id = models.CharField(max_length=128)
+    template_key = models.CharField(max_length=64)
+    name = models.CharField(max_length=255)
+    blocks = models.JSONField(default=list)
+    plan_placement = models.JSONField(default=dict)
+    source_created_at = models.DateTimeField()
+    source_updated_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['template_key', '-source_updated_at', 'version_id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'version_id'],
+                name='unique_sheet_template_version_per_user',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.template_key}) for {self.user}"
+
+
 class GrokCleaningJob(models.Model):
     """Asynchronous Grok cleaning job (analyse + image generation).
 

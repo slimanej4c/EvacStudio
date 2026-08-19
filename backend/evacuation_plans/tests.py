@@ -22,6 +22,7 @@ from .models import (
     PlanCleaningHistory,
     PlanIcon,
     PlanOverlay,
+    SheetTemplateVersion,
     UserXaiSettings,
     WorkspaceInvitation,
     WorkspaceMembership,
@@ -657,6 +658,83 @@ class EditorSyncTests(_PlanFactoryMixin, TestCase):
                 self.assertEqual(response.status_code, 400)
                 self.assertEqual(list(plan.icons.values_list("icon_type", flat=True)), ["existant"])
                 self.assertFalse(PlanOverlay.objects.filter(plan=plan).exists())
+
+
+class SheetTemplatePersistenceTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="template-owner", password="longsecret-1")
+        self.other_user = User.objects.create_user(username="template-other", password="longsecret-1")
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.payload = {
+            "versions": [{
+                "id": "draft:nfx08070",
+                "template": "nfx08070",
+                "name": "Dernière modification - NF X08-070",
+                "blocks": [{
+                    "id": "plan-main",
+                    "kind": "plan",
+                    "label": "Plan principal",
+                    "x": 100,
+                    "y": 120,
+                    "width": 900,
+                    "height": 700,
+                    "rotation": 0,
+                    "visible": True,
+                }],
+                "planPlacement": {"scale": 110, "offsetX": 15, "offsetY": -8},
+                "createdAt": "2026-08-19T10:00:00Z",
+                "updatedAt": "2026-08-19T10:05:00Z",
+            }],
+        }
+
+    def test_template_versions_are_saved_and_read_from_the_server(self):
+        saved = self.client.put("/api/plans/sheet-templates/", self.payload, format="json")
+
+        self.assertEqual(saved.status_code, 200, saved.content)
+        self.assertEqual(SheetTemplateVersion.objects.filter(user=self.user).count(), 1)
+        stored = SheetTemplateVersion.objects.get(user=self.user)
+        self.assertEqual(stored.version_id, "draft:nfx08070")
+        self.assertEqual(stored.blocks[0]["width"], 900)
+
+        loaded = self.client.get("/api/plans/sheet-templates/")
+        self.assertEqual(loaded.status_code, 200, loaded.content)
+        self.assertEqual(loaded.data, saved.data)
+        self.assertEqual(loaded.data[0]["planPlacement"]["scale"], 110.0)
+
+    def test_template_versions_are_private_to_each_account(self):
+        self.client.put("/api/plans/sheet-templates/", self.payload, format="json")
+        self.client.force_authenticate(user=self.other_user)
+
+        response = self.client.get("/api/plans/sheet-templates/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+
+    def test_replacing_versions_removes_deleted_template_from_server(self):
+        self.client.put("/api/plans/sheet-templates/", self.payload, format="json")
+
+        response = self.client.put(
+            "/api/plans/sheet-templates/",
+            {"versions": []},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(SheetTemplateVersion.objects.filter(user=self.user).exists())
+
+    def test_invalid_template_payload_is_rejected(self):
+        invalid = {
+            "versions": [{
+                **self.payload["versions"][0],
+                "id": "invalid id with spaces",
+            }],
+        }
+
+        response = self.client.put("/api/plans/sheet-templates/", invalid, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(SheetTemplateVersion.objects.exists())
 
 
 class XaiSettingsTests(_PlanFactoryMixin, TestCase):

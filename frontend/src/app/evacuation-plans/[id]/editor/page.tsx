@@ -657,7 +657,7 @@ interface CleaningHistoryItem {
 
 export default function PlanEditorPage() {
   const { id } = useParams();
-  const { loading: authLoading, token } = useAuth();
+  const { loading: authLoading, token, user } = useAuth();
   const router = useRouter();
   
   const [plan, setPlan] = useState<EvacuationPlanBackend | null>(null);
@@ -1133,6 +1133,8 @@ const MAX_HISTORY_STEPS = 50;
   const [sheetExporting, setSheetExporting] = useState(false);
   const [storedSheetTemplateVersions, setStoredSheetTemplateVersions] = useState<StoredSheetTemplateVersion[]>([]);
   const [activeSheetTemplateVersionId, setActiveSheetTemplateVersionId] = useState("");
+  const pendingTemplateServerSyncRef = useRef<StoredSheetTemplateVersion[] | null>(null);
+  const templateServerSyncRunningRef = useRef(false);
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportSaveConfirmOpen, setExportSaveConfirmOpen] = useState(false);
@@ -3939,24 +3941,30 @@ const MAX_HISTORY_STEPS = 50;
   });
 
   const readStoredSheetTemplateVersions = (): StoredSheetTemplateVersion[] => {
-    if (typeof window === "undefined") return [];
+    if (typeof window === "undefined" || !user) return [];
     try {
-      const raw = window.localStorage.getItem(SHEET_TEMPLATE_STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : [];
-      const globalVersions = Array.isArray(parsed) ? parsed : [];
+      const accountKey = `${SHEET_TEMPLATE_STORAGE_KEY}:user:${user.id}`;
+      const accountRaw = window.localStorage.getItem(accountKey);
+      const accountParsed = accountRaw ? JSON.parse(accountRaw) : [];
+      const accountVersions = Array.isArray(accountParsed) ? accountParsed : [];
+      const globalRaw = window.localStorage.getItem(SHEET_TEMPLATE_STORAGE_KEY);
+      const globalParsed = globalRaw ? JSON.parse(globalRaw) : [];
+      const globalVersions = Array.isArray(globalParsed) ? globalParsed : [];
       const legacyKey = `${LEGACY_SHEET_TEMPLATE_STORAGE_PREFIX}:${id}`;
       const legacyRaw = window.localStorage.getItem(legacyKey);
-      if (!legacyRaw) return globalVersions;
-      const legacyParsed = JSON.parse(legacyRaw);
+      const legacyParsed = legacyRaw ? JSON.parse(legacyRaw) : [];
       const legacyVersions = Array.isArray(legacyParsed) ? legacyParsed : [];
       const byId = new Map<string, StoredSheetTemplateVersion>();
-      [...globalVersions, ...legacyVersions].forEach((version) => {
+      [...globalVersions, ...legacyVersions, ...accountVersions].forEach((version) => {
         if (version?.id && version?.template && Array.isArray(version.blocks)) {
           byId.set(version.id, version);
         }
       });
       const merged = Array.from(byId.values());
-      window.localStorage.setItem(SHEET_TEMPLATE_STORAGE_KEY, JSON.stringify(merged));
+      window.localStorage.setItem(accountKey, JSON.stringify(merged));
+      // The two old keys were not account-scoped. Move them once into the
+      // currently authenticated account so another login cannot inherit them.
+      window.localStorage.removeItem(SHEET_TEMPLATE_STORAGE_KEY);
       window.localStorage.removeItem(legacyKey);
       return merged;
     } catch {
@@ -3964,10 +3972,52 @@ const MAX_HISTORY_STEPS = 50;
     }
   };
 
-  const writeStoredSheetTemplateVersions = (versions: StoredSheetTemplateVersion[]) => {
+  const cacheSheetTemplateVersions = (versions: StoredSheetTemplateVersion[]) => {
     setStoredSheetTemplateVersions(versions);
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(SHEET_TEMPLATE_STORAGE_KEY, JSON.stringify(versions));
+    if (typeof window === "undefined" || !user) return;
+    window.localStorage.setItem(
+      `${SHEET_TEMPLATE_STORAGE_KEY}:user:${user.id}`,
+      JSON.stringify(versions)
+    );
+  };
+
+  const syncSheetTemplateVersionsToServer = (versions: StoredSheetTemplateVersion[]) => {
+    pendingTemplateServerSyncRef.current = JSON.parse(
+      JSON.stringify(versions)
+    ) as StoredSheetTemplateVersion[];
+    if (templateServerSyncRunningRef.current) return;
+
+    templateServerSyncRunningRef.current = true;
+    void (async () => {
+      while (pendingTemplateServerSyncRef.current) {
+        const pending = pendingTemplateServerSyncRef.current;
+        pendingTemplateServerSyncRef.current = null;
+        try {
+          const response = await fetch(buildApiUrl("/api/plans/sheet-templates/"), {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              ...getPlanAuthHeaders(),
+            },
+            body: JSON.stringify({ versions: pending }),
+          });
+          if (!response.ok) throw new Error(await describeApiError(response));
+        } catch (error) {
+          // Keep the browser copy intact. A later edit or editor reload will
+          // retry it, so working offline never destroys a template.
+          pendingTemplateServerSyncRef.current ??= pending;
+          console.warn("Template server sync failed; local cache kept:", error);
+          break;
+        }
+      }
+    })().finally(() => {
+      templateServerSyncRunningRef.current = false;
+    });
+  };
+
+  const writeStoredSheetTemplateVersions = (versions: StoredSheetTemplateVersion[]) => {
+    cacheSheetTemplateVersions(versions);
+    syncSheetTemplateVersionsToServer(versions);
   };
 
   const cloneSheetBlocks = (blocks: SheetBlock[]) =>
@@ -4006,8 +4056,71 @@ const MAX_HISTORY_STEPS = 50;
     readStoredSheetTemplateVersions().find((version) => version.id === `draft:${template}`);
 
   useEffect(() => {
-    setStoredSheetTemplateVersions(readStoredSheetTemplateVersions());
-  }, [id]);
+    if (authLoading || !user) return;
+    let cancelled = false;
+    const localVersions = readStoredSheetTemplateVersions();
+    cacheSheetTemplateVersions(localVersions);
+
+    const loadServerVersions = async () => {
+      try {
+        const response = await fetch(buildApiUrl("/api/plans/sheet-templates/"), {
+          headers: getPlanAuthHeaders(),
+          cache: "no-store",
+        });
+        if (!response.ok) throw new Error(await describeApiError(response));
+        const payload = await response.json();
+        const serverVersions = Array.isArray(payload)
+          ? payload.filter((version): version is StoredSheetTemplateVersion => (
+              Boolean(version)
+              && typeof version.id === "string"
+              && typeof version.template === "string"
+              && typeof version.name === "string"
+              && Array.isArray(version.blocks)
+              && typeof version.planPlacement === "object"
+              && typeof version.createdAt === "string"
+              && typeof version.updatedAt === "string"
+            ))
+          : [];
+
+        // Re-read just before merging: the user may have edited a template
+        // while the server request was in flight.
+        const currentLocalVersions = readStoredSheetTemplateVersions();
+        const mergedById = new Map(currentLocalVersions.map((version) => [version.id, version]));
+        serverVersions.forEach((serverVersion) => {
+          const localVersion = mergedById.get(serverVersion.id);
+          const localUpdatedAt = Date.parse(localVersion?.updatedAt || "");
+          const serverUpdatedAt = Date.parse(serverVersion.updatedAt);
+          if (
+            !localVersion
+            || !Number.isFinite(localUpdatedAt)
+            || !Number.isFinite(serverUpdatedAt)
+            || serverUpdatedAt >= localUpdatedAt
+          ) {
+            mergedById.set(serverVersion.id, serverVersion);
+          }
+        });
+        const mergedVersions = Array.from(mergedById.values());
+        if (cancelled) return;
+        cacheSheetTemplateVersions(mergedVersions);
+
+        const canonical = (versions: StoredSheetTemplateVersion[]) => JSON.stringify(
+          [...versions].sort((left, right) => left.id.localeCompare(right.id))
+        );
+        if (canonical(mergedVersions) !== canonical(serverVersions)) {
+          syncSheetTemplateVersionsToServer(mergedVersions);
+        }
+      } catch (error) {
+        // Offline/server failure: the local cache remains fully usable and will
+        // be migrated on the next successful editor load.
+        console.warn("Template server load failed; local cache used:", error);
+      }
+    };
+
+    void loadServerVersions();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, authLoading, token, user?.id]);
 
   useEffect(() => {
     if (sheetTemplate === "none" || !sheetBlocks.length) return;

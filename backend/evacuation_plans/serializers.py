@@ -1,6 +1,7 @@
 import base64
 import binascii
 import io
+import json
 
 from rest_framework import serializers
 from django.contrib.auth.models import User
@@ -12,6 +13,7 @@ from .models import (
     PlanOverlay,
     PlanShape,
     PlanText,
+    SheetTemplateVersion,
     UserXaiSettings,
     WorkspaceInvitation,
     WorkspaceMembership,
@@ -23,6 +25,9 @@ MAX_LOGO_DATA_LENGTH = 2 * 1024 * 1024
 MAX_LOGO_SIDE = 2_000
 MAX_LOGO_PIXELS = 4_000_000
 DEFAULT_STUDIO_LOGO_PATH = '/prev-inc-cie-logo.png'
+MAX_SHEET_TEMPLATE_VERSIONS = 100
+MAX_SHEET_TEMPLATE_BLOCKS = 300
+MAX_SHEET_TEMPLATE_SYNC_BYTES = 5 * 1024 * 1024
 
 
 def validate_logo_data_url(value):
@@ -344,6 +349,66 @@ class UserXaiSettingsSerializer(serializers.ModelSerializer):
 
     def get_has_api_key(self, obj):
         return bool(obj.encrypted_api_key)
+
+
+class SheetTemplateVersionSerializer(serializers.ModelSerializer):
+    id = serializers.RegexField(r'^[A-Za-z0-9._:-]{1,128}$', source='version_id')
+    template = serializers.RegexField(r'^[a-z0-9_]{1,64}$', source='template_key')
+    planPlacement = serializers.JSONField(source='plan_placement')
+    createdAt = serializers.DateTimeField(source='source_created_at')
+    updatedAt = serializers.DateTimeField(source='source_updated_at')
+
+    class Meta:
+        model = SheetTemplateVersion
+        fields = ['id', 'template', 'name', 'blocks', 'planPlacement', 'createdAt', 'updatedAt']
+
+    def validate_blocks(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Les blocs du template doivent former une liste.')
+        if len(value) > MAX_SHEET_TEMPLATE_BLOCKS:
+            raise serializers.ValidationError('Ce template contient trop de blocs.')
+        if any(not isinstance(block, dict) for block in value):
+            raise serializers.ValidationError('Un bloc du template est invalide.')
+        return value
+
+    def validate_planPlacement(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('Le placement du plan est invalide.')
+        try:
+            scale = float(value.get('scale', 100))
+            offset_x = float(value.get('offsetX', 0))
+            offset_y = float(value.get('offsetY', 0))
+        except (TypeError, ValueError):
+            raise serializers.ValidationError('Le placement du plan est invalide.')
+        if not 1 <= scale <= 1_000 or abs(offset_x) > 100_000 or abs(offset_y) > 100_000:
+            raise serializers.ValidationError('Le placement du plan dépasse les limites autorisées.')
+        return {'scale': scale, 'offsetX': offset_x, 'offsetY': offset_y}
+
+    def validate(self, attrs):
+        if attrs['source_updated_at'] < attrs['source_created_at']:
+            raise serializers.ValidationError('La date de modification du template est invalide.')
+        return attrs
+
+
+class SheetTemplateSyncSerializer(serializers.Serializer):
+    versions = SheetTemplateVersionSerializer(many=True)
+
+    def validate_versions(self, versions):
+        if len(versions) > MAX_SHEET_TEMPLATE_VERSIONS:
+            raise serializers.ValidationError('Trop de versions de templates ont été envoyées.')
+        version_ids = [version['version_id'] for version in versions]
+        if len(version_ids) != len(set(version_ids)):
+            raise serializers.ValidationError('Chaque version de template doit avoir un identifiant unique.')
+        return versions
+
+    def validate(self, attrs):
+        try:
+            payload_size = len(json.dumps(self.initial_data, ensure_ascii=False).encode('utf-8'))
+        except (TypeError, ValueError):
+            raise serializers.ValidationError('Les données des templates sont invalides.')
+        if payload_size > MAX_SHEET_TEMPLATE_SYNC_BYTES:
+            raise serializers.ValidationError('Les templates dépassent la taille maximale autorisée.')
+        return attrs
 
 
 class SaveUserXaiSettingsSerializer(serializers.Serializer):
