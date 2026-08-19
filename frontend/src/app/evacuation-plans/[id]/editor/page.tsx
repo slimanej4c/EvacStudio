@@ -72,6 +72,13 @@ interface StoredSheetTemplateVersion {
   createdAt: string;
   updatedAt: string;
 }
+interface SheetTemplateTransferFile {
+  format: "prev-inc-cie-sheet-templates";
+  version: 1;
+  exportedAt: string;
+  versions: StoredSheetTemplateVersion[];
+  pictograms: Array<{ name: string; svg: string }>;
+}
 const EXPORT_PAPER_OPTIONS = (Object.keys(EXPORT_PAPER_SIZES) as ExportPaperFormat[]).map((key) => ({
   key,
   label: EXPORT_PAPER_SIZES[key].label
@@ -1135,6 +1142,8 @@ const MAX_HISTORY_STEPS = 50;
   const [activeSheetTemplateVersionId, setActiveSheetTemplateVersionId] = useState("");
   const pendingTemplateServerSyncRef = useRef<StoredSheetTemplateVersion[] | null>(null);
   const templateServerSyncRunningRef = useRef(false);
+  const templateTransferInputRef = useRef<HTMLInputElement>(null);
+  const [templateTransferBusy, setTemplateTransferBusy] = useState(false);
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportSaveConfirmOpen, setExportSaveConfirmOpen] = useState(false);
@@ -4018,6 +4027,169 @@ const MAX_HISTORY_STEPS = 50;
   const writeStoredSheetTemplateVersions = (versions: StoredSheetTemplateVersion[]) => {
     cacheSheetTemplateVersions(versions);
     syncSheetTemplateVersionsToServer(versions);
+  };
+
+  const exportPortableSheetTemplates = async () => {
+    saveTemplateDraft();
+    const versions = readStoredSheetTemplateVersions();
+    if (!versions.length) {
+      alert("Aucun template personnalisé n’est disponible à exporter.");
+      return;
+    }
+
+    setTemplateTransferBusy(true);
+    try {
+      const referencedIconTypes = new Set(
+        versions.flatMap((version) => version.blocks
+          .filter((block) => block.kind === "picto" && block.iconType)
+          .map((block) => block.iconType as string))
+      );
+      const pictograms: SheetTemplateTransferFile["pictograms"] = [];
+      for (const iconType of referencedIconTypes) {
+        const definition = iconDefinitions[iconType];
+        if (!definition?.imageUrl || !definition.fileName?.toLowerCase().endsWith(".svg")) continue;
+        const response = await fetch(definition.imageUrl, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`Le pictogramme « ${definition.label} » ne peut pas être inclus.`);
+        }
+        const svg = await response.text();
+        if (!/<svg[\s>]/i.test(svg)) {
+          throw new Error(`Le pictogramme « ${definition.label} » n’est pas un SVG valide.`);
+        }
+        pictograms.push({ name: definition.type, svg });
+      }
+
+      const transfer: SheetTemplateTransferFile = {
+        format: "prev-inc-cie-sheet-templates",
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        versions,
+        pictograms,
+      };
+      const blob = new Blob([JSON.stringify(transfer, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `prev-inc-cie-templates-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setSaveStatus(`${versions.length} template${versions.length > 1 ? "s" : ""} exporté${versions.length > 1 ? "s" : ""}`);
+      window.setTimeout(() => setSaveStatus(""), 3000);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Impossible d’exporter les templates.");
+    } finally {
+      setTemplateTransferBusy(false);
+    }
+  };
+
+  const importPortableSheetTemplates = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 20 * 1024 * 1024) {
+      alert("Le fichier de templates dépasse 20 Mo.");
+      return;
+    }
+
+    setTemplateTransferBusy(true);
+    try {
+      const payload = JSON.parse(await file.text()) as Partial<SheetTemplateTransferFile>;
+      if (
+        payload.format !== "prev-inc-cie-sheet-templates"
+        || payload.version !== 1
+        || !Array.isArray(payload.versions)
+        || !Array.isArray(payload.pictograms)
+      ) {
+        throw new Error("Ce fichier n’est pas un export de templates PREV’ INC & CIE valide.");
+      }
+      const importedVersions = payload.versions;
+      const validTemplateKeys = new Set(Object.keys(SHEET_TEMPLATES));
+      if (
+        importedVersions.length > 100
+        || importedVersions.some((version) => (
+          !version
+          || typeof version.id !== "string"
+          || !validTemplateKeys.has(version.template)
+          || typeof version.name !== "string"
+          || !Array.isArray(version.blocks)
+          || typeof version.planPlacement !== "object"
+          || typeof version.createdAt !== "string"
+          || typeof version.updatedAt !== "string"
+        ))
+      ) {
+        throw new Error("Une version de template contenue dans le fichier est invalide.");
+      }
+
+      const importedDefinitions: Record<string, SafetyIconDefinition> = {};
+      for (const pictogram of payload.pictograms) {
+        if (
+          !pictogram
+          || typeof pictogram.name !== "string"
+          || typeof pictogram.svg !== "string"
+          || pictogram.svg.length > 300_000
+        ) {
+          throw new Error("Un pictogramme contenu dans le fichier est invalide.");
+        }
+        const response = await fetch(buildApiUrl("/api/plans/pictograms/"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...getPlanAuthHeaders(),
+          },
+          body: JSON.stringify({ name: pictogram.name, svg: pictogram.svg }),
+        });
+        if (response.status === 409) continue;
+        if (!response.ok) throw new Error(await describeApiError(response));
+        const saved = await response.json() as PlanPictogramBackend;
+        importedDefinitions[saved.type] = {
+          type: saved.type,
+          label: saved.label,
+          fileName: saved.file_name,
+          imageUrl: saved.url,
+          color: inferPictogramColor(saved.type, saved.label),
+          deletable: Boolean(saved.deletable),
+        };
+      }
+
+      const mergedById = new Map(
+        readStoredSheetTemplateVersions().map((version) => [version.id, version])
+      );
+      importedVersions.forEach((version) => mergedById.set(version.id, version));
+      const mergedVersions = Array.from(mergedById.values());
+      const response = await fetch(buildApiUrl("/api/plans/sheet-templates/"), {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...getPlanAuthHeaders(),
+        },
+        body: JSON.stringify({ versions: mergedVersions }),
+      });
+      if (!response.ok) throw new Error(await describeApiError(response));
+      const savedVersions = await response.json() as StoredSheetTemplateVersion[];
+      cacheSheetTemplateVersions(savedVersions);
+      setAvailableIconDefinitions((current) => ({ ...current, ...importedDefinitions }));
+      if (sheetTemplate !== "none") {
+        const importedDraft = importedVersions.find(
+          (version) => version.id === `draft:${sheetTemplate}`
+        );
+        if (importedDraft) {
+          setSheetBlocks(cloneSheetBlocks(importedDraft.blocks));
+          setSheetPlanPlacement({ ...importedDraft.planPlacement });
+          setActiveSheetTemplateVersionId(importedDraft.id);
+          window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
+        }
+      }
+      setSaveStatus(
+        `${importedVersions.length} template${importedVersions.length > 1 ? "s" : ""} importé${importedVersions.length > 1 ? "s" : ""} sur le serveur`
+      );
+      window.setTimeout(() => setSaveStatus(""), 4000);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Impossible d’importer les templates.");
+    } finally {
+      setTemplateTransferBusy(false);
+    }
   };
 
   const cloneSheetBlocks = (blocks: SheetBlock[]) =>
@@ -7508,6 +7680,33 @@ const MAX_HISTORY_STEPS = 50;
                       <Trash2 className="h-3 w-3" />
                     </button>
                   )}
+                  <input
+                    ref={templateTransferInputRef}
+                    type="file"
+                    accept="application/json,.json"
+                    onChange={importPortableSheetTemplates}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void exportPortableSheetTemplates()}
+                    disabled={templateTransferBusy}
+                    title="Exporter les templates locaux avec leurs pictogrammes dans un fichier JSON"
+                    className="flex cursor-pointer items-center justify-center gap-1 rounded px-1.5 py-1 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-wait disabled:opacity-40"
+                  >
+                    {templateTransferBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                    <span>Exporter</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => templateTransferInputRef.current?.click()}
+                    disabled={templateTransferBusy}
+                    title="Importer sur ce serveur un fichier de templates préparé en local"
+                    className="flex cursor-pointer items-center justify-center gap-1 rounded px-1.5 py-1 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-wait disabled:opacity-40"
+                  >
+                    <FileUp className="h-3 w-3" />
+                    <span>Importer</span>
+                  </button>
                 </>
               )}
               <button
