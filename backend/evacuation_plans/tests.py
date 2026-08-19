@@ -377,6 +377,44 @@ class CleaningHistoryTests(_PlanFactoryMixin, TestCase):
 
 
 class EditorSyncTests(_PlanFactoryMixin, TestCase):
+    def test_replacing_hidden_main_plan_makes_new_background_visible(self):
+        user = User.objects.create_user(username="replace-hidden-plan", password="longsecret-1")
+        plan = self.make_plan(user)
+        plan.main_plan_x = 400
+        plan.main_plan_y = 250
+        plan.main_plan_width = 900
+        plan.main_plan_height = 600
+        plan.main_plan_visible = False
+        plan.save(update_fields=[
+            "main_plan_x",
+            "main_plan_y",
+            "main_plan_width",
+            "main_plan_height",
+            "main_plan_visible",
+        ])
+        client = self.authed_client(user)
+
+        response = client.post(
+            f"/api/plans/{plan.id}/change-background/",
+            {
+                "background_file": SimpleUploadedFile(
+                    "nouveau-plan.png",
+                    _png_bytes(color=(230, 230, 230)),
+                    content_type="image/png",
+                ),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        plan.refresh_from_db()
+        self.assertTrue(plan.main_plan_visible)
+        self.assertEqual(plan.main_plan_x, 0)
+        self.assertEqual(plan.main_plan_y, 0)
+        self.assertEqual(plan.main_plan_width, 0)
+        self.assertEqual(plan.main_plan_height, 0)
+        self.assertTrue(response.data["main_plan_visible"])
+
     def test_open_polyline_accepts_two_points_and_never_keeps_a_fill(self):
         from .serializers import PlanShapeSerializer
 
@@ -556,6 +594,24 @@ class EditorSyncTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(overlay.z_index, 40)
         self.assertEqual(overlay.group_id, "plan-group-test")
         self.assertEqual(overlay.rotation, 12)
+
+    def test_sync_editor_accepts_bundled_default_studio_logo(self):
+        user = User.objects.create_user(username="default-logo-editor", password="longsecret-1")
+        plan = self.make_plan(user)
+        client = self.authed_client(user)
+        image_data = "data:image/png;base64," + base64.b64encode(_png_bytes()).decode("ascii")
+        payload = self.editor_payload(image_data)
+        payload["plan_settings"]["watermark"]["creator_logo"] = "/prev-inc-cie-logo.png"
+
+        response = client.post(
+            f"/api/plans/{plan.id}/sync-editor/",
+            payload,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        plan.refresh_from_db()
+        self.assertEqual(plan.watermark_config["creator_logo"], "/prev-inc-cie-logo.png")
 
     def test_sync_editor_validates_before_replacing_existing_layers(self):
         user = User.objects.create_user(username="atomic", password="longsecret-1")

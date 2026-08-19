@@ -22,10 +22,15 @@ MAX_IMAGE_DATA_LENGTH = 20 * 1024 * 1024
 MAX_LOGO_DATA_LENGTH = 2 * 1024 * 1024
 MAX_LOGO_SIDE = 2_000
 MAX_LOGO_PIXELS = 4_000_000
+DEFAULT_STUDIO_LOGO_PATH = '/prev-inc-cie-logo.png'
 
 
 def validate_logo_data_url(value):
     if not value:
+        return value
+    # The application logo is a bundled, trusted public asset. Custom logos are
+    # still required to be rasterized data URLs and pass the image checks below.
+    if value == DEFAULT_STUDIO_LOGO_PATH:
         return value
     allowed_prefixes = (
         'data:image/png;base64,',

@@ -1241,6 +1241,9 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         plan.main_plan_y = 0.0
         plan.main_plan_width = 0.0
         plan.main_plan_height = 0.0
+        # A replacement plan must be shown immediately even when the previous
+        # background had deliberately been hidden from the Layers panel.
+        plan.main_plan_visible = True
         plan.save()
 
         serializer = self.get_serializer(plan)

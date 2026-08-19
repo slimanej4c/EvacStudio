@@ -1058,8 +1058,17 @@ const MAX_HISTORY_STEPS = 50;
       });
 
       if (res.ok) {
-        const updatedPlan = await res.json();
+        const updatedPlan: EvacuationPlanBackend = await res.json();
         setPlan(updatedPlan);
+        setMainPlanTransform({
+          x: updatedPlan.main_plan_x || 0,
+          y: updatedPlan.main_plan_y || 0,
+          width: updatedPlan.main_plan_width || 0,
+          height: updatedPlan.main_plan_height || 0,
+        });
+        setMainPlanVisible(true);
+        setSelectedOverlayId(MAIN_PLAN_ID);
+        setFitSignal((current) => current + 1);
         setSaveStatus("Plan remplacé avec succès !");
         window.setTimeout(() => setSaveStatus(""), 3500);
         void fetchCleaningHistory();
