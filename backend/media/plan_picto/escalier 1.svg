@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -70 400 400" width="100%" height="100%">
+  <style>
+    .wall { fill: none; stroke: #000; stroke-width: 3.5; stroke-linecap: square; stroke-linejoin: miter; }
+    .step { fill: none; stroke: #000; stroke-width: 1.2; stroke-linecap: butt; }
+    .handrail { fill: none; stroke: #000; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .breakline { fill: none; stroke: #000; stroke-width: 1.5; stroke-linecap: square; }
+    .walkline { fill: none; stroke: #000; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
+    .walk-start { fill: #000; stroke: none; }
+    .walk-arrow { fill: #000; stroke: none; }
+  </style>
+  <path d="M 370 30 L 40 30 L 40 230 L 370 230" class="wall" />
+  <path d="M 360 125 L 110 125 A 5 5 0 0 0 110 135 L 360 135" class="handrail" />
+  <line x1="110" y1="135" x2="110" y2="230" class="step" />
+  <line x1="140" y1="135" x2="140" y2="230" class="step" />
+  <line x1="170" y1="135" x2="170" y2="230" class="step" />
+  <line x1="200" y1="135" x2="200" y2="230" class="step" />
+  <line x1="230" y1="135" x2="230" y2="230" class="step" />
+  <line x1="260" y1="135" x2="260" y2="230" class="step" />
+  <line x1="290" y1="135" x2="290" y2="230" class="step" />
+  <line x1="320" y1="135" x2="320" y2="230" class="step" />
+  <line x1="350" y1="135" x2="350" y2="230" class="step" />
+  <polyline points="245,130 220,175 230,185 205,235" class="breakline" />
+  <line x1="110" y1="30" x2="110" y2="125" class="step" />
+  <line x1="140" y1="30" x2="140" y2="125" class="step" />
+  <line x1="170" y1="30" x2="170" y2="125" class="step" />
+  <line x1="200" y1="30" x2="200" y2="125" class="step" />
+  <line x1="230" y1="30" x2="230" y2="125" class="step" />
+  <line x1="260" y1="30" x2="260" y2="125" class="step" />
+  <line x1="290" y1="30" x2="290" y2="125" class="step" />
+  <line x1="320" y1="30" x2="320" y2="125" class="step" />
+  <line x1="350" y1="30" x2="350" y2="125" class="step" />
+  <path d="M 360 182.5 L 75 182.5 A 15 15 0 0 1 60 167.5 L 60 92.5 A 15 15 0 0 1 75 77.5 L 360 77.5" class="walkline" />
+  <circle cx="360" cy="182.5" r="3.5" class="walk-start" />
+  <polygon points="365,77.5 354,73.5 354,81.5" class="walk-arrow" />
+</svg>

@@ -337,12 +337,21 @@ export default function IconToolbar({
                       : "border-transparent bg-white/[0.04] hover:border-white/15 hover:bg-white/10"
                   }`}
                 >
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center">
+                  <span
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-black/15 p-1 shadow-inner"
+                    style={{
+                      backgroundColor: "#f8fafc",
+                      backgroundImage:
+                        "linear-gradient(45deg, #dbe1e8 25%, transparent 25%), linear-gradient(-45deg, #dbe1e8 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #dbe1e8 75%), linear-gradient(-45deg, transparent 75%, #dbe1e8 75%)",
+                      backgroundPosition: "0 0, 0 4px, 4px -4px, -4px 0",
+                      backgroundSize: "8px 8px",
+                    }}
+                  >
                     {icon.imageUrl ? (
                       <img src={icon.imageUrl} alt="" className="h-full w-full object-contain" />
                     ) : (
                       <span
-                        className="h-full w-full"
+                        className="h-full w-full [&>svg]:h-full [&>svg]:w-full"
                         style={{ color: icon.color }}
                         dangerouslySetInnerHTML={{ __html: icon.svg || "" }}
                       />

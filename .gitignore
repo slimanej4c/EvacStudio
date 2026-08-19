@@ -13,9 +13,17 @@ backend/venv/
 backend/.venv/
 
 # Base de données de développement et fichiers téléversés
-# (déjà suivis par git : `git rm --cached` est nécessaire pour les retirer)
+# Les deux bibliothèques de pictogrammes SVG sont versionnées afin qu'elles
+# soient installées sur le serveur par `git pull`. Les autres médias restent
+# locaux au poste ou au serveur.
 backend/db.sqlite3
-backend/media/
+backend/media/*
+!backend/media/nf_x-picto/
+backend/media/nf_x-picto/*
+!backend/media/nf_x-picto/*.svg
+!backend/media/plan_picto/
+backend/media/plan_picto/*
+!backend/media/plan_picto/*.svg
 
 # macOS
 .DS_Store
