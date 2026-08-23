@@ -1,7 +1,14 @@
-django
+# Lower bounds exclude the versions flagged by pip-audit during the security
+# audit; they are floors, not pins, so patch releases still install. A full
+# freeze (pip freeze > requirements.lock) is recommended before deployment so a
+# server can be rebuilt identically.
+django>=6.0.8,<6.1          # PYSEC-2026-199/197/200/198/201/2090/2091/2092/3717
 djangorestframework
 djangorestframework-simplejwt
 django-cors-headers
+Pillow>=12.3.0              # PYSEC-2026-2253..2257, 3451..3453
+pypdf>=6.15.0               # PYSEC-2026-3009..3656
+sqlparse>=0.6.0             # PYSEC-2026-3696..3699
 numpy
 opencv-python
 python-dotenv

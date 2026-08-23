@@ -5,8 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import Link from "next/link";
 import { AlertTriangle, Lock, User as UserIcon } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
-
-const SHOW_REGISTER_ENTRY_POINTS = true;
+import { PUBLIC_REGISTRATION_ENABLED } from "@/lib/publicRegistration";
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -102,7 +101,7 @@ export default function LoginPage() {
           </div>
         </form>
 
-        {SHOW_REGISTER_ENTRY_POINTS && (
+        {PUBLIC_REGISTRATION_ENABLED && (
           <div className="mt-4 text-center text-sm text-stone-500">
             Nouveau sur Plan intervention et évacuation ?{" "}
             <Link href="/register" className="font-semibold text-brand-red transition-colors hover:text-brand-orange">

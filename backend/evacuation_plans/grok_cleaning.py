@@ -19,6 +19,8 @@ import logging
 import os
 from dataclasses import dataclass, field
 from urllib.error import HTTPError, URLError
+import ipaddress
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import cv2
@@ -512,11 +514,65 @@ def _clean_json_response(text: str) -> str:
     return text
 
 
+# Only ever used for the temporary image URL xAI returns. That URL is data from
+# an outside service, so it is treated as untrusted: `urlopen` also speaks
+# file:// and ftp://, and a redirect can be pointed at the server's own network.
+_ALLOWED_IMAGE_URL_SCHEMES = ("https",)
+MAX_DOWNLOADED_IMAGE_BYTES = 40 * 1024 * 1024
+
+
+def _assert_downloadable_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in _ALLOWED_IMAGE_URL_SCHEMES:
+        raise GrokCleaningError(
+            f"image_url_scheme:{parsed.scheme or 'none'}",
+            error_code="XAI_BAD_IMAGE_URL",
+            user_message="URL d'image générée invalide.",
+        )
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise GrokCleaningError(
+            "image_url_host:none",
+            error_code="XAI_BAD_IMAGE_URL",
+            user_message="URL d'image générée invalide.",
+        )
+    if host in {"localhost", "metadata.google.internal"}:
+        raise GrokCleaningError(
+            "image_url_host:loopback",
+            error_code="XAI_BAD_IMAGE_URL",
+            user_message="URL d'image générée refusée.",
+        )
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return  # A name; DNS may still resolve inward, see the note below.
+    if (
+        address.is_private or address.is_loopback or address.is_link_local
+        or address.is_reserved or address.is_multicast
+    ):
+        raise GrokCleaningError(
+            "image_url_host:private",
+            error_code="XAI_BAD_IMAGE_URL",
+            user_message="URL d'image générée refusée.",
+        )
+
+
 def _download_image(url: str, timeout: int = 60) -> bytes:
-    """Télécharge l'image générée depuis son URL temporaire."""
+    """Télécharge l'image générée depuis son URL temporaire.
+
+    Note : cette fonction n'est utilisée qu'en dernier recours ; les deux
+    chemins préférés (`response.image`, `response.base64`) ne téléchargent rien.
+    Le contrôle d'adresse ci-dessus arrête les cibles évidentes ; un nom de
+    domaine résolvant vers une adresse interne reste hors de portée d'une
+    vérification faite avant la connexion — le pare-feu sortant du serveur est
+    la défense complémentaire attendue.
+    """
+    _assert_downloadable_url(url)
     response = urlopen(Request(url), timeout=timeout)
     try:
-        return response.read()
+        # Bounded: an unbounded read on an untrusted URL is a memory exhaustion
+        # primitive handed to whoever controls that URL.
+        return response.read(MAX_DOWNLOADED_IMAGE_BYTES + 1)[:MAX_DOWNLOADED_IMAGE_BYTES]
     finally:
         response.close()
 

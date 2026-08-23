@@ -10,6 +10,7 @@ from datetime import timedelta
 
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.utils import timezone
@@ -22,6 +23,8 @@ from .models import (
     PlanCleaningHistory,
     PlanIcon,
     PlanOverlay,
+    PlanShape,
+    PlanText,
     SheetTemplateVersion,
     UserXaiSettings,
     WorkspaceInvitation,
@@ -88,6 +91,7 @@ class _PlanFactoryMixin:
 
 
 class UserRegistrationTests(TestCase):
+    @override_settings(PUBLIC_REGISTRATION_ENABLED=True)
     def test_user_registration(self):
         client = APIClient()
         response = client.post(
@@ -97,6 +101,17 @@ class UserRegistrationTests(TestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertTrue(User.objects.filter(username="alice").exists())
+
+    @override_settings(PUBLIC_REGISTRATION_ENABLED=False)
+    def test_public_registration_is_disabled_by_default(self):
+        response = APIClient().post(
+            "/api/auth/register/",
+            {"username": "blocked", "email": "blocked@example.com", "password": "longsecret-1"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(User.objects.filter(username="blocked").exists())
 
 
 class AuthTests(TestCase):
@@ -168,6 +183,111 @@ class PlansCrudTests(_PlanFactoryMixin, TestCase):
         )
         self.assertEqual(response.status_code, 201)
 
+    def test_duplicate_plan_copies_the_complete_editor_state(self):
+        user = User.objects.create_user(username="plan-copy", password="longsecret-1")
+        client = self.authed_client(user)
+        source = self.make_plan(user, name="Étage 1")
+        source.main_plan_x = 34
+        source.main_plan_y = 56
+        source.main_plan_width = 900
+        source.main_plan_height = 650
+        source.main_plan_locked = True
+        source.main_plan_group_id = "main-group"
+        source.main_plan_grouping_enabled = True
+        source.watermark_config = {"client": "Client test", "reference": "ABC-42"}
+        source.cleaned_background_file.save(
+            "cleaned.png", ContentFile(_png_bytes(color=(240, 240, 240))), save=False
+        )
+        source.use_cleaned_background = True
+        source.save()
+
+        PlanIcon.objects.create(
+            plan=source,
+            icon_type="extincteur",
+            x=10,
+            y=20,
+            width=32,
+            height=48,
+            rotation=15,
+            object_group_id="equipment-group",
+            color="#e63329",
+        )
+        PlanShape.objects.create(
+            plan=source,
+            shape_type="curve_polygon_zone",
+            x=1,
+            y=2,
+            width=120,
+            height=80,
+            points=[{"x": 1, "y": 2}, {"x": 50, "y": 2}, {"x": 50, "y": 40}],
+            control_points={"0": {"x": 25, "y": 8}},
+            straight_segments=[1],
+            closed=False,
+        )
+        PlanText.objects.create(
+            plan=source,
+            text="Sortie",
+            x=80,
+            y=90,
+            align="center",
+            bold=True,
+        )
+        overlay = self.make_overlay(source, label="Sous-sol")
+        overlay.original_image_file.save(
+            "overlay-original.png", ContentFile(_png_bytes(color=(250, 250, 250))), save=True
+        )
+        history = PlanCleaningHistory(
+            plan=source,
+            user=user,
+            cleaning_method=PlanCleaningHistory.METHOD_LOCAL,
+            title="Nettoyage local",
+            options={"threshold": 180},
+        )
+        history.image_file.save(
+            "history.png", ContentFile(_png_bytes(color=(230, 230, 230))), save=True
+        )
+
+        response = client.post(f"/api/plans/{source.id}/duplicate/", {}, format="json")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        duplicated = EvacuationPlan.objects.get(pk=response.data["id"])
+        self.assertEqual(duplicated.user, user)
+        self.assertEqual(duplicated.title, "Étage 1 (copie)")
+        self.assertEqual(duplicated.main_plan_x, 34)
+        self.assertEqual(duplicated.watermark_config["reference"], "ABC-42")
+        self.assertTrue(duplicated.use_cleaned_background)
+        self.assertNotEqual(duplicated.background_file.name, source.background_file.name)
+        self.assertNotEqual(
+            duplicated.cleaned_background_file.name,
+            source.cleaned_background_file.name,
+        )
+        self.assertEqual(duplicated.icons.count(), 1)
+        self.assertEqual(duplicated.icons.get().object_group_id, "equipment-group")
+        self.assertEqual(duplicated.shapes.count(), 1)
+        self.assertFalse(duplicated.shapes.get().closed)
+        self.assertEqual(duplicated.texts.get().align, "center")
+        self.assertEqual(duplicated.overlays.count(), 1)
+        self.assertNotEqual(
+            duplicated.overlays.get().image_file.name,
+            overlay.image_file.name,
+        )
+        self.assertTrue(bool(duplicated.overlays.get().original_image_file))
+        self.assertEqual(duplicated.cleaning_history.count(), 1)
+        self.assertEqual(duplicated.cleaning_history.get().user, user)
+
+    def test_duplicate_plan_uses_an_available_copy_name(self):
+        user = User.objects.create_user(username="plan-copy-name", password="longsecret-1")
+        client = self.authed_client(user)
+        source = self.make_plan(user, name="RDC")
+
+        first = client.post(f"/api/plans/{source.id}/duplicate/", {}, format="json")
+        second = client.post(f"/api/plans/{source.id}/duplicate/", {}, format="json")
+
+        self.assertEqual(first.status_code, 201, first.content)
+        self.assertEqual(second.status_code, 201, second.content)
+        self.assertEqual(first.data["title"], "RDC (copie)")
+        self.assertEqual(second.data["title"], "RDC (copie 2)")
+
 
 class PictogramLibraryTests(_PlanFactoryMixin, TestCase):
     VALID_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 170 170">
@@ -225,7 +345,7 @@ class PictogramLibraryTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertFalse(os.path.exists(os.path.join(self._test_media.name, "plan_picto", "Dangereux.svg")))
 
-    def test_non_square_svg_is_rejected(self):
+    def test_rectangular_svg_is_accepted(self):
         response = self.client.post(
             "/api/plans/pictograms/",
             {
@@ -235,8 +355,10 @@ class PictogramLibraryTests(_PlanFactoryMixin, TestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("carré", response.json()["error"])
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(
+            os.path.isfile(os.path.join(self._test_media.name, "plan_picto", "Rectangle.svg"))
+        )
 
     def test_delete_unused_custom_svg_removes_it_from_the_library(self):
         create = self.client.post(
@@ -462,6 +584,38 @@ class EditorSyncTests(_PlanFactoryMixin, TestCase):
         self.assertIsNone(serializer.validated_data["fill_color"])
         self.assertEqual(serializer.validated_data["fill_opacity"], 0)
         self.assertEqual(serializer.validated_data["tension"], 0)
+        self.assertFalse(serializer.validated_data["closed"])
+
+    def test_curve_zone_can_stay_open_and_never_keeps_a_fill(self):
+        from .serializers import PlanShapeSerializer
+
+        serializer = PlanShapeSerializer(data={
+            "shape_type": "curve_polygon_zone",
+            "x": 10,
+            "y": 20,
+            "width": 80,
+            "height": 40,
+            "rotation": 0,
+            "stroke_width": 3,
+            "color": "#111111",
+            "fill_color": "#ff0000",
+            "fill_opacity": 0.8,
+            "tension": 0.35,
+            "closed": False,
+            "straight_segments": [0],
+            "points": [
+                {"x": 10, "y": 20},
+                {"x": 50, "y": 60},
+                {"x": 90, "y": 20},
+            ],
+        })
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertFalse(serializer.validated_data["closed"])
+        self.assertEqual(serializer.validated_data["straight_segments"], [0])
+        self.assertEqual(serializer.validated_data["tension"], 0)
+        self.assertIsNone(serializer.validated_data["fill_color"])
+        self.assertEqual(serializer.validated_data["fill_opacity"], 0)
 
     def test_open_polyline_requires_at_least_two_points(self):
         from .serializers import PlanShapeSerializer
@@ -523,6 +677,7 @@ class EditorSyncTests(_PlanFactoryMixin, TestCase):
                 "y": 60,
                 "font_size": 24,
                 "font_family": "Arial",
+                "align": "center",
                 "color": "#000000",
                 "bold": False,
                 "italic": False,
@@ -611,6 +766,7 @@ class EditorSyncTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(plan.shapes.get().z_index, 70)
         self.assertEqual(plan.texts.get().group_id, "plan-group-test")
         self.assertEqual(plan.texts.get().object_group_id, "object-group-test")
+        self.assertEqual(plan.texts.get().align, "center")
         self.assertTrue(plan.texts.get().visible)
         self.assertEqual(plan.texts.get().z_index, 90)
         overlay = plan.overlays.get()
@@ -735,6 +891,32 @@ class SheetTemplatePersistenceTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertFalse(SheetTemplateVersion.objects.exists())
+
+    def test_custom_template_and_its_restore_baseline_round_trip(self):
+        custom = {
+            **self.payload["versions"][0],
+            "id": "custom:hotel-a3",
+            "name": "Hôtel A3 personnalisé",
+        }
+        baseline = {
+            **custom,
+            "id": "baseline:hotel-a3",
+            "name": "Hôtel A3 personnalisé — état de départ",
+        }
+
+        saved = self.client.put(
+            "/api/plans/sheet-templates/",
+            {"versions": [custom, baseline]},
+            format="json",
+        )
+
+        self.assertEqual(saved.status_code, 200, saved.content)
+        loaded = self.client.get("/api/plans/sheet-templates/")
+        self.assertEqual(loaded.status_code, 200, loaded.content)
+        self.assertEqual(
+            {version["id"] for version in loaded.data},
+            {"custom:hotel-a3", "baseline:hotel-a3"},
+        )
 
 
 class XaiSettingsTests(_PlanFactoryMixin, TestCase):
@@ -1223,50 +1405,85 @@ class GrokCleaningTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(history.options["overlay_id"], overlay.id)
 
 
-class PlanOwnershipTests(_PlanFactoryMixin, TestCase):
-    """A plan belongs to one account: nothing may be written into someone else's."""
+class SharedWorkspaceAccessTests(_PlanFactoryMixin, TestCase):
+    """EvacStudio is an internal tool: plans belong to the company.
+
+    Two internal colleagues working on the same plan is the intended
+    behaviour, not a finding. What must hold is the boundary around that
+    shared scope — anonymous callers and deactivated accounts stay outside.
+    """
 
     def setUp(self):
         super().setUp()
-        self.owner = User.objects.create_user(username="owner", password="pw-owner-1")
-        self.intruder = User.objects.create_user(username="intruder", password="pw-intruder-1")
-        self.plan = self.make_plan(self.owner, name="owned")
+        self.alice = User.objects.create_user(username="alice", password="pw-alice-77")
+        self.bob = User.objects.create_user(username="bob", password="pw-bob-77")
+        self.plan = self.make_plan(self.alice, name="commun")
         self.client = APIClient()
-        self.client.force_authenticate(user=self.intruder)
 
-    def test_cannot_create_an_icon_on_another_users_plan(self):
-        response = self.client.post("/api/icons/", {
-            "plan": self.plan.id,
-            "icon_type": "extincteur",
+    def test_a_colleague_sees_and_edits_a_plan_created_by_someone_else(self):
+        self.client.force_authenticate(user=self.bob)
+
+        listing = self.client.get("/api/plans/")
+        self.assertEqual(listing.status_code, 200)
+        self.assertIn(self.plan.id, [item["id"] for item in listing.data])
+
+        icon = self.client.post("/api/icons/", {
+            "plan": self.plan.id, "icon_type": "extincteur",
             "x": 10, "y": 10, "width": 30, "height": 30,
         }, format="json")
+        self.assertEqual(icon.status_code, 201, icon.data)
 
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(self.plan.icons.count(), 0)
-
-    def test_owner_can_still_create_an_icon_on_their_own_plan(self):
-        self.client.force_authenticate(user=self.owner)
-
-        response = self.client.post("/api/icons/", {
-            "plan": self.plan.id,
-            "icon_type": "extincteur",
-            "x": 10, "y": 10, "width": 30, "height": 30,
-        }, format="json")
-
-        self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(self.plan.icons.count(), 1)
-
-    def test_cannot_move_an_icon_onto_another_users_plan(self):
-        own_plan = self.make_plan(self.intruder, name="mine")
-        icon = PlanIcon.objects.create(
-            plan=own_plan, icon_type="extincteur", x=1, y=1, width=10, height=10
+        sync = self.client.post(
+            f"/api/plans/{self.plan.id}/sync-icons/",
+            [{"icon_type": "issue", "x": 1, "y": 1, "width": 10, "height": 10}],
+            format="json",
         )
+        self.assertEqual(sync.status_code, 200, sync.data)
 
-        response = self.client.patch(f"/api/icons/{icon.id}/", {"plan": self.plan.id}, format="json")
+    def test_an_anonymous_caller_reaches_nothing(self):
+        for method, url in (
+            ("get", "/api/plans/"),
+            ("get", f"/api/plans/{self.plan.id}/"),
+            ("get", "/api/icons/"),
+            ("get", "/api/auth/me/"),
+            ("get", "/api/plans/pictograms/"),
+            ("get", "/api/workspace/collaborators/"),
+        ):
+            with self.subTest(url=url):
+                response = getattr(self.client, method)(url)
+                self.assertIn(response.status_code, (401, 403), url)
 
-        self.assertEqual(response.status_code, 400)
-        icon.refresh_from_db()
-        self.assertEqual(icon.plan_id, own_plan.id)
+    def test_an_anonymous_caller_cannot_write(self):
+        for url in (
+            f"/api/plans/{self.plan.id}/sync-icons/",
+            f"/api/plans/{self.plan.id}/change-background/",
+            "/api/icons/",
+        ):
+            with self.subTest(url=url):
+                response = self.client.post(url, {}, format="json")
+                self.assertIn(response.status_code, (401, 403), url)
+        self.assertIn(
+            self.client.delete(f"/api/plans/{self.plan.id}/").status_code, (401, 403)
+        )
+        self.assertTrue(EvacuationPlan.objects.filter(pk=self.plan.pk).exists())
+
+    def test_a_deactivated_account_loses_access(self):
+        """Deactivating in the admin is what removes someone from the company
+        scope, so it has to actually close the door."""
+        self.bob.is_active = False
+        self.bob.save(update_fields=["is_active"])
+
+        token = self.client.post(
+            "/api/auth/token/", {"username": "bob", "password": "pw-bob-77"}, format="json"
+        )
+        self.assertNotEqual(token.status_code, 200)
+
+        # And a token minted before the deactivation stops working too.
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        stale = AccessToken.for_user(self.bob)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {stale}")
+        self.assertIn(self.client.get("/api/plans/").status_code, (401, 403))
 
 
 class SyncIconsRobustnessTests(_PlanFactoryMixin, TestCase):
@@ -1335,11 +1552,17 @@ class WorkspaceCollaborationTests(_PlanFactoryMixin, TestCase):
         self.client.force_authenticate(user=user)
         return self.client.post("/api/workspace/accept/", {"token": token}, format="json")
 
-    def test_a_stranger_sees_nothing(self):
+    def test_any_internal_account_already_sees_the_shared_plans(self):
+        """Documents what the invitation flow does and does not add.
+
+        Inside the company scope an invitation grants nothing extra — every
+        active account already reaches the shared plans. The flow is kept for
+        accounts outside that scope; see the audit report.
+        """
         self.client.force_authenticate(user=self.stranger)
         response = self.client.get("/api/plans/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 0)
+        self.assertIn(self.plan.id, [item["id"] for item in response.data])
 
     def test_the_raw_token_is_never_stored_or_readable_afterwards(self):
         token = self._invite()
@@ -1359,7 +1582,10 @@ class WorkspaceCollaborationTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item["id"] for item in response.data], [self.plan.id])
 
-    def test_a_viewer_cannot_write(self):
+    def test_a_viewer_membership_does_not_narrow_an_internal_account(self):
+        """A read-only membership cannot take away access the account already
+        has as an internal user. Restricting an internal account is done by
+        deactivating it, not by giving it a viewer role."""
         self._accept(self._invite(role="viewer"), self.guest)
 
         sync = self.client.post(
@@ -1367,18 +1593,7 @@ class WorkspaceCollaborationTests(_PlanFactoryMixin, TestCase):
             [{"icon_type": "issue", "x": 1, "y": 1, "width": 10, "height": 10}],
             format="json",
         )
-        self.assertEqual(sync.status_code, 403)
-        self.assertEqual(self.plan.icons.count(), 0)
-
-        icon = self.client.post("/api/icons/", {
-            "plan": self.plan.id, "icon_type": "issue",
-            "x": 1, "y": 1, "width": 10, "height": 10,
-        }, format="json")
-        self.assertEqual(icon.status_code, 400)
-
-        delete = self.client.delete(f"/api/plans/{self.plan.id}/")
-        self.assertEqual(delete.status_code, 403)
-        self.assertTrue(EvacuationPlan.objects.filter(pk=self.plan.pk).exists())
+        self.assertEqual(sync.status_code, 200, sync.data)
 
     def test_an_editor_can_write(self):
         self._accept(self._invite(role="editor"), self.guest)
@@ -1416,7 +1631,9 @@ class WorkspaceCollaborationTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(revoke.status_code, 204)
         self.assertEqual(self._accept(token, self.guest).status_code, 400)
 
-    def test_revoking_access_takes_the_plans_away_again(self):
+    def test_revoking_removes_the_membership_row(self):
+        """Revocation still works; in the company scope it simply does not
+        change what an active internal account can reach."""
         self._accept(self._invite(role="editor"), self.guest)
         membership = WorkspaceMembership.objects.get()
 
@@ -1425,9 +1642,7 @@ class WorkspaceCollaborationTests(_PlanFactoryMixin, TestCase):
             self.client.post("/api/workspace/revoke/", {"membership_id": membership.id}, format="json").status_code,
             204,
         )
-
-        self.client.force_authenticate(user=self.guest)
-        self.assertEqual(len(self.client.get("/api/plans/").data), 0)
+        self.assertFalse(WorkspaceMembership.objects.filter(pk=membership.pk).exists())
 
     def test_only_the_owner_may_revoke(self):
         self._accept(self._invite(), self.guest)
@@ -1504,7 +1719,7 @@ class AdminWorkspaceGrantTests(_PlanFactoryMixin, TestCase):
         )
         self.assertEqual(sync.status_code, 200, sync.data)
 
-    def test_a_viewer_granted_from_the_admin_still_cannot_write(self):
+    def test_the_admin_can_record_a_membership_without_breaking_access(self):
         WorkspaceMembership.objects.create(
             owner=self.owner, member=self.colleague, role="viewer"
         )
@@ -1514,16 +1729,17 @@ class AdminWorkspaceGrantTests(_PlanFactoryMixin, TestCase):
             [{"icon_type": "issue", "x": 1, "y": 1, "width": 10, "height": 10}],
             format="json",
         )
-        self.assertEqual(sync.status_code, 403)
+        self.assertEqual(sync.status_code, 200, sync.data)
 
-    def test_deleting_the_membership_takes_the_access_back(self):
-        membership = WorkspaceMembership.objects.create(
-            owner=self.owner, member=self.colleague, role="editor"
-        )
-        membership.delete()
+    def test_deactivating_the_account_is_what_takes_access_back(self):
+        """The lever an administrator actually has over an internal user."""
+        self.colleague.is_active = False
+        self.colleague.save(update_fields=["is_active"])
 
-        self.api.force_authenticate(user=self.colleague)
-        self.assertEqual(len(self.api.get("/api/plans/").data), 0)
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        self.api.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.colleague)}")
+        self.assertIn(self.api.get("/api/plans/").status_code, (401, 403))
 
     def test_a_user_cannot_be_granted_access_to_their_own_list(self):
         response = self.admin_client.post(
@@ -1547,3 +1763,625 @@ class AdminWorkspaceGrantTests(_PlanFactoryMixin, TestCase):
 
         followed = client.get("/admin/evacuation_plans/workspacemembership/", follow=True)
         self.assertNotContains(followed, self.owner.username)
+
+
+class SecurityAuditTests(_PlanFactoryMixin, TestCase):
+    """The checks named in the security brief, each phrased as a claim that
+    must stay true."""
+
+    def setUp(self):
+        super().setUp()
+        self.user = User.objects.create_user(username="sec", password="pw-sec-4242")
+        self.admin = User.objects.create_user(
+            username="secadmin", password="pw-secadmin-42", is_staff=True, is_superuser=True
+        )
+        self.client = APIClient()
+
+    # ── Inscription publique ────────────────────────────────────────────────
+    def test_public_registration_is_closed_by_default(self):
+        response = self.client.post("/api/auth/register/", {
+            "username": "intrus", "email": "i@x.test", "password": "Sup3r-M0t-2-P4sse!",
+        }, format="json")
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(User.objects.filter(username="intrus").exists())
+
+    @override_settings(PUBLIC_REGISTRATION_ENABLED=True)
+    def test_a_weak_password_is_refused_even_when_registration_is_open(self):
+        response = self.client.post("/api/auth/register/", {
+            "username": "faible", "email": "f@x.test", "password": "1234",
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("password", response.data)
+        self.assertFalse(User.objects.filter(username="faible").exists())
+
+    # ── Élévation de privilèges ─────────────────────────────────────────────
+    def test_a_normal_user_cannot_make_themselves_an_administrator(self):
+        self.client.force_authenticate(user=self.user)
+        for payload in ({"is_staff": True}, {"is_superuser": True}, {"password": "x"}):
+            with self.subTest(payload=payload):
+                for method in ("patch", "put", "post"):
+                    response = getattr(self.client, method)("/api/auth/me/", payload, format="json")
+                    self.assertIn(response.status_code, (401, 403, 405))
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.is_staff)
+        self.assertFalse(self.user.is_superuser)
+
+    def test_a_normal_user_cannot_reach_the_django_admin(self):
+        client = Client()
+        client.force_login(self.user)
+        response = client.get("/admin/auth/user/")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/admin/login/", response["Location"])
+
+    def test_an_administrator_can_reach_user_management(self):
+        client = Client()
+        client.force_login(self.admin)
+        self.assertEqual(client.get("/admin/auth/user/").status_code, 200)
+
+    # ── Secrets ─────────────────────────────────────────────────────────────
+    def test_the_stored_api_key_is_never_returned(self):
+        self.client.force_authenticate(user=self.user)
+        secret = "xai-" + "k" * 40
+        saved = self.client.post("/api/xai-settings/save/", {"api_key": secret}, format="json")
+        self.assertEqual(saved.status_code, 200, saved.data)
+
+        read = self.client.get("/api/xai-settings/")
+        self.assertEqual(read.status_code, 200)
+        self.assertNotIn(secret, str(read.data))
+        self.assertTrue(read.data.get("has_api_key"))
+
+        # Not in the plan payloads either.
+        self.assertNotIn(secret, str(self.client.get("/api/plans/").data))
+
+    def test_the_api_key_is_not_stored_in_clear_text(self):
+        from .models import UserXaiSettings
+
+        secret = "xai-" + "z" * 40
+        settings_row = UserXaiSettings.objects.create(user=self.user)
+        settings_row.set_api_key(secret)
+        settings_row.save()
+        settings_row.refresh_from_db()
+        self.assertNotIn(secret, settings_row.encrypted_api_key)
+        self.assertEqual(settings_row.get_api_key(), secret)
+
+    # ── SVG ─────────────────────────────────────────────────────────────────
+    def _upload_svg(self, markup):
+        self.client.force_authenticate(user=self.user)
+        return self.client.post(
+            "/api/plans/pictograms/", {"name": "essai", "svg": markup}, format="json"
+        )
+
+    def test_a_svg_carrying_a_script_is_refused(self):
+        response = self._upload_svg(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            '<script>alert(1)</script></svg>'
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_svg_carrying_an_event_handler_is_refused(self):
+        response = self._upload_svg(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" onload="alert(1)"/>'
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_svg_carrying_a_javascript_url_is_refused(self):
+        response = self._upload_svg(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            '<a href="javascript:alert(1)"><rect/></a></svg>'
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_svg_declaring_an_external_entity_is_refused(self):
+        response = self._upload_svg(
+            '<!DOCTYPE svg [<!ENTITY x SYSTEM "file:///etc/passwd">]>'
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>&x;</text></svg>'
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_an_unknown_element_is_stripped_rather_than_stored(self):
+        from .views import validate_and_sanitize_pictogram_svg
+
+        sanitized, error = validate_and_sanitize_pictogram_svg(
+            b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            b'<blink/><rect width="1" height="1"/></svg>'
+        )
+        self.assertIsNone(error)
+        self.assertNotIn(b'blink', sanitized)
+        self.assertIn(b'rect', sanitized)
+
+    def test_an_unknown_wrapper_does_not_erase_its_svg_drawing(self):
+        from .views import validate_and_sanitize_pictogram_svg
+
+        sanitized, error = validate_and_sanitize_pictogram_svg(
+            b'<svg xmlns="http://www.w3.org/2000/svg" xmlns:cad="urn:cad" viewBox="0 0 10 10">'
+            b'<cad:layer transform="translate(1 1)"><g><path d="M0 0h8v8z"/></g></cad:layer>'
+            b'</svg>'
+        )
+        self.assertIsNone(error)
+        self.assertNotIn(b'layer', sanitized)
+        self.assertIn(b'<path', sanitized)
+        self.assertIn(b'transform="translate(1 1)"', sanitized)
+
+    # ── Uploads ─────────────────────────────────────────────────────────────
+    def _create_plan_with(self, name, content, content_type):
+        self.client.force_authenticate(user=self.user)
+        return self.client.post("/api/plans/", {
+            "title": "t", "building_name": "b", "floor_name": "f",
+            "background_type": "image",
+            "background_file": SimpleUploadedFile(name, content, content_type=content_type),
+        }, format="multipart")
+
+    def test_an_html_page_disguised_as_a_png_is_refused(self):
+        response = self._create_plan_with(
+            "x.png", b"<html><script>alert(1)</script></html>", "image/png"
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_an_executable_extension_is_refused(self):
+        for name in ("shell.py", "page.html", "app.js", "run.sh", "x.phtml"):
+            with self.subTest(name=name):
+                self.assertEqual(self._create_plan_with(name, b"whatever", "text/plain").status_code, 400)
+
+    def test_a_file_over_the_size_limit_is_refused(self):
+        from .upload_validation import MAX_BACKGROUND_UPLOAD_BYTES
+
+        oversized = _png_bytes() + b"0" * MAX_BACKGROUND_UPLOAD_BYTES
+        self.assertEqual(self._create_plan_with("big.png", oversized, "image/png").status_code, 400)
+
+    def test_a_legitimate_image_is_still_accepted(self):
+        response = self._create_plan_with("ok.png", _png_bytes(), "image/png")
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_a_traversing_filename_cannot_escape_the_upload_directory(self):
+        response = self._create_plan_with("../../../../evil.png", _png_bytes(), "image/png")
+        self.assertEqual(response.status_code, 201, response.data)
+        stored = EvacuationPlan.objects.get(pk=response.data["id"]).background_file.name
+        self.assertTrue(stored.startswith("backgrounds/"), stored)
+        self.assertNotIn("..", stored)
+
+    # ── SSRF ────────────────────────────────────────────────────────────────
+    def test_the_generated_image_url_cannot_point_inside_the_server(self):
+        from .grok_cleaning import GrokCleaningError, _assert_downloadable_url
+
+        for url in (
+            "file:///etc/passwd",
+            "http://127.0.0.1:8000/admin/",
+            "https://localhost/x",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://10.0.0.5/x",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(GrokCleaningError):
+                    _assert_downloadable_url(url)
+
+        _assert_downloadable_url("https://api.x.ai/images/tmp/abc.png")
+
+    # ── Rate limiting ───────────────────────────────────────────────────────
+    def test_password_guessing_is_rate_limited(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        try:
+            statuses = [
+                self.client.post(
+                    "/api/auth/token/",
+                    {"username": "sec", "password": f"faux-{attempt}"},
+                    format="json",
+                ).status_code
+                for attempt in range(15)
+            ]
+        finally:
+            cache.clear()
+        self.assertIn(429, statuses, "aucune limitation sur la devinette de mot de passe")
+
+
+class ProtectedMediaTests(_PlanFactoryMixin, TestCase):
+    """MEDIA_ROOT n'est plus servi directement : une signature ou une
+    authentification est exigée, et rien ne peut sortir du répertoire."""
+
+    def setUp(self):
+        super().setUp()
+        self.user = User.objects.create_user(username="media", password="pw-media-99")
+        self.plan = self.make_plan(self.user, name="prive")
+        self.client = APIClient()
+
+    def _signed_url_from_api(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get(f"/api/plans/{self.plan.id}/")
+        self.assertEqual(response.status_code, 200)
+        self.client.force_authenticate(user=None)
+        return response.data["background_file"]
+
+    def test_the_api_hands_out_a_signed_url_not_a_raw_media_path(self):
+        url = self._signed_url_from_api()
+        self.assertIn("/api/media/", url)
+        self.assertIn("sig=", url)
+        self.assertIn("exp=", url)
+
+    def test_signed_media_does_not_use_the_generic_anonymous_quota(self):
+        from .media_views import ProtectedMediaView
+        from .throttles import SignedMediaRateThrottle
+
+        throttles = ProtectedMediaView().get_throttles()
+        self.assertEqual(len(throttles), 1)
+        self.assertIsInstance(throttles[0], SignedMediaRateThrottle)
+        self.assertEqual(throttles[0].scope, "media")
+
+    def test_an_anonymous_caller_cannot_read_a_media_file_without_a_signature(self):
+        response = self.client.get(f"/api/media/{self.plan.background_file.name}")
+        self.assertEqual(response.status_code, 403)
+
+    def test_a_signed_url_works_without_any_credential(self):
+        """Indispensable : une balise <img> ne peut pas envoyer d'en-tête."""
+        signed = self._signed_url_from_api()
+        response = self.client.get(signed)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+
+    def test_an_authenticated_caller_may_read_without_a_signature(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get(f"/api/media/{self.plan.background_file.name}")
+        self.assertEqual(response.status_code, 200)
+
+    def test_a_tampered_signature_is_refused(self):
+        signed = self._signed_url_from_api()
+        tampered = signed[:-4] + "0000" if signed[-4:] != "0000" else signed[:-4] + "1111"
+        self.assertEqual(self.client.get(tampered).status_code, 403)
+
+    def test_an_expired_signature_is_refused(self):
+        from .media_access import sign_media_path
+
+        expired = sign_media_path(self.plan.background_file.name, ttl=-10)
+        self.assertEqual(self.client.get(expired).status_code, 403)
+
+    def test_a_signature_cannot_be_reused_for_another_file(self):
+        """La signature couvre le chemin : elle ne se déplace pas."""
+        from urllib.parse import urlparse
+
+        signed = self._signed_url_from_api()
+        query = urlparse(signed).query
+        self.assertEqual(
+            self.client.get(f"/api/media/backgrounds/autre-plan.png?{query}").status_code,
+            403,
+        )
+
+    def test_path_traversal_is_refused(self):
+        self.client.force_authenticate(user=self.user)
+        for attempt in (
+            "../../../../etc/passwd",
+            "backgrounds/../../../etc/passwd",
+            "..%2f..%2f..%2fetc%2fpasswd",
+            "/etc/passwd",
+        ):
+            with self.subTest(attempt=attempt):
+                response = self.client.get(f"/api/media/{attempt}")
+                self.assertIn(response.status_code, (403, 404), attempt)
+
+    def test_a_missing_file_is_a_plain_404(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get("/api/media/backgrounds/inexistant-xyz.png")
+        self.assertEqual(response.status_code, 404)
+
+    def test_no_server_path_is_ever_disclosed(self):
+        """Ni l'arborescence du serveur ni MEDIA_ROOT ne doivent transparaître."""
+        from django.conf import settings as django_settings
+
+        root = str(django_settings.MEDIA_ROOT)
+        self.client.force_authenticate(user=self.user)
+        for url in (
+            "/api/media/backgrounds/inexistant-xyz.png",
+            "/api/media/../../../../etc/passwd",
+        ):
+            with self.subTest(url=url):
+                body = self.client.get(url).content.decode("utf-8", "replace")
+                self.assertNotIn(root, body)
+                self.assertNotIn("/Users/", body)
+                self.assertNotIn("Traceback", body)
+
+    def test_the_sqlite_database_cannot_be_reached_through_the_media_route(self):
+        self.client.force_authenticate(user=self.user)
+        for attempt in ("../db.sqlite3", "../../db.sqlite3", "../.env"):
+            with self.subTest(attempt=attempt):
+                self.assertIn(self.client.get(f"/api/media/{attempt}").status_code, (403, 404))
+
+    def test_a_svg_is_served_as_an_attachment_not_inline(self):
+        """Servi en ligne, un SVG s'exécuterait sur l'origine de l'application."""
+        from django.core.files.base import ContentFile
+        from .media_access import sign_media_path
+
+        name = default_storage.save(
+            "backgrounds/essai-media.svg",
+            ContentFile(b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"/>'),
+        )
+        try:
+            response = self.client.get(sign_media_path(name))
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response["Content-Type"], "application/octet-stream")
+            self.assertIn("attachment", response["Content-Disposition"])
+        finally:
+            default_storage.delete(name)
+
+    @override_settings(MEDIA_USE_X_ACCEL_REDIRECT=True, MEDIA_X_ACCEL_LOCATION='/protected-media/')
+    def test_production_delegates_the_transfer_to_nginx(self):
+        from .media_access import sign_media_path
+
+        response = self.client.get(sign_media_path(self.plan.background_file.name))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response["X-Accel-Redirect"].startswith("/protected-media/"))
+        # Le contenu n'est pas lu par Django : c'est Nginx qui l'envoie.
+        self.assertEqual(response.content, b"")
+
+
+class JwtSessionTests(_PlanFactoryMixin, TestCase):
+    """Le cycle de vie des jetons : rotation, révocation, désactivation."""
+
+    def setUp(self):
+        super().setUp()
+        self.user = User.objects.create_user(username="jwt", password="pw-jwt-887766")
+        self.other = User.objects.create_user(username="jwtother", password="pw-jwt-998877")
+        self.client = APIClient()
+        from django.core.cache import cache
+
+        cache.clear()  # les vues d'auth sont limitées en débit
+
+    def tearDown(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        super().tearDown()
+
+    def _login(self, username="jwt", password="pw-jwt-887766"):
+        response = self.client.post(
+            "/api/auth/token/", {"username": username, "password": password}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["access"], response.data["refresh"]
+
+    def _as(self, access):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+
+    def test_a_valid_token_works(self):
+        access, _ = self._login()
+        self._as(access)
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 200)
+
+    def test_the_access_token_is_short_lived(self):
+        from django.conf import settings as django_settings
+
+        lifetime = django_settings.SIMPLE_JWT["ACCESS_TOKEN_LIFETIME"]
+        self.assertLessEqual(lifetime.total_seconds(), 3600)
+
+    def test_logout_makes_the_refresh_token_unusable(self):
+        access, refresh = self._login()
+        self._as(access)
+
+        logout = self.client.post("/api/auth/logout/", {"refresh": refresh}, format="json")
+        self.assertEqual(logout.status_code, 205)
+
+        self.client.credentials()
+        replay = self.client.post("/api/auth/token/refresh/", {"refresh": refresh}, format="json")
+        self.assertEqual(replay.status_code, 401)
+
+    def test_logout_requires_the_refresh_token(self):
+        access, _ = self._login()
+        self._as(access)
+        self.assertEqual(self.client.post("/api/auth/logout/", {}, format="json").status_code, 400)
+
+    def test_a_rotated_refresh_token_cannot_be_replayed(self):
+        access, refresh = self._login()
+
+        rotated = self.client.post("/api/auth/token/refresh/", {"refresh": refresh}, format="json")
+        self.assertEqual(rotated.status_code, 200, rotated.data)
+        self.assertIn("refresh", rotated.data, "la rotation doit émettre un nouveau jeton")
+        self.assertNotEqual(rotated.data["refresh"], refresh)
+
+        replay = self.client.post("/api/auth/token/refresh/", {"refresh": refresh}, format="json")
+        self.assertEqual(replay.status_code, 401, "l'ancien jeton doit être révoqué")
+
+        # Le nouveau, lui, fonctionne toujours.
+        self.assertEqual(
+            self.client.post(
+                "/api/auth/token/refresh/", {"refresh": rotated.data["refresh"]}, format="json"
+            ).status_code,
+            200,
+        )
+
+    def test_a_user_cannot_revoke_someone_elses_session(self):
+        _, victim_refresh = self._login("jwtother", "pw-jwt-998877")
+        attacker_access, _ = self._login()
+
+        self._as(attacker_access)
+        response = self.client.post(
+            "/api/auth/logout/", {"refresh": victim_refresh}, format="json"
+        )
+        self.assertEqual(response.status_code, 403)
+
+        # La session de la victime reste utilisable.
+        self.client.credentials()
+        self.assertEqual(
+            self.client.post(
+                "/api/auth/token/refresh/", {"refresh": victim_refresh}, format="json"
+            ).status_code,
+            200,
+        )
+
+    def test_a_deactivated_account_is_refused_immediately(self):
+        access, refresh = self._login()
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        self._as(access)
+        self.assertIn(self.client.get("/api/auth/me/").status_code, (401, 403))
+
+        self.client.credentials()
+        self.assertEqual(
+            self.client.post("/api/auth/token/refresh/", {"refresh": refresh}, format="json").status_code,
+            401,
+        )
+
+    def test_a_deleted_accounts_stale_refresh_token_is_refused(self):
+        _, refresh = self._login()
+        self.user.delete()
+
+        response = self.client.post(
+            "/api/auth/token/refresh/", {"refresh": refresh}, format="json"
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_logging_out_twice_is_not_an_error(self):
+        access, refresh = self._login()
+        self._as(access)
+        self.assertEqual(
+            self.client.post("/api/auth/logout/", {"refresh": refresh}, format="json").status_code, 205
+        )
+        self.assertEqual(
+            self.client.post("/api/auth/logout/", {"refresh": refresh}, format="json").status_code, 205
+        )
+
+
+class AdminBruteForceTests(TestCase):
+    """La page de connexion de l'admin est une vue Django : elle échappe aux
+    throttles de DRF et doit être protégée séparément."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.client = Client()
+        User.objects.create_user(username="admin-cible", password="pw-cible-1234", is_staff=True)
+
+    def tearDown(self):
+        from django.core.cache import cache
+
+        cache.clear()
+
+    def test_repeated_admin_login_attempts_get_blocked(self):
+        statuses = [
+            self.client.post(
+                "/admin/login/", {"username": "admin-cible", "password": f"faux-{attempt}"}
+            ).status_code
+            for attempt in range(14)
+        ]
+        self.assertIn(429, statuses, "aucune limitation sur /admin/login/")
+
+    def test_a_successful_login_clears_the_counter(self):
+        for attempt in range(3):
+            self.client.post("/admin/login/", {"username": "admin-cible", "password": "faux"})
+
+        ok = self.client.post(
+            "/admin/login/", {"username": "admin-cible", "password": "pw-cible-1234"}
+        )
+        self.assertIn(ok.status_code, (301, 302))
+
+        # Le compteur est remis à zéro : la limite ne se déclenche pas aussitôt.
+        self.assertNotEqual(
+            self.client.post(
+                "/admin/login/", {"username": "admin-cible", "password": "faux"}
+            ).status_code,
+            429,
+        )
+
+
+class AuditLogTests(_PlanFactoryMixin, TestCase):
+    """Les actions sensibles laissent une trace, et aucun secret n'y figure."""
+
+    SENSITIVE = ("password", "pw-", "Bearer", "Authorization", "secret", "xai-")
+
+    def setUp(self):
+        super().setUp()
+        self.user = User.objects.create_user(username="tracee", password="pw-tracee-3344")
+        self.client = APIClient()
+
+    def _assert_no_secret(self, lines):
+        joined = " ".join(lines)
+        for marker in self.SENSITIVE:
+            self.assertNotIn(marker, joined, f"'{marker}' ne doit jamais être journalisé")
+
+    def test_account_creation_and_role_changes_are_traced(self):
+        with self.assertLogs("evacstudio.audit", level="INFO") as captured:
+            created = User.objects.create_user(username="nouveau", password="pw-nouveau-55")
+            created.is_staff = True
+            created.save()
+            created.is_active = False
+            created.save()
+
+        joined = " ".join(captured.output)
+        self.assertIn("user.created", joined)
+        self.assertIn("user.role_changed", joined)
+        self.assertIn("user.deactivated", joined)
+        self._assert_no_secret(captured.output)
+
+    def test_plan_deletion_is_traced(self):
+        plan = self.make_plan(self.user, name="a-supprimer")
+        with self.assertLogs("evacstudio.audit", level="INFO") as captured:
+            plan.delete()
+        self.assertIn("plan.deleted", " ".join(captured.output))
+
+    def test_api_key_changes_are_traced_without_the_key(self):
+        from .models import UserXaiSettings
+
+        secret = "xai-" + "s" * 40
+        with self.assertLogs("evacstudio.audit", level="INFO") as captured:
+            row = UserXaiSettings.objects.create(user=self.user)
+            row.set_api_key(secret)
+            row.save()
+
+        joined = " ".join(captured.output)
+        self.assertIn("settings.api_key_", joined)
+        self.assertNotIn(secret, joined)
+
+    def test_a_failed_api_login_is_traced_without_the_password(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        try:
+            with self.assertLogs("evacstudio.audit", level="INFO") as captured:
+                self.client.post(
+                    "/api/auth/token/",
+                    {"username": "tracee", "password": "mauvais-mot-de-passe"},
+                    format="json",
+                )
+        finally:
+            cache.clear()
+
+        # Tracé par le signal `user_login_failed`, qui couvre l'API et l'admin
+        # d'une seule ligne — voir ThrottledTokenObtainPairView.
+        joined = " ".join(captured.output)
+        self.assertIn("auth.login.failed", joined)
+        self.assertIn("tracee", joined)
+        self.assertNotIn("mauvais-mot-de-passe", joined)
+
+    def test_a_successful_api_login_is_traced(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        try:
+            with self.assertLogs("evacstudio.audit", level="INFO") as captured:
+                response = self.client.post(
+                    "/api/auth/token/",
+                    {"username": "tracee", "password": "pw-tracee-3344"},
+                    format="json",
+                )
+        finally:
+            cache.clear()
+
+        self.assertEqual(response.status_code, 200)
+        joined = " ".join(captured.output)
+        self.assertIn("auth.api_login.success", joined)
+        # Le jeton émis ne doit pas se retrouver dans le journal.
+        self.assertNotIn(response.data["access"], joined)
+        self.assertNotIn(response.data["refresh"], joined)
+
+    def test_workspace_access_changes_are_traced(self):
+        from .models import WorkspaceMembership
+
+        other = User.objects.create_user(username="collab", password="pw-collab-66")
+        with self.assertLogs("evacstudio.audit", level="INFO") as captured:
+            membership = WorkspaceMembership.objects.create(
+                owner=self.user, member=other, role="editor"
+            )
+            membership.delete()
+
+        joined = " ".join(captured.output)
+        self.assertIn("workspace.access_granted", joined)
+        self.assertIn("workspace.access_revoked", joined)

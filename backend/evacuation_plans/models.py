@@ -198,6 +198,10 @@ class PlanShape(models.Model):
     control_points = models.JSONField(null=True, blank=True, default=dict)
     # Absolute plan coordinates for polylines and polygon-zone shapes: [{x, y}, ...]
     points = models.JSONField(null=True, blank=True, default=None)
+    # Point-by-point paths may deliberately stay open (notably curve zones).
+    closed = models.BooleanField(default=True)
+    # Segment start indexes intentionally kept straight while the rest is curved.
+    straight_segments = models.JSONField(blank=True, default=list)
     locked = models.BooleanField(default=False)
     visible = models.BooleanField(default=True)
     z_index = models.IntegerField(default=200)
@@ -216,12 +220,19 @@ class PlanShape(models.Model):
 class PlanText(models.Model):
     """Free text label placed on the plan, with full typographic control."""
 
+    ALIGN_CHOICES = (
+        ('left', 'Left'),
+        ('center', 'Center'),
+        ('right', 'Right'),
+    )
+
     plan = models.ForeignKey(EvacuationPlan, on_delete=models.CASCADE, related_name='texts')
     text = models.TextField(blank=True, default='')
     x = models.FloatField()
     y = models.FloatField()
     font_size = models.FloatField(default=24.0)
     font_family = models.CharField(max_length=64, default='Arial')
+    align = models.CharField(max_length=10, choices=ALIGN_CHOICES, default='left')
     color = models.CharField(max_length=16, default='#000000')
     bold = models.BooleanField(default=False)
     italic = models.BooleanField(default=False)
@@ -474,18 +485,45 @@ class WorkspaceInvitation(models.Model):
         return f"Invitation to {self.email} for {self.owner}'s workspace"
 
 
-def accessible_plan_owner_ids(user, editable_only=False):
-    """Whose plan lists `user` may reach: their own, plus any shared with them.
+def is_internal_user(user):
+    """An account allowed to work on the company's shared resources.
 
-    `editable_only` narrows it to the lists they may write to, so read access
-    and write access are decided from one place instead of being re-derived —
-    and forgotten — at each endpoint.
+    EvacStudio is an internal tool: plans, templates and the pictogram library
+    belong to the company, not to whoever happened to create them. Being an
+    active, authenticated account is therefore the whole test — deactivating a
+    user in the admin is what removes access.
     """
+    return bool(user and user.is_authenticated and user.is_active)
+
+
+def accessible_plan_owner_ids(user, editable_only=False):
+    """Whose plan lists `user` may reach.
+
+    Kept as a single choke point even though internal users now share
+    everything: read and write access are still decided here and nowhere else,
+    so narrowing it later means editing one function.
+
+    A workspace membership additionally grants access to an account that is not
+    internal — the invitation flow — which is why the memberships are still
+    consulted rather than dropped.
+    """
+    if is_internal_user(user):
+        return None  # None means "no restriction": the shared company scope.
+
     memberships = WorkspaceMembership.objects.filter(member=user)
     if editable_only:
         memberships = memberships.filter(role=WorkspaceMembership.ROLE_EDITOR)
     return {user.id, *memberships.values_list('owner_id', flat=True)}
 
 
+def restrict_plans_to(queryset, user, editable_only=False):
+    """Applies :func:`accessible_plan_owner_ids` to a plan queryset."""
+    owner_ids = accessible_plan_owner_ids(user, editable_only=editable_only)
+    if owner_ids is None:
+        return queryset
+    return queryset.filter(user_id__in=owner_ids)
+
+
 def user_can_edit_plan(user, plan):
-    return plan.user_id in accessible_plan_owner_ids(user, editable_only=True)
+    owner_ids = accessible_plan_owner_ids(user, editable_only=True)
+    return owner_ids is None or plan.user_id in owner_ids

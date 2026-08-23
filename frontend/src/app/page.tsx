@@ -3,8 +3,7 @@
 import Link from "next/link";
 import { ArrowRight, FilePlus2, ShieldCheck } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
-
-const SHOW_REGISTER_ENTRY_POINTS = true;
+import { PUBLIC_REGISTRATION_ENABLED } from "@/lib/publicRegistration";
 
 export default function Home() {
   return (
@@ -17,7 +16,7 @@ export default function Home() {
             <Link href="/login" className="text-sm font-semibold text-stone-600 transition-colors hover:text-brand-red">
               Connexion
             </Link>
-            {SHOW_REGISTER_ENTRY_POINTS && (
+            {PUBLIC_REGISTRATION_ENABLED && (
               <Link href="/register" className="brand-action inline-flex items-center justify-center rounded-lg px-4 py-2 text-xs font-semibold text-white transition-transform hover:-translate-y-0.5">
                 Créer un compte
               </Link>
@@ -46,7 +45,7 @@ export default function Home() {
             </p>
 
             <div className="flex flex-col gap-4 pt-4 sm:flex-row">
-              {SHOW_REGISTER_ENTRY_POINTS && (
+              {PUBLIC_REGISTRATION_ENABLED && (
                 <Link href="/register" className="brand-action inline-flex items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-transform hover:-translate-y-0.5">
                   Démarrer
                   <ArrowRight className="h-5 w-5" />

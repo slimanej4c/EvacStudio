@@ -5,13 +5,15 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter, useParams } from "next/navigation";
 import dynamic from "next/dynamic";
-import { ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Pencil, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw, Lock, Unlock, Stamp, Group as GroupIcon, Ungroup, BoxSelect, Layers3, Library, ImagePlus } from "lucide-react";
+import { AlignCenter, AlignLeft, AlignRight, ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Pencil, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw, Lock, Unlock, Stamp, Group as GroupIcon, Ungroup, BoxSelect, Layers3, Library, ImagePlus } from "lucide-react";
 import { CropModal } from "@/components/CropModal";
 import { PolygonCropModal } from "@/components/PolygonCropModal";
 import { WatermarkModal } from "@/components/WatermarkModal";
 import { BrandLogo } from "@/components/BrandLogo";
+import SheetTemplateLibraryModal, { SheetTemplateLibraryItem } from "@/components/SheetTemplateLibraryModal";
 import LayerPanel, { EditorLayerItem, LayerMoveDirection } from "@/components/LayerPanel";
-import { IconType, SAFETY_ICONS, SafetyIconDefinition, getIconImageSource, isYouAreHereIcon, inferPictogramColor } from "@/utils/safetyIcons";
+import { IconType, SAFETY_ICONS, SafetyIconDefinition, buildStretchableIconSource, getIconImageSource, isYouAreHereIcon, inferPictogramColor, normalizePictogramColorOverride } from "@/utils/safetyIcons";
+import { SafetyIconArtwork } from "@/components/SafetyIconArtwork";
 import { CanvasIcon, CanvasShape, CanvasText, CanvasPlanOverlay, CanvasPlanTransform, CanvasMultiSelection, ShapeKind, EraserShape, EraserTarget, PlanCanvasHandle, FONT_OPTIONS, MAIN_PLAN_ID, isPolygonTool, isPolygonShape, pointLabel, shapeWithoutPoint, boundsFromPoints } from "@/components/PlanCanvas";
 import { buildApiUrl } from "@/lib/api";
 import {
@@ -21,12 +23,16 @@ import {
   SheetBlock,
   SheetTemplateKey,
   createSheetBlocks,
+  createOfficialEvacuationModernLandscapeFromPortraitBlocks,
+  createOfficialEvacuationPortraitFromPsiBlocks,
   createFreeTextBlock,
-  createPictoBlock
+  createPictoBlock,
+  upgradeConsignesChambreIndependentTextElements
 } from "@/lib/sheetTemplates";
 import type { SheetLegendEntry } from "@/components/SheetBlockNode";
 import { createDefaultWatermarkConfig, normalizeWatermarkConfig, WatermarkConfig } from "@/lib/watermark";
 import { DEFAULT_STUDIO_LOGO, getStoredStudioLogo, prepareLogoFile, storeStudioLogo } from "@/lib/brandLogos";
+import { buildCurvePathData } from "@/lib/curvePath";
 import jsPDF from "jspdf";
 
 // Dynamically load PlanCanvas with SSR disabled since Konva depends on the DOM
@@ -72,6 +78,8 @@ interface StoredSheetTemplateVersion {
   createdAt: string;
   updatedAt: string;
 }
+const cloneSheetBlocks = (blocks: SheetBlock[]) =>
+  JSON.parse(JSON.stringify(blocks)) as SheetBlock[];
 interface SheetTemplateTransferFile {
   format: "prev-inc-cie-sheet-templates";
   version: 1;
@@ -415,6 +423,8 @@ const EVAC_DEFAULTS = {
 
 const EXPORT_CANVAS_HEIGHT = 1131; // 1600 / √2, rounded
 const ICON_CLIPBOARD_KEY = "securplan:icon-clipboard";
+const SHEET_BLOCK_CLIPBOARD_KEY = "securplan:sheet-block-clipboard";
+const EDITOR_CLIPBOARD_KIND_KEY = "securplan:editor-clipboard-kind";
 const SHEET_TEMPLATE_STORAGE_KEY = "securplan:sheet-template-versions";
 const LEGACY_SHEET_TEMPLATE_STORAGE_PREFIX = "securplan:sheet-template-versions";
 const EXPORT_FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
@@ -432,6 +442,10 @@ const EXPORT_STAGE_PIXEL_RATIO = 6;
 // megapixel image, and a PDF of several hundred megabytes with it.
 const EXPORT_TARGET_DPI = 300;
 const EXPORT_MAX_PIXEL_RATIO = 6;
+
+function isCopyableSheetBlock(block: SheetBlock | null | undefined): block is SheetBlock {
+  return Boolean(block && block.kind !== "plan" && block.kind !== "background");
+}
 
 const SVG_EXPORT_PADDING = 8;
 
@@ -546,6 +560,8 @@ interface EvacuationPlanBackend {
     tension?: number | null;
     control_points?: Record<number, { x: number; y: number }> | null;
     points?: Array<{ x: number; y: number }> | null;
+    closed?: boolean;
+    straight_segments?: number[];
     locked?: boolean;
     visible?: boolean;
     z_index?: number;
@@ -559,6 +575,7 @@ interface EvacuationPlanBackend {
     y: number;
     font_size: number;
     font_family: string;
+    align?: "left" | "center" | "right";
     color: string;
     bold: boolean;
     italic: boolean;
@@ -664,7 +681,7 @@ interface CleaningHistoryItem {
 
 export default function PlanEditorPage() {
   const { id } = useParams();
-  const { loading: authLoading, token, user } = useAuth();
+  const { loading: authLoading, token, user, authenticatedFetch } = useAuth();
   const router = useRouter();
   
   const [plan, setPlan] = useState<EvacuationPlanBackend | null>(null);
@@ -716,6 +733,9 @@ export default function PlanEditorPage() {
   const [clipboardHasIcon, setClipboardHasIcon] = useState(() =>
     typeof window !== "undefined" && Boolean(window.localStorage.getItem(ICON_CLIPBOARD_KEY))
   );
+  const [clipboardHasSheetBlock, setClipboardHasSheetBlock] = useState(() =>
+    typeof window !== "undefined" && Boolean(window.localStorage.getItem(SHEET_BLOCK_CLIPBOARD_KEY))
+  );
   const [loading, setLoading] = useState(true);
   const [planOverlays, setPlanOverlays] = useState<CanvasPlanOverlay[]>([]);
   const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
@@ -749,7 +769,9 @@ export default function PlanEditorPage() {
   const [sheetTemplate, setSheetTemplate] = useState<SheetTemplateKey | "none">("none");
   const [sheetBlocks, setSheetBlocks] = useState<SheetBlock[]>([]);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [selectedSheetBlockIds, setSelectedSheetBlockIds] = useState<string[]>([]);
   const [sheetPlanPlacement, setSheetPlanPlacement] = useState({ scale: 100, offsetX: 0, offsetY: 0 });
+  const [nonStandardIconColorOpen, setNonStandardIconColorOpen] = useState(false);
 
   const getNextLayerZIndex = () => Math.max(
     mainPlanZIndex,
@@ -760,13 +782,16 @@ export default function PlanEditorPage() {
   ) + 10;
 
   // ── Undo / Redo History Stack (up to 50 steps) ───────────────────────────
-  // Regulated pictogram colours first (NF X08-070), then neutrals for the plan's
-// own annotations. A free picker sits beside them for anything else.
+  // Regulated pictogram colours (NF X08-070). Any other colour is deliberately
+// placed behind the explicit "Hors norme" control in the properties panel.
 const ICON_COLOR_SWATCHES = [
   { value: "#e63329", label: "Rouge incendie" },
   { value: "#00a651", label: "Vert évacuation" },
   { value: "#3046b8", label: "Bleu obligation" },
   { value: "#ffd500", label: "Jaune danger" },
+] as const;
+
+const ICON_NON_STANDARD_COLOR_SWATCHES = [
   { value: "#f97316", label: "Orange" },
   { value: "#7c3aed", label: "Violet" },
   { value: "#111827", label: "Noir" },
@@ -1137,9 +1162,16 @@ const MAX_HISTORY_STEPS = 50;
   const [sheetReframeMode, setSheetReframeMode] = useState(false);
   const [sheetLogoImages, setSheetLogoImages] = useState<Record<string, HTMLImageElement | null>>({});
   const [sheetLegendImages, setSheetLegendImages] = useState<Record<string, HTMLImageElement>>({});
+  const [sheetPictoImages, setSheetPictoImages] = useState<Record<string, HTMLImageElement>>({});
   const [sheetExporting, setSheetExporting] = useState(false);
   const [storedSheetTemplateVersions, setStoredSheetTemplateVersions] = useState<StoredSheetTemplateVersion[]>([]);
+  const [sheetTemplateLibraryReady, setSheetTemplateLibraryReady] = useState(false);
   const [activeSheetTemplateVersionId, setActiveSheetTemplateVersionId] = useState("");
+  const pePortraitUpgradeAttemptedRef = useRef(false);
+  const peLandscapeUpgradeAttemptedRef = useRef(false);
+  const peModernLandscapeUpgradeAttemptedRef = useRef(false);
+  const piPortraitUpgradeAttemptedRef = useRef(false);
+  const peModernPortraitUpgradeAttemptedRef = useRef(false);
   const pendingTemplateServerSyncRef = useRef<StoredSheetTemplateVersion[] | null>(null);
   const templateServerSyncRunningRef = useRef(false);
   const templateTransferInputRef = useRef<HTMLInputElement>(null);
@@ -1147,6 +1179,7 @@ const MAX_HISTORY_STEPS = 50;
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [logoManagerOpen, setLogoManagerOpen] = useState(false);
+  const [templateLibraryOpen, setTemplateLibraryOpen] = useState(false);
   const [logoImportBusy, setLogoImportBusy] = useState<"client" | "studio" | null>(null);
   const [exportSaveConfirmOpen, setExportSaveConfirmOpen] = useState(false);
   const [pendingExportAction, setPendingExportAction] = useState<(() => Promise<void>) | null>(null);
@@ -1509,9 +1542,11 @@ const MAX_HISTORY_STEPS = 50;
             color: shape.color,
             fill_color: shape.fill_color ?? null,
             fill_opacity: shape.fill_opacity ?? undefined,
-            tension: shape.tension ?? undefined,
+            tension: shape.shape_type === "curve_polygon_zone" ? 0 : shape.tension ?? undefined,
             control_points: shape.control_points ?? undefined,
             points: shape.points || undefined,
+            closed: shape.closed ?? (shape.shape_type !== "polyline"),
+            straight_segments: shape.straight_segments || [],
             locked: shape.locked ?? false,
             visible: shape.visible ?? true,
             z_index: shape.z_index ?? 200,
@@ -1528,6 +1563,7 @@ const MAX_HISTORY_STEPS = 50;
             y: t.y,
             font_size: t.font_size,
             font_family: t.font_family,
+            align: t.align ?? "left",
             color: t.color,
             bold: t.bold,
             italic: t.italic,
@@ -1593,11 +1629,11 @@ const MAX_HISTORY_STEPS = 50;
             icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
               icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
             })),
-            shapes: canvasShapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, visible, z_index, group_id, object_group_id }) => ({
-              shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, visible, z_index, group_id, object_group_id,
+            shapes: canvasShapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id }) => ({
+              shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id,
             })),
-            texts: canvasTexts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id }) => ({
-              text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id,
+            texts: canvasTexts.map(({ text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id }) => ({
+              text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id,
             })),
             overlays: canvasOverlays.map(({ url, x, y, width, height, rotation, label, locked, visible, z_index, group_id }) => ({
               url, x, y, width, height, rotation, label, locked, visible, z_index, group_id,
@@ -1823,14 +1859,19 @@ const MAX_HISTORY_STEPS = 50;
     setMode("select");
   };
 
-  const handlePlaceIcon = (type: IconType, x: number, y: number) => {
+  const handlePlaceIcon = (
+    type: IconType,
+    x: number,
+    y: number,
+    size = defaultIconSize
+  ) => {
     const newIcon: CanvasIcon = {
       tempId: `icon-new-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       icon_type: type,
       x,
       y,
-      width: defaultIconSize.width,
-      height: defaultIconSize.height,
+      width: size.width,
+      height: size.height,
       rotation: 0,
       label: "",
       visible: true,
@@ -1873,6 +1914,7 @@ const MAX_HISTORY_STEPS = 50;
       y,
       font_size: 24,
       font_family: "Arial",
+      align: "left",
       color: "#000000",
       bold: false,
       italic: false,
@@ -1914,11 +1956,11 @@ const MAX_HISTORY_STEPS = 50;
       icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
         icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
       })),
-      shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, visible, z_index, group_id, object_group_id }) => ({
-        shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, locked, visible, z_index, group_id, object_group_id,
+      shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id }) => ({
+        shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id,
       })),
-      texts: texts.map(({ text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id }) => ({
-        text, x, y, font_size, font_family, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id,
+      texts: texts.map(({ text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id }) => ({
+        text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id,
       })),
       overlays: planOverlays.map(({ url, x, y, width, height, rotation, label, locked, visible, z_index, group_id }) => ({
         url, x, y, width, height, rotation, label, locked, visible, z_index, group_id,
@@ -2014,6 +2056,8 @@ const MAX_HISTORY_STEPS = 50;
       tension: shape.tension ?? null,
       control_points: shape.control_points ?? {},
       points: shape.points || null,
+      closed: shape.closed ?? (shape.shape_type !== "polyline"),
+      straight_segments: shape.straight_segments || [],
       locked: shape.locked ?? false,
       visible: shape.visible ?? true,
       z_index: shape.z_index ?? 200,
@@ -2028,6 +2072,7 @@ const MAX_HISTORY_STEPS = 50;
       y: t.y,
       font_size: t.font_size,
       font_family: t.font_family,
+      align: t.align ?? "left",
       color: t.color,
       bold: t.bold,
       italic: t.italic,
@@ -2113,9 +2158,9 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const postJson = (path: string, payload: unknown) =>
-    fetch(buildApiUrl(path), {
+    authenticatedFetch(buildApiUrl(path), {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
@@ -2928,9 +2973,56 @@ const MAX_HISTORY_STEPS = 50;
   const currentSheetTemplateVersions = useMemo(
     () => sheetTemplate === "none"
       ? []
-      : storedSheetTemplateVersions.filter((version) => version.template === sheetTemplate),
+      : storedSheetTemplateVersions.filter((version) =>
+          version.template === sheetTemplate
+          && !version.id.startsWith("custom:")
+          && !version.id.startsWith("baseline:")
+        ),
     [sheetTemplate, storedSheetTemplateVersions]
   );
+  const sheetTemplateLibraryItems = useMemo<SheetTemplateLibraryItem[]>(() => {
+    const builtins = (Object.keys(SHEET_TEMPLATES) as SheetTemplateKey[]).map((template) => {
+      const config = SHEET_TEMPLATES[template];
+      const draft = storedSheetTemplateVersions.find((version) => version.id === `draft:${template}`);
+      return {
+        id: `builtin:${template}`,
+        template,
+        name: config.label,
+        description: config.description,
+        width: config.width,
+        height: config.height,
+        blocks: cloneSheetBlocks(draft?.blocks || createSheetBlocks(template)),
+        kind: "builtin" as const,
+      };
+    });
+    const custom = storedSheetTemplateVersions
+      .filter((version) => version.id.startsWith("custom:"))
+      .map((version) => {
+        const config = SHEET_TEMPLATES[version.template];
+        return {
+          id: version.id,
+          template: version.template,
+          name: version.name,
+          description: `Template personnalisé au format ${config.width < config.height ? "portrait" : "paysage"}. Son état de départ reste restaurable.`,
+          width: config.width,
+          height: config.height,
+          blocks: cloneSheetBlocks(version.blocks),
+          kind: "custom" as const,
+        };
+      });
+    return [...builtins, ...custom];
+  }, [storedSheetTemplateVersions]);
+  const activeSheetTemplateLibraryItemId = sheetTemplate === "none"
+    ? ""
+    : activeSheetTemplateVersionId.startsWith("custom:")
+      ? activeSheetTemplateVersionId
+      : `builtin:${sheetTemplate}`;
+  const activeSheetTemplateLabel = sheetTemplate === "none"
+    ? "Plan seul"
+    : activeSheetTemplateVersionId.startsWith("custom:")
+      ? storedSheetTemplateVersions.find((version) => version.id === activeSheetTemplateVersionId)?.name
+        || SHEET_TEMPLATES[sheetTemplate].label
+      : SHEET_TEMPLATES[sheetTemplate].label;
   const activeSheetSize = useMemo(() => {
     if (sheetTemplate === "none") return { width: SHEET_WIDTH, height: SHEET_HEIGHT };
     const template = SHEET_TEMPLATES[sheetTemplate];
@@ -2947,6 +3039,42 @@ const MAX_HISTORY_STEPS = 50;
     () => sheetBlocks.find((block) => block.id === selectedBlockId) ?? null,
     [sheetBlocks, selectedBlockId]
   );
+
+  useEffect(() => {
+    setSelectedSheetBlockIds((current) => {
+      if (!selectedBlockId) return current.length ? [] : current;
+      const selected = sheetBlocks.find((block) => block.id === selectedBlockId);
+      if (!selected) return [];
+      const validIds = new Set(sheetBlocks.map((block) => block.id));
+      if (current.includes(selectedBlockId) && current.every((id) => validIds.has(id))) return current;
+      if (selected.objectGroupId) {
+        return sheetBlocks
+          .filter((block) => block.objectGroupId === selected.objectGroupId)
+          .map((block) => block.id);
+      }
+      return [selectedBlockId];
+    });
+  }, [selectedBlockId, sheetBlocks]);
+
+  const selectSheetBlock = (blockId: string | null) => {
+    if (!blockId) {
+      setSelectedBlockId(null);
+      setSelectedSheetBlockIds([]);
+      return;
+    }
+    const selected = sheetBlocks.find((block) => block.id === blockId);
+    if (!selected) return;
+    setSelectedBlockId(blockId);
+    setSelectedSheetBlockIds((current) => {
+      if (current.includes(blockId)) return current;
+      if (selected.objectGroupId) {
+        return sheetBlocks
+          .filter((block) => block.objectGroupId === selected.objectGroupId)
+          .map((block) => block.id);
+      }
+      return [blockId];
+    });
+  };
 
   const updateSelectedBlock = (patch: Partial<SheetBlock>) => {
     if (!selectedBlockId) return;
@@ -3052,6 +3180,7 @@ const MAX_HISTORY_STEPS = 50;
     setSelectedShapeId(null);
     setSelectedOverlayId(null);
     setSelectedBlockId(null);
+    setSelectedSheetBlockIds([]);
     setSelectedBatBlock(false);
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
   };
@@ -3190,6 +3319,18 @@ const MAX_HISTORY_STEPS = 50;
     : null;
   const multiSelectionCount =
     multiSelection.iconIds.length + multiSelection.shapeIds.length + multiSelection.textIds.length;
+  const sheetSelectionCount = selectedSheetBlockIds.length;
+  const selectedSheetBlocks = sheetBlocks.filter((block) => selectedSheetBlockIds.includes(block.id));
+  const selectedSheetObjectGroupIds = Array.from(new Set(
+    selectedSheetBlocks.map((block) => block.objectGroupId || "").filter(Boolean)
+  ));
+  const sharedSheetObjectGroupId = sheetSelectionCount > 0
+    && selectedSheetBlocks.length === sheetSelectionCount
+    && selectedSheetBlocks.every(
+      (block) => block.objectGroupId && block.objectGroupId === selectedSheetBlocks[0]?.objectGroupId
+    )
+      ? selectedSheetBlocks[0]?.objectGroupId || ""
+      : "";
   const selectedMultiIcons = icons.filter((icon) => multiSelection.iconIds.includes(icon.tempId));
   const selectedMultiShapes = shapes.filter((shape) => multiSelection.shapeIds.includes(shape.tempId));
   const selectedMultiTexts = texts.filter((text) => multiSelection.textIds.includes(text.tempId));
@@ -3226,7 +3367,15 @@ const MAX_HISTORY_STEPS = 50;
   const buildShapeSvgPath = (shape: CanvasShape, previewPoint?: { x: number; y: number } | null) => {
     const points = shape.points || [];
     if (!points.length) return "";
-    const isOpen = shape.shape_type === "polyline";
+    const isOpen = shape.shape_type === "polyline" || shape.closed === false;
+    if (shape.shape_type === "curve_polygon_zone" && !previewPoint) {
+      return buildCurvePathData(points, {
+        closed: !isOpen,
+        tension: 0,
+        controlPoints: shape.control_points,
+        straightSegments: shape.straight_segments,
+      });
+    }
     const controlPoints = shape.control_points || {};
     let data = `M ${svgNumber(points[0].x)} ${svgNumber(points[0].y)}`;
     for (let index = 0; index < points.length - 1; index += 1) {
@@ -3336,7 +3485,7 @@ const MAX_HISTORY_STEPS = 50;
     }
     if (isPolygonShape(shape.shape_type)) {
       const data = buildShapeSvgPath(shape);
-      const open = shape.shape_type === "polyline";
+      const open = shape.shape_type === "polyline" || shape.closed === false;
       return `<path d="${escapeSvgAttribute(data)}" ${open ? `fill="none"` : fill} ${stroke} stroke-linejoin="round" stroke-linecap="round"/>`;
     }
     return `<rect x="${svgNumber(shape.x)}" y="${svgNumber(shape.y)}" width="${svgNumber(Math.abs(shape.width))}" height="${svgNumber(Math.abs(shape.height))}" ${fill} ${stroke}${transform}/>`;
@@ -3366,9 +3515,9 @@ const MAX_HISTORY_STEPS = 50;
     const imageUrl = getIconImageSource(icon.icon_type, iconDefinitions);
 
     if (svg) {
-      parts.push(`<g transform="${transform}">${icon.framed ? `<rect x="0" y="0" width="${svgNumber(icon.width)}" height="${svgNumber(icon.height)}" rx="3" fill="#ffffff" stroke="${escapeSvgAttribute(leaderColor)}" stroke-width="2"/>` : ""}<svg x="0" y="0" width="${svgNumber(icon.width)}" height="${svgNumber(icon.height)}" viewBox="${escapeSvgAttribute(viewBox)}" preserveAspectRatio="xMidYMid meet">${inner}</svg></g>`);
+      parts.push(`<g transform="${transform}">${icon.framed ? `<rect x="0" y="0" width="${svgNumber(icon.width)}" height="${svgNumber(icon.height)}" rx="3" fill="#ffffff" stroke="${escapeSvgAttribute(leaderColor)}" stroke-width="2"/>` : ""}<svg x="0" y="0" width="${svgNumber(icon.width)}" height="${svgNumber(icon.height)}" viewBox="${escapeSvgAttribute(viewBox)}" preserveAspectRatio="none">${inner}</svg></g>`);
     } else if (imageUrl) {
-      parts.push(`<g transform="${transform}"><image href="${escapeSvgAttribute(imageUrl)}" x="0" y="0" width="${svgNumber(icon.width)}" height="${svgNumber(icon.height)}" preserveAspectRatio="xMidYMid meet"/></g>`);
+      parts.push(`<g transform="${transform}"><image href="${escapeSvgAttribute(imageUrl)}" x="0" y="0" width="${svgNumber(icon.width)}" height="${svgNumber(icon.height)}" preserveAspectRatio="none"/></g>`);
     } else {
       parts.push(`<rect x="${svgNumber(icon.x)}" y="${svgNumber(icon.y)}" width="${svgNumber(icon.width)}" height="${svgNumber(icon.height)}" fill="${escapeSvgAttribute(leaderColor)}"/>`);
     }
@@ -3390,10 +3539,17 @@ const MAX_HISTORY_STEPS = 50;
       : "";
     const fontStyle = item.italic ? ` font-style="italic"` : "";
     const fontWeight = item.bold ? ` font-weight="700"` : "";
+    const align = item.align ?? "left";
+    const alignedX = align === "center"
+      ? item.x + bounds.width / 2
+      : align === "right"
+        ? item.x + bounds.width
+        : item.x;
+    const textAnchor = align === "center" ? "middle" : align === "right" ? "end" : "start";
     const textLines = lines.map((line, index) =>
-      `<tspan x="${svgNumber(item.x)}" dy="${index === 0 ? "0" : svgNumber(item.font_size * 1.25)}">${escapeSvgText(line)}</tspan>`
+      `<tspan x="${svgNumber(alignedX)}" dy="${index === 0 ? "0" : svgNumber(item.font_size * 1.25)}">${escapeSvgText(line)}</tspan>`
     ).join("");
-    return `${background}<text x="${svgNumber(item.x)}" y="${svgNumber(item.y + item.font_size)}" font-family="${escapeSvgAttribute(item.font_family || "Arial")}" font-size="${svgNumber(item.font_size)}" fill="${escapeSvgAttribute(item.color)}"${fontWeight}${fontStyle}${transform}>${textLines}</text>`;
+    return `${background}<text x="${svgNumber(alignedX)}" y="${svgNumber(item.y + item.font_size)}" text-anchor="${textAnchor}" font-family="${escapeSvgAttribute(item.font_family || "Arial")}" font-size="${svgNumber(item.font_size)}" fill="${escapeSvgAttribute(item.color)}"${fontWeight}${fontStyle}${transform}>${textLines}</text>`;
   };
 
   const handleExportSelectedGroupSvg = () => {
@@ -3454,6 +3610,7 @@ const MAX_HISTORY_STEPS = 50;
       setSelectedTextId(null);
       setSelectedOverlayId(null);
       setSelectedBlockId(null);
+      setSelectedSheetBlockIds([]);
       setSelectedBatBlock(false);
       setSaveStatus("Tracez un rectangle autour des objets à sélectionner");
     } else {
@@ -3482,12 +3639,15 @@ const MAX_HISTORY_STEPS = 50;
     // objects drawn directly on the plan. Give the active sheet selection
     // priority in case a stale canvas selection still exists underneath it.
     if (selectedBlockId) {
-      const block = sheetBlocks.find((item) => item.id === selectedBlockId);
-      if (!block || block.locked) return false;
+      const selectedIds = new Set(
+        selectedSheetBlockIds.length ? selectedSheetBlockIds : [selectedBlockId]
+      );
+      const movable = sheetBlocks.some((item) => selectedIds.has(item.id) && !item.locked);
+      if (!movable) return false;
 
       historyDelayRef.current = NUDGE_HISTORY_COALESCE_MS;
       setSheetBlocks((current) => current.map((item) =>
-        item.id === selectedBlockId
+        selectedIds.has(item.id) && !item.locked
           ? { ...item, x: item.x + dx, y: item.y + dy }
           : item
       ));
@@ -3594,6 +3754,41 @@ const MAX_HISTORY_STEPS = 50;
     ));
     setSaveStatus("Groupe d’objets dissocié");
     window.setTimeout(() => setSaveStatus(""), 2500);
+  };
+
+  const handleGroupSheetSelection = () => {
+    if (selectedSheetBlockIds.length < 2) return;
+    const ids = new Set(selectedSheetBlockIds);
+    const groupId = sharedSheetObjectGroupId || `sheet-object-group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setSheetBlocks((current) => current.map((block) =>
+      ids.has(block.id) ? { ...block, objectGroupId: groupId } : block
+    ));
+    setSaveStatus(`${selectedSheetBlockIds.length} éléments du template regroupés`);
+    window.setTimeout(() => setSaveStatus(""), 2500);
+  };
+
+  const handleUngroupSheetSelection = () => {
+    if (!selectedSheetObjectGroupIds.length) return;
+    const groupIds = new Set(selectedSheetObjectGroupIds);
+    setSheetBlocks((current) => current.map((block) =>
+      block.objectGroupId && groupIds.has(block.objectGroupId)
+        ? { ...block, objectGroupId: "" }
+        : block
+    ));
+    setSaveStatus("Groupe du template dissocié");
+    window.setTimeout(() => setSaveStatus(""), 2500);
+  };
+
+  const handleDeleteSheetSelection = () => {
+    const ids = new Set(selectedSheetBlockIds.length
+      ? selectedSheetBlockIds
+      : selectedBlockId ? [selectedBlockId] : []);
+    if (!ids.size) return;
+    setSheetBlocks((current) => current.filter((block) =>
+      !ids.has(block.id) || block.locked || block.kind === "plan" || block.kind === "background"
+    ));
+    setSelectedBlockId(null);
+    setSelectedSheetBlockIds([]);
   };
 
   const selectedPlanGroupId = selectedOverlayId === MAIN_PLAN_ID
@@ -4007,11 +4202,10 @@ const MAX_HISTORY_STEPS = 50;
         const pending = pendingTemplateServerSyncRef.current;
         pendingTemplateServerSyncRef.current = null;
         try {
-          const response = await fetch(buildApiUrl("/api/plans/sheet-templates/"), {
+          const response = await authenticatedFetch(buildApiUrl("/api/plans/sheet-templates/"), {
             method: "PUT",
             headers: {
               "Content-Type": "application/json",
-              ...getPlanAuthHeaders(),
             },
             body: JSON.stringify({ versions: pending }),
           });
@@ -4137,11 +4331,10 @@ const MAX_HISTORY_STEPS = 50;
         ) {
           throw new Error("Un pictogramme contenu dans le fichier est invalide.");
         }
-        const response = await fetch(buildApiUrl("/api/plans/pictograms/"), {
+        const response = await authenticatedFetch(buildApiUrl("/api/plans/pictograms/"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            ...getPlanAuthHeaders(),
           },
           body: JSON.stringify({ name: pictogram.name, svg: pictogram.svg }),
         });
@@ -4163,11 +4356,10 @@ const MAX_HISTORY_STEPS = 50;
       );
       importedVersions.forEach((version) => mergedById.set(version.id, version));
       const mergedVersions = Array.from(mergedById.values());
-      const response = await fetch(buildApiUrl("/api/plans/sheet-templates/"), {
+      const response = await authenticatedFetch(buildApiUrl("/api/plans/sheet-templates/"), {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          ...getPlanAuthHeaders(),
         },
         body: JSON.stringify({ versions: mergedVersions }),
       });
@@ -4197,9 +4389,6 @@ const MAX_HISTORY_STEPS = 50;
     }
   };
 
-  const cloneSheetBlocks = (blocks: SheetBlock[]) =>
-    JSON.parse(JSON.stringify(blocks)) as SheetBlock[];
-
   const saveTemplateDraft = (
     template: SheetTemplateKey | "none" = sheetTemplate,
     blocks: SheetBlock[] = sheetBlocks,
@@ -4208,6 +4397,23 @@ const MAX_HISTORY_STEPS = 50;
     if (template === "none" || !blocks.length) return;
     const versions = readStoredSheetTemplateVersions();
     const now = new Date().toISOString();
+    if (activeSheetTemplateVersionId.startsWith("custom:")) {
+      const customTemplate = versions.find((version) => version.id === activeSheetTemplateVersionId);
+      if (customTemplate) {
+        writeStoredSheetTemplateVersions(versions.map((version) =>
+          version.id === customTemplate.id
+            ? {
+                ...version,
+                template,
+                blocks: cloneSheetBlocks(blocks),
+                planPlacement: { ...placement },
+                updatedAt: now,
+              }
+            : version
+        ));
+        return;
+      }
+    }
     const draftId = `draft:${template}`;
     const existing = versions.find((version) => version.id === draftId);
     const draft: StoredSheetTemplateVersion = {
@@ -4235,13 +4441,13 @@ const MAX_HISTORY_STEPS = 50;
   useEffect(() => {
     if (authLoading || !user) return;
     let cancelled = false;
+    setSheetTemplateLibraryReady(false);
     const localVersions = readStoredSheetTemplateVersions();
     cacheSheetTemplateVersions(localVersions);
 
     const loadServerVersions = async () => {
       try {
-        const response = await fetch(buildApiUrl("/api/plans/sheet-templates/"), {
-          headers: getPlanAuthHeaders(),
+        const response = await authenticatedFetch(buildApiUrl("/api/plans/sheet-templates/"), {
           cache: "no-store",
         });
         if (!response.ok) throw new Error(await describeApiError(response));
@@ -4290,6 +4496,8 @@ const MAX_HISTORY_STEPS = 50;
         // Offline/server failure: the local cache remains fully usable and will
         // be migrated on the next successful editor load.
         console.warn("Template server load failed; local cache used:", error);
+      } finally {
+        if (!cancelled) setSheetTemplateLibraryReady(true);
       }
     };
 
@@ -4298,6 +4506,34 @@ const MAX_HISTORY_STEPS = 50;
       cancelled = true;
     };
   }, [id, authLoading, token, user?.id]);
+
+  useEffect(() => {
+    if (!sheetTemplateLibraryReady) return;
+    const versions = readStoredSheetTemplateVersions();
+    const now = new Date().toISOString();
+    const missingBaselines = (Object.keys(SHEET_TEMPLATES) as SheetTemplateKey[])
+      .filter((template) => !versions.some(
+        (version) => version.id === `baseline-builtin:${template}`
+      ));
+    if (!missingBaselines.length) return;
+
+    const baselines = missingBaselines.map((template): StoredSheetTemplateVersion => {
+      // The first installation of this feature freezes exactly what the studio
+      // currently uses — including an existing corrected draft — as the
+      // immutable return point requested by the user.
+      const currentDraft = versions.find((version) => version.id === `draft:${template}`);
+      return {
+        id: `baseline-builtin:${template}`,
+        template,
+        name: `${SHEET_TEMPLATES[template].label} — design par défaut`,
+        blocks: cloneSheetBlocks(currentDraft?.blocks || createSheetBlocks(template)),
+        planPlacement: { ...(currentDraft?.planPlacement || { scale: 100, offsetX: 0, offsetY: 0 }) },
+        createdAt: now,
+        updatedAt: now,
+      };
+    });
+    writeStoredSheetTemplateVersions([...versions, ...baselines]);
+  }, [sheetTemplateLibraryReady, storedSheetTemplateVersions]);
 
   useEffect(() => {
     if (sheetTemplate === "none" || !sheetBlocks.length) return;
@@ -4354,7 +4590,7 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const deleteCurrentSheetTemplateVersion = () => {
-    if (!activeSheetTemplateVersionId || activeSheetTemplateVersionId.startsWith("draft:")) return;
+    if (!activeSheetTemplateVersionId.startsWith("version:")) return;
     if (!window.confirm("Supprimer cette version de template ?")) return;
     const versions = readStoredSheetTemplateVersions().filter((version) => version.id !== activeSheetTemplateVersionId);
     writeStoredSheetTemplateVersions(versions);
@@ -4363,8 +4599,11 @@ const MAX_HISTORY_STEPS = 50;
     window.setTimeout(() => setSaveStatus(""), 2500);
   };
 
-  const applySheetTemplate = (template: SheetTemplateKey | "none", options: { reset?: boolean } = {}) => {
-    saveTemplateDraft();
+  const applySheetTemplate = (
+    template: SheetTemplateKey | "none",
+    options: { reset?: boolean; skipSave?: boolean } = {}
+  ) => {
+    if (!options.skipSave) saveTemplateDraft();
     setSheetTemplate(template);
     setExportOfficialFond("none");
     setAreaSelectionMode(false);
@@ -4379,7 +4618,154 @@ const MAX_HISTORY_STEPS = 50;
     if ("paper" in templateConfig) {
       setExportPaperFormat(templateConfig.paper as ExportPaperFormat);
     }
-    const savedDraft = options.reset ? null : getSavedTemplateDraft(template);
+    let defaultBlocks = createSheetBlocks(template, {
+      // A title the user typed is carried over; an untouched preset is not, so
+      // the template keeps its own regulatory wording.
+      planTitle: isUntouchedExportTitle(exportPlanTitle) ? undefined : exportPlanTitle,
+      siteName: exportSiteName || plan?.building_name || ""
+    });
+    if (template === "official_a3_pe_pay") {
+      // A3 PE PAY is the landscape arrangement of PE A3 PORT. Reuse the
+      // studio's latest corrected portrait draft so its selected pictograms,
+      // colours and wording are carried into the new sheet automatically.
+      const portraitDraft = readStoredSheetTemplateVersions().find(
+        (version) => version.id === "draft:official_pe_a3_port"
+      );
+      if (portraitDraft?.blocks.some(
+        (block) => block.id === "official_pe_a3_port-modern-portrait-reference-layout"
+      )) {
+        defaultBlocks = createOfficialEvacuationModernLandscapeFromPortraitBlocks(
+          template,
+          portraitDraft.blocks,
+          templateConfig.width,
+          templateConfig.height
+        );
+      }
+    }
+    if (template === "official_a3_pe_ph_por") {
+      // The supplied PE portrait plate shares the PSI portrait geometry. Start
+      // from the user's latest corrected PSI draft so their precise typography,
+      // pictograms and spacing carry over, then apply only the PE differences.
+      const psiDraft = readStoredSheetTemplateVersions().find(
+        (version) => version.id === "draft:official_psi_ph_a3_por"
+      );
+      if (psiDraft?.blocks.some(
+        (block) => block.id === "official_psi_ph_a3_por-psi-reference-layout"
+      )) {
+        const evacuationTitle = defaultBlocks.find(
+          (block) => block.kind === "band" && block.label.includes("évacuation")
+        )?.text || "PLAN D'ÉVACUATION";
+        defaultBlocks = createOfficialEvacuationPortraitFromPsiBlocks(
+          template,
+          psiDraft.blocks,
+          evacuationTitle
+        );
+      }
+    }
+    let defaultPlacement = { scale: 100, offsetX: 0, offsetY: 0 };
+    if (options.reset) {
+      const baseline = readStoredSheetTemplateVersions().find(
+        (version) => version.id === `baseline-builtin:${template}`
+      );
+      if (baseline) {
+        defaultBlocks = cloneSheetBlocks(baseline.blocks);
+        defaultPlacement = { ...baseline.planPlacement };
+      }
+    }
+    let savedDraft = options.reset ? null : getSavedTemplateDraft(template);
+    if (savedDraft && template === "consignes_chambre") {
+      const correctedBlocks = upgradeConsignesChambreIndependentTextElements(savedDraft.blocks);
+      if (JSON.stringify(correctedBlocks) !== JSON.stringify(savedDraft.blocks)) {
+        const correctedDraft: StoredSheetTemplateVersion = {
+          ...savedDraft,
+          blocks: correctedBlocks,
+          updatedAt: new Date().toISOString(),
+        };
+        savedDraft = correctedDraft;
+        const versions = readStoredSheetTemplateVersions().map((version) =>
+          version.id === correctedDraft.id ? correctedDraft : version
+        );
+        writeStoredSheetTemplateVersions(versions);
+      }
+    }
+    const templateUpgrade = template === "official_a3_pe_pay"
+      ? {
+          marker: "official_a3_pe_pay-modern-landscape-reference-layout",
+          backupName: "Ancien design A3 PE PAY - sauvegarde automatique",
+          message: "Nouveau design A3 PE PAY appliqué - ancien design sauvegardé",
+          backupId: "legacy-pe-modern-landscape",
+        }
+      : template === "official_psi_ph_a3_por"
+        ? {
+            marker: "official_psi_ph_a3_por-psi-reference-layout",
+            backupName: "Ancien design PSI PH A3 POR - sauvegarde automatique",
+            message: "Nouveau design PSI appliqué - ancien design sauvegardé",
+            backupId: "legacy-psi-portrait",
+          }
+        : template === "official_a3_pe_ph_por"
+          ? {
+            marker: "official_a3_pe_ph_por-pe-reference-layout",
+            backupName: "Ancien design A3 PE PH POR - sauvegarde automatique",
+            message: "Nouveau design PE appliqué - ancien design sauvegardé",
+            backupId: "legacy-pe-portrait",
+          }
+        : template === "official_ph_pe_a3_pay"
+          ? {
+              marker: "official_ph_pe_a3_pay-pe-landscape-reference-layout",
+              backupName: "Ancien design PH PE A3 PAY - sauvegarde automatique",
+              message: "Nouveau design PH PE paysage appliqué - ancien design sauvegardé",
+              backupId: "legacy-pe-landscape",
+            }
+          : template === "official_pi_a3_ph_por"
+            ? {
+                marker: "official_pi_a3_ph_por-pi-portrait-reference-layout",
+                backupName: "Ancien design PI A3 PH POR - sauvegarde automatique",
+                message: "Nouveau design PI portrait appliqué - ancien design sauvegardé",
+                backupId: "legacy-pi-portrait",
+              }
+            : template === "official_pe_a3_port"
+              ? {
+                  marker: "official_pe_a3_port-modern-portrait-reference-layout",
+                  backupName: "Ancien design PE A3 PORT - sauvegarde automatique",
+                  message: "Nouveau design PE A3 PORT appliqué - ancien design sauvegardé",
+                  backupId: "legacy-pe-modern-portrait",
+                }
+              : null;
+    const isLegacyTemplateDraft = Boolean(
+      savedDraft
+      && templateUpgrade
+      && !savedDraft.blocks.some((block) => block.id === templateUpgrade.marker)
+    );
+
+    if (savedDraft && isLegacyTemplateDraft && templateUpgrade) {
+      // Keep the user's former composition as a named version before replacing
+      // the obsolete built-in draft with the supplied reference design.
+      const now = new Date().toISOString();
+      const backup: StoredSheetTemplateVersion = {
+        ...savedDraft,
+        id: `version:${templateUpgrade.backupId}:${Date.now()}`,
+        name: templateUpgrade.backupName,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const upgradedDraft: StoredSheetTemplateVersion = {
+        ...savedDraft,
+        blocks: cloneSheetBlocks(defaultBlocks),
+        planPlacement: { scale: 100, offsetX: 0, offsetY: 0 },
+        updatedAt: now,
+      };
+      const versions = readStoredSheetTemplateVersions().filter(
+        (version) => version.id !== savedDraft.id
+      );
+      writeStoredSheetTemplateVersions([...versions, backup, upgradedDraft]);
+      setSheetBlocks(cloneSheetBlocks(upgradedDraft.blocks));
+      setSheetPlanPlacement({ ...upgradedDraft.planPlacement });
+      setActiveSheetTemplateVersionId(upgradedDraft.id);
+      setSaveStatus(templateUpgrade.message);
+      window.setTimeout(() => setSaveStatus(""), 4000);
+      window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
+      return;
+    }
     if (savedDraft) {
       setSheetBlocks(cloneSheetBlocks(savedDraft.blocks));
       setSheetPlanPlacement({ ...savedDraft.planPlacement });
@@ -4387,18 +4773,242 @@ const MAX_HISTORY_STEPS = 50;
       window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
       return;
     }
-    setSheetBlocks(
-      createSheetBlocks(template, {
-        // A title the user typed is carried over; an untouched preset is not, so
-        // the template keeps its own regulatory wording.
-        planTitle: isUntouchedExportTitle(exportPlanTitle) ? undefined : exportPlanTitle,
-        siteName: exportSiteName || plan?.building_name || ""
-      })
-    );
-    setSheetPlanPlacement({ scale: 100, offsetX: 0, offsetY: 0 });
+    setSheetBlocks(defaultBlocks);
+    setSheetPlanPlacement(defaultPlacement);
     // Frame the whole page as soon as it appears.
     window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
   };
+
+  const createCustomTemplateIds = () => {
+    const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    return { customId: `custom:${suffix}`, baselineId: `baseline:${suffix}` };
+  };
+
+  const saveNewCustomTemplate = (
+    name: string,
+    template: SheetTemplateKey,
+    blocks: SheetBlock[],
+    placement: { scale: number; offsetX: number; offsetY: number }
+  ) => {
+    const now = new Date().toISOString();
+    const { customId, baselineId } = createCustomTemplateIds();
+    const custom: StoredSheetTemplateVersion = {
+      id: customId,
+      template,
+      name,
+      blocks: cloneSheetBlocks(blocks),
+      planPlacement: { ...placement },
+      createdAt: now,
+      updatedAt: now,
+    };
+    const baseline: StoredSheetTemplateVersion = {
+      ...custom,
+      id: baselineId,
+      name: `${name} — état de départ`,
+    };
+    writeStoredSheetTemplateVersions([
+      ...readStoredSheetTemplateVersions(),
+      custom,
+      baseline,
+    ]);
+    applyStoredSheetTemplateVersion(custom.id);
+    setTemplateLibraryOpen(false);
+    setSaveStatus(`Template « ${name} » créé`);
+    window.setTimeout(() => setSaveStatus(""), 3000);
+  };
+
+  const handleCreateBlankSheetTemplate = (formatSource: SheetTemplateLibraryItem, name: string) => {
+    const config = SHEET_TEMPLATES[formatSource.template];
+    const margin = Math.round(Math.min(config.width, config.height) * 0.045);
+    const blocks: SheetBlock[] = [{
+      id: `custom-plan-${Date.now()}`,
+      kind: "plan",
+      planSlot: "main",
+      label: "Zone principale du plan",
+      x: margin,
+      y: margin,
+      width: config.width - margin * 2,
+      height: config.height - margin * 2,
+      rotation: 0,
+      visible: true,
+      fill: "#ffffff",
+      stroke: "#d1d5db",
+      strokeWidth: 1,
+    }];
+    saveNewCustomTemplate(
+      name,
+      formatSource.template,
+      blocks,
+      { scale: 100, offsetX: 0, offsetY: 0 }
+    );
+  };
+
+  const handleCloneSheetTemplate = (source: SheetTemplateLibraryItem, name: string) => {
+    const sourceVersion = source.kind === "custom"
+      ? readStoredSheetTemplateVersions().find((version) => version.id === source.id)
+      : readStoredSheetTemplateVersions().find((version) => version.id === `draft:${source.template}`);
+    saveNewCustomTemplate(
+      name,
+      source.template,
+      sourceVersion?.blocks || source.blocks,
+      sourceVersion?.planPlacement || { scale: 100, offsetX: 0, offsetY: 0 }
+    );
+  };
+
+  const handleUseSheetTemplateLibraryItem = (item: SheetTemplateLibraryItem) => {
+    if (item.kind === "custom") applyStoredSheetTemplateVersion(item.id);
+    else applySheetTemplate(item.template);
+    setTemplateLibraryOpen(false);
+  };
+
+  const handleDeleteCustomSheetTemplate = (item: SheetTemplateLibraryItem) => {
+    if (item.kind !== "custom") return;
+    if (!window.confirm(`Supprimer le template « ${item.name} » ?`)) return;
+    const suffix = item.id.slice("custom:".length);
+    const baselineId = `baseline:${suffix}`;
+    const wasActive = activeSheetTemplateVersionId === item.id;
+    const versions = readStoredSheetTemplateVersions().filter(
+      (version) => version.id !== item.id && version.id !== baselineId
+    );
+    writeStoredSheetTemplateVersions(versions);
+    if (wasActive) {
+      applySheetTemplate(item.template, { reset: true, skipSave: true });
+    }
+    setSaveStatus(`Template « ${item.name} » supprimé`);
+    window.setTimeout(() => setSaveStatus(""), 3000);
+  };
+
+  const restoreCurrentSheetTemplateDefault = () => {
+    if (sheetTemplate === "none") return;
+    if (activeSheetTemplateVersionId.startsWith("custom:")) {
+      const suffix = activeSheetTemplateVersionId.slice("custom:".length);
+      const versions = readStoredSheetTemplateVersions();
+      const baseline = versions.find((version) => version.id === `baseline:${suffix}`);
+      const custom = versions.find((version) => version.id === activeSheetTemplateVersionId);
+      if (!baseline || !custom) return;
+      if (!window.confirm("Revenir à l’état de départ de ce template personnalisé ?")) return;
+      const restored: StoredSheetTemplateVersion = {
+        ...custom,
+        blocks: cloneSheetBlocks(baseline.blocks),
+        planPlacement: { ...baseline.planPlacement },
+        updatedAt: new Date().toISOString(),
+      };
+      writeStoredSheetTemplateVersions(versions.map((version) =>
+        version.id === restored.id ? restored : version
+      ));
+      setSheetBlocks(cloneSheetBlocks(restored.blocks));
+      setSheetPlanPlacement({ ...restored.planPlacement });
+      setSelectedBlockId(null);
+      setSelectedSheetBlockIds([]);
+      window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
+      setSaveStatus("Template restauré à son état de départ");
+      window.setTimeout(() => setSaveStatus(""), 3000);
+      return;
+    }
+    if (!window.confirm("Revenir au design par défaut de ce template ?")) return;
+    applySheetTemplate(sheetTemplate, { reset: true });
+    setSaveStatus("Design par défaut restauré");
+    window.setTimeout(() => setSaveStatus(""), 3000);
+  };
+
+  // Upgrade a formerly generic A3 PE PAY draft to the modern landscape plate.
+  // The current PE A3 PORT draft is used as the visual and pictogram source.
+  useEffect(() => {
+    if (
+      peModernLandscapeUpgradeAttemptedRef.current ||
+      sheetTemplate !== "official_a3_pe_pay" ||
+      !sheetBlocks.length ||
+      sheetBlocks.some(
+        (block) => block.id === "official_a3_pe_pay-modern-landscape-reference-layout"
+      ) ||
+      (activeSheetTemplateVersionId && !activeSheetTemplateVersionId.startsWith("draft:"))
+    ) {
+      return;
+    }
+    peModernLandscapeUpgradeAttemptedRef.current = true;
+    applySheetTemplate("official_a3_pe_pay");
+  }, [sheetTemplate, sheetBlocks, activeSheetTemplateVersionId]);
+
+  // A plan that was already open on the former generic PE template should not
+  // require a manual reset or a template round-trip. Wait until the reusable
+  // PSI draft has been loaded, then run the same backed-up upgrade path once.
+  useEffect(() => {
+    if (
+      pePortraitUpgradeAttemptedRef.current ||
+      sheetTemplate !== "official_a3_pe_ph_por" ||
+      !sheetBlocks.length ||
+      sheetBlocks.some((block) => block.id === "official_a3_pe_ph_por-pe-reference-layout") ||
+      (activeSheetTemplateVersionId && !activeSheetTemplateVersionId.startsWith("draft:")) ||
+      !storedSheetTemplateVersions.some(
+        (version) => version.id === "draft:official_psi_ph_a3_por"
+          && version.blocks.some(
+            (block) => block.id === "official_psi_ph_a3_por-psi-reference-layout"
+          )
+      )
+    ) {
+      return;
+    }
+    pePortraitUpgradeAttemptedRef.current = true;
+    applySheetTemplate("official_a3_pe_ph_por");
+  }, [sheetTemplate, sheetBlocks, activeSheetTemplateVersionId, storedSheetTemplateVersions]);
+
+  // Upgrade the old generic PH PE landscape draft on first open. Unlike the
+  // portrait PE plate, this reconstruction is self-contained and therefore
+  // does not need to wait for another saved template before it can be applied.
+  useEffect(() => {
+    if (
+      peLandscapeUpgradeAttemptedRef.current ||
+      sheetTemplate !== "official_ph_pe_a3_pay" ||
+      !sheetBlocks.length ||
+      sheetBlocks.some(
+        (block) => block.id === "official_ph_pe_a3_pay-pe-landscape-reference-layout"
+      ) ||
+      (activeSheetTemplateVersionId && !activeSheetTemplateVersionId.startsWith("draft:"))
+    ) {
+      return;
+    }
+    peLandscapeUpgradeAttemptedRef.current = true;
+    applySheetTemplate("official_ph_pe_a3_pay");
+  }, [sheetTemplate, sheetBlocks, activeSheetTemplateVersionId]);
+
+  // Upgrade the former generic PE portrait layout to the supplied modern
+  // footer composition while keeping the old draft available as a backup.
+  useEffect(() => {
+    if (
+      peModernPortraitUpgradeAttemptedRef.current ||
+      sheetTemplate !== "official_pe_a3_port" ||
+      !sheetBlocks.length ||
+      sheetBlocks.some(
+        (block) => block.id === "official_pe_a3_port-modern-portrait-reference-layout"
+      ) ||
+      (activeSheetTemplateVersionId && !activeSheetTemplateVersionId.startsWith("draft:"))
+    ) {
+      return;
+    }
+    peModernPortraitUpgradeAttemptedRef.current = true;
+    applySheetTemplate("official_pe_a3_port");
+  }, [sheetTemplate, sheetBlocks, activeSheetTemplateVersionId]);
+
+  // The former PI portrait template included a legend and a client logo that
+  // are absent from the supplied plate. Replace that draft once while keeping
+  // the previous composition available as a named automatic backup.
+  useEffect(() => {
+    if (
+      piPortraitUpgradeAttemptedRef.current ||
+      sheetTemplate !== "official_pi_a3_ph_por" ||
+      !sheetBlocks.length ||
+      sheetBlocks.some(
+        (block) => block.id === "official_pi_a3_ph_por-pi-portrait-reference-layout"
+      ) ||
+      (activeSheetTemplateVersionId && !activeSheetTemplateVersionId.startsWith("draft:"))
+    ) {
+      return;
+    }
+    piPortraitUpgradeAttemptedRef.current = true;
+    applySheetTemplate("official_pi_a3_ph_por");
+  }, [sheetTemplate, sheetBlocks, activeSheetTemplateVersionId]);
 
   // Logo fields belong to the saved project state. Keeping the export preview
   // derived from them also makes undo/redo restore the correct artwork.
@@ -4443,6 +5053,7 @@ const MAX_HISTORY_STEPS = 50;
     [sheetBlocks]
   );
   const usedIconTypesKey = Array.from(new Set([...usedIconTypes, ...sheetPictoTypes])).join("|");
+  const sheetPictoTypesKey = sheetPictoTypes.join("|");
   useEffect(() => {
     if (!sheetActive) return;
     let cancelled = false;
@@ -4474,6 +5085,38 @@ const MAX_HISTORY_STEPS = 50;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetActive, usedIconTypesKey, iconDefinitions]);
 
+  // Pictograms placed directly on a template use a separate, stretchable
+  // source. Legend thumbnails intentionally keep their natural proportions.
+  useEffect(() => {
+    if (!sheetActive) return;
+    let cancelled = false;
+
+    void Promise.all(
+      sheetPictoTypesKey.split("|").filter(Boolean).map(async (type) => {
+        const source = await buildStretchableIconSource(type as IconType, "", iconDefinitions);
+        if (!source) return null;
+        try {
+          return { type, image: await loadImage(source) };
+        } catch {
+          return null;
+        }
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      setSheetPictoImages((current) => {
+        const next = { ...current };
+        results.forEach((entry) => {
+          if (entry) next[entry.type] = entry.image;
+        });
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sheetActive, sheetPictoTypesKey, iconDefinitions]);
+
   const sheetLegendEntries: SheetLegendEntry[] = useMemo(
     () =>
       usedIconTypes.map((type) => ({
@@ -4486,8 +5129,19 @@ const MAX_HISTORY_STEPS = 50;
   );
 
   /** A pictogram dropped on the page rather than on the drawing. */
-  const handlePlaceSheetIcon = (type: IconType, x: number, y: number) => {
-    const block = createPictoBlock(type, iconDefinitions[type]?.label || String(type), x, y);
+  const handlePlaceSheetIcon = (
+    type: IconType,
+    x: number,
+    y: number,
+    size?: { width: number; height: number }
+  ) => {
+    const block = createPictoBlock(
+      type,
+      iconDefinitions[type]?.label || String(type),
+      x,
+      y,
+      size
+    );
     setSheetBlocks((blocks) => [...blocks, block]);
     setSelectedBlockId(block.id);
     setPlacementIconType(null);
@@ -4538,7 +5192,9 @@ const MAX_HISTORY_STEPS = 50;
       free_polygon_zone: "Zone libre",
       curve_polygon_zone: "Zone courbe"
     };
-    const closedPath = isPolygonShape(shape.shape_type) && shape.shape_type !== "polyline";
+    const closedPath = isPolygonShape(shape.shape_type)
+      && shape.shape_type !== "polyline"
+      && (shape.closed ?? true);
     const block: SheetBlock = {
       id: `sheet-shape-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       kind: "shape",
@@ -4554,13 +5210,21 @@ const MAX_HISTORY_STEPS = 50;
         x: (point.x - x) / width,
         y: (point.y - y) / height
       })),
-      shapeTension: shape.shape_type === "curve_polygon_zone" ? shape.tension ?? 0.35 : shape.tension,
+      shapeControlPoints: shape.control_points
+        ? Object.fromEntries(Object.entries(shape.control_points).map(([index, point]) => [
+            Number(index),
+            {
+              x: (point.x - x) / width,
+              y: (point.y - y) / height
+            }
+          ]))
+        : undefined,
+      shapeClosed: closedPath,
+      shapeStraightSegments: shape.straight_segments || [],
+      shapeTension: shape.shape_type === "curve_polygon_zone" ? 0 : shape.tension,
       stroke: shape.color,
       strokeWidth: shape.stroke_width,
-      fill:
-        shape.shape_type === "zone" || closedPath
-          ? shape.fill_color || shape.color
-          : shape.fill_color || undefined,
+      fill: shape.fill_color || undefined,
       fillOpacity: shape.fill_opacity ?? (shape.shape_type === "zone" ? 0.28 : closedPath ? 0.35 : undefined)
     };
 
@@ -4668,6 +5332,92 @@ const MAX_HISTORY_STEPS = 50;
     }
   };
 
+  const readSheetBlockClipboard = (): SheetBlock | null => {
+    if (typeof window === "undefined") return null;
+    try {
+      const raw = window.localStorage.getItem(SHEET_BLOCK_CLIPBOARD_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as SheetBlock;
+      if (
+        !parsed ||
+        typeof parsed.id !== "string" ||
+        typeof parsed.kind !== "string" ||
+        !isCopyableSheetBlock(parsed)
+      ) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+
+  const markEditorClipboardKind = (kind: "icon" | "sheet-block") => {
+    window.localStorage.setItem(EDITOR_CLIPBOARD_KIND_KEY, kind);
+  };
+
+  const makeSheetBlockCopy = (source: SheetBlock, offset: number): SheetBlock => {
+    const copied = JSON.parse(JSON.stringify(source)) as SheetBlock;
+    if (copied.kind === "picto") {
+      copied.color = normalizePictogramColorOverride(copied.color) || undefined;
+    }
+    const maxX = Math.max(0, activeSheetSize.width - copied.width);
+    const maxY = Math.max(0, activeSheetSize.height - copied.height);
+    return {
+      ...copied,
+      id: `sheet-copy-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      label: source.label.endsWith(" (copie)") ? source.label : `${source.label} (copie)`,
+      x: Math.max(0, Math.min(maxX, source.x + offset)),
+      y: Math.max(0, Math.min(maxY, source.y + offset)),
+      locked: false,
+      visible: true,
+      objectGroupId: "",
+    };
+  };
+
+  const placeSheetBlockCopy = (source: SheetBlock, offset = 16) => {
+    if (!sheetActive || !isCopyableSheetBlock(source)) return false;
+    const pasted = makeSheetBlockCopy(source, offset);
+    setSheetBlocks((blocks) => [...blocks, pasted]);
+    setSelectedIconId(null);
+    setSelectedShapeId(null);
+    setSelectedTextId(null);
+    setSelectedOverlayId(null);
+    setSelectedBatBlock(false);
+    setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+    setSelectedBlockId(pasted.id);
+    setMode("select");
+    setPlacementIconType(null);
+    setPlacementText(false);
+    setShapeTool(null);
+    setSaveStatus("Objet collé dans la feuille");
+    window.setTimeout(() => setSaveStatus(""), 1800);
+    return true;
+  };
+
+  const handleCopySheetBlock = () => {
+    if (!isCopyableSheetBlock(selectedBlock)) return;
+    try {
+      window.localStorage.setItem(SHEET_BLOCK_CLIPBOARD_KEY, JSON.stringify(selectedBlock));
+      markEditorClipboardKind("sheet-block");
+      setClipboardHasSheetBlock(true);
+      setSaveStatus("Objet de la feuille copié");
+      window.setTimeout(() => setSaveStatus(""), 1800);
+    } catch (err) {
+      console.error("Sheet block copy failed:", err);
+    }
+  };
+
+  const pasteSheetBlockFromClipboard = (offset = 16) => {
+    const source = readSheetBlockClipboard();
+    return source ? placeSheetBlockCopy(source, offset) : false;
+  };
+
+  const handleDuplicateSheetBlock = () => {
+    if (!isCopyableSheetBlock(selectedBlock)) return;
+    placeSheetBlockCopy(selectedBlock, 16);
+  };
+
   const handleCopyIcon = () => {
     if (!selectedIcon) return;
     try {
@@ -4680,9 +5430,17 @@ const MAX_HISTORY_STEPS = 50;
           width: selectedIcon.width,
           height: selectedIcon.height,
           rotation: selectedIcon.rotation,
-          label: selectedIcon.label
+          label: selectedIcon.label,
+          anchor_x: selectedIcon.anchor_x ?? null,
+          anchor_y: selectedIcon.anchor_y ?? null,
+          leader_width: selectedIcon.leader_width ?? 2,
+          framed: selectedIcon.framed ?? false,
+          flip_x: selectedIcon.flip_x ?? false,
+          flip_y: selectedIcon.flip_y ?? false,
+          color: normalizePictogramColorOverride(selectedIcon.color),
         })
       );
+      markEditorClipboardKind("icon");
       setClipboardHasIcon(true);
       setSaveStatus("Icône copiée");
       window.setTimeout(() => setSaveStatus(""), 1800);
@@ -4705,6 +5463,13 @@ const MAX_HISTORY_STEPS = 50;
       height: source.height,
       rotation: source.rotation ?? 0,
       label: source.label ?? "",
+      anchor_x: source.anchor_x ?? null,
+      anchor_y: source.anchor_y ?? null,
+      leader_width: source.leader_width ?? 2,
+      framed: source.framed ?? false,
+      flip_x: source.flip_x ?? false,
+      flip_y: source.flip_y ?? false,
+      color: normalizePictogramColorOverride(source.color),
       visible: true,
       z_index: getNextLayerZIndex(),
     };
@@ -4786,15 +5551,28 @@ const MAX_HISTORY_STEPS = 50;
       if (isTypingTarget(event.target)) return;
 
       const key = event.key.toLowerCase();
-      if (key === "c" && selectedIcon) {
-        event.preventDefault();
-        handleCopyIcon();
+      if (key === "c") {
+        if (isCopyableSheetBlock(selectedBlock)) {
+          event.preventDefault();
+          handleCopySheetBlock();
+        } else if (selectedIcon) {
+          event.preventDefault();
+          handleCopyIcon();
+        }
       } else if (key === "v") {
-        event.preventDefault();
-        pasteIconFromClipboard(0);
-      } else if (key === "d" && selectedIcon) {
-        event.preventDefault();
-        handleDuplicateIcon();
+        const clipboardKind = window.localStorage.getItem(EDITOR_CLIPBOARD_KIND_KEY);
+        const pasted = clipboardKind === "sheet-block"
+          ? pasteSheetBlockFromClipboard(16)
+          : Boolean(readIconClipboard()) && (pasteIconFromClipboard(0), true);
+        if (pasted) event.preventDefault();
+      } else if (key === "d") {
+        if (isCopyableSheetBlock(selectedBlock)) {
+          event.preventDefault();
+          handleDuplicateSheetBlock();
+        } else if (selectedIcon) {
+          event.preventDefault();
+          handleDuplicateIcon();
+        }
       }
     };
 
@@ -7629,24 +8407,20 @@ const MAX_HISTORY_STEPS = 50;
             <div className="flex items-center gap-1 rounded bg-black/25 px-1.5 py-0.5">
               <Eye className="h-3.5 w-3.5 text-neutral-400" />
               <span className="text-[10px] font-semibold text-neutral-400">Affichage :</span>
-              <select
-                value={sheetTemplate}
-                onChange={(event) => applySheetTemplate(event.target.value as SheetTemplateKey | "none")}
-                title="Travailler sur le plan seul, ou sur la feuille complète avec ses côtés"
-                className="cursor-pointer rounded bg-transparent px-1 py-0.5 text-[11px] font-semibold text-neutral-200 outline-none hover:bg-white/10"
+              <button
+                type="button"
+                onClick={() => setTemplateLibraryOpen(true)}
+                title="Ouvrir la bibliothèque avec le nom et l’aperçu de chaque template"
+                className="flex max-w-52 cursor-pointer items-center gap-1.5 rounded bg-white/[0.04] px-2 py-1 text-[11px] font-semibold text-neutral-200 transition-colors hover:bg-white/10 hover:text-white"
               >
-                <option value="none" className="bg-[#2d2d30]">Plan seul</option>
-                {(Object.keys(SHEET_TEMPLATES) as SheetTemplateKey[]).map((key) => (
-                  <option key={key} value={key} className="bg-[#2d2d30]">
-                    Feuille {SHEET_TEMPLATES[key].label}
-                  </option>
-                ))}
-              </select>
+                <Library className="h-3.5 w-3.5 shrink-0 text-brand-orange" />
+                <span className="truncate">{activeSheetTemplateLabel}</span>
+              </button>
               {sheetActive && (
                 <button
                   type="button"
-                  onClick={() => applySheetTemplate(sheetTemplate as SheetTemplateKey, { reset: true })}
-                  title="Réinitialiser la mise en page du modèle"
+                  onClick={restoreCurrentSheetTemplateDefault}
+                  title="Revenir à l’état par défaut de ce template"
                   className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
                 >
                   <RefreshCw className="h-3 w-3" />
@@ -7655,7 +8429,7 @@ const MAX_HISTORY_STEPS = 50;
               {sheetActive && (
                 <>
                   <select
-                    value={activeSheetTemplateVersionId}
+                    value={activeSheetTemplateVersionId.startsWith("custom:") ? "" : activeSheetTemplateVersionId}
                     onChange={(event) => applyStoredSheetTemplateVersion(event.target.value)}
                     title="Charger une version enregistrée de ce template"
                     className="max-w-40 cursor-pointer rounded bg-transparent px-1 py-0.5 text-[11px] font-semibold text-neutral-200 outline-none hover:bg-white/10"
@@ -7675,7 +8449,7 @@ const MAX_HISTORY_STEPS = 50;
                   >
                     <Save className="h-3 w-3" />
                   </button>
-                  {activeSheetTemplateVersionId && !activeSheetTemplateVersionId.startsWith("draft:") && (
+                  {activeSheetTemplateVersionId.startsWith("version:") && (
                     <button
                       type="button"
                       onClick={deleteCurrentSheetTemplateVersion}
@@ -7843,23 +8617,49 @@ const MAX_HISTORY_STEPS = 50;
             <button
               type="button"
               onClick={activateAreaSelection}
-              disabled={sheetActive}
               title={sheetActive
-                ? "La sélection par zone est disponible dans l’affichage Plan seul"
+                ? "Tracer un rectangle avec la souris pour sélectionner plusieurs éléments du template"
                 : "Tracer un rectangle avec la souris pour sélectionner plusieurs pictogrammes, formes et textes"}
-              className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
+              className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
                 areaSelectionMode
                   ? "border-sky-400 bg-sky-900/80 text-sky-100"
-                  : multiSelectionCount > 0
+                  : (sheetActive ? sheetSelectionCount : multiSelectionCount) > 0
                     ? "border-sky-600/50 bg-sky-950/70 text-sky-200 hover:bg-sky-900/80"
                     : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
               }`}
             >
               <BoxSelect className="h-3.5 w-3.5" />
-              <span>{areaSelectionMode ? "Tracez la zone…" : multiSelectionCount > 0 ? `${multiSelectionCount} sélectionnés` : "Sélection par zone"}</span>
+              <span>{areaSelectionMode ? "Tracez la zone…" : (sheetActive ? sheetSelectionCount : multiSelectionCount) > 0 ? `${sheetActive ? sheetSelectionCount : multiSelectionCount} sélectionnés` : "Sélection par zone"}</span>
             </button>
 
-            {multiSelectionCount >= 2 && (
+            {sheetActive && sheetSelectionCount >= 2 && (
+              <button
+                type="button"
+                onClick={handleGroupSheetSelection}
+                title="Regrouper les éléments sélectionnés du template"
+                className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+                  sharedSheetObjectGroupId
+                    ? "border-violet-500/50 bg-violet-950/70 text-violet-200 hover:bg-violet-900/80"
+                    : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <GroupIcon className="h-3.5 w-3.5" />
+                <span>{sharedSheetObjectGroupId ? "Groupe actif" : "Regrouper la sélection"}</span>
+              </button>
+            )}
+            {sheetActive && sheetSelectionCount > 0 && selectedSheetObjectGroupIds.length > 0 && (
+              <button
+                type="button"
+                onClick={handleUngroupSheetSelection}
+                title="Dissocier le groupe sans supprimer ses éléments"
+                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1.5 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+              >
+                <Ungroup className="h-3.5 w-3.5" />
+                <span>Dissocier le groupe</span>
+              </button>
+            )}
+
+            {!sheetActive && multiSelectionCount >= 2 && (
               <button
                 type="button"
                 onClick={handleGroupMultiSelection}
@@ -7874,7 +8674,7 @@ const MAX_HISTORY_STEPS = 50;
                 <span>{sharedObjectGroupId ? "Mettre à jour le groupe d’objets" : "Regrouper la sélection"}</span>
               </button>
             )}
-            {multiSelectionCount > 0 && selectedMultiObjectGroupIds.length > 0 && (
+            {!sheetActive && multiSelectionCount > 0 && selectedMultiObjectGroupIds.length > 0 && (
               <button
                 type="button"
                 onClick={handleUngroupMultiSelection}
@@ -7885,7 +8685,7 @@ const MAX_HISTORY_STEPS = 50;
                 <span>Dissocier les objets</span>
               </button>
             )}
-            {multiSelectionCount > 0 && (
+            {!sheetActive && multiSelectionCount > 0 && (
               <button
                 type="button"
                 onClick={handleExportSelectedGroupSvg}
@@ -8121,6 +8921,7 @@ const MAX_HISTORY_STEPS = 50;
                     if (iconId) {
                       setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
                       setSelectedBatBlock(false);
+                      setSelectedOverlayId(null);
                       setSelectedShapeId(null);
                       setSelectedTextId(null);
                       setSelectedBlockId(null);
@@ -8129,16 +8930,29 @@ const MAX_HISTORY_STEPS = 50;
                   sheet={sheetProp}
                   onSheetBlocksChange={setSheetBlocks}
                   selectedBlockId={selectedBlockId}
+                  selectedBlockIds={selectedSheetBlockIds}
                   onSelectBlock={(blockId) => {
-                    setSelectedBlockId(blockId);
+                    selectSheetBlock(blockId);
                     if (blockId) {
                       setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
                       setSelectedBatBlock(false);
                     }
                   }}
+                  onSelectBlocks={(blockIds) => {
+                    setSelectedSheetBlockIds(blockIds);
+                    setSelectedBlockId(blockIds.at(-1) ?? null);
+                    if (blockIds.length) {
+                      setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+                      setSelectedBatBlock(false);
+                      setSelectedIconId(null);
+                      setSelectedShapeId(null);
+                      setSelectedTextId(null);
+                      setSelectedOverlayId(null);
+                    }
+                  }}
                   sheetImages={sheetLogoImages}
                   sheetLegendEntries={sheetLegendEntries}
-                  sheetPictoImages={sheetLegendImages}
+                  sheetPictoImages={sheetPictoImages}
                   onPlaceSheetIcon={handlePlaceSheetIcon}
                   onPlaceSheetText={handlePlaceSheetText}
                   onPlaceSheetShape={handlePlaceSheetShape}
@@ -8207,6 +9021,7 @@ const MAX_HISTORY_STEPS = 50;
                           : { iconIds: [], shapeIds: [], textIds: [] }
                       );
                       setSelectedBatBlock(false);
+                      setSelectedOverlayId(null);
                       setSelectedIconId(null);
                       setSelectedTextId(null);
                       setSelectedBlockId(null);
@@ -8224,6 +9039,7 @@ const MAX_HISTORY_STEPS = 50;
                     if (textId) {
                       setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
                       setSelectedBatBlock(false);
+                      setSelectedOverlayId(null);
                       setSelectedIconId(null);
                       setSelectedShapeId(null);
                       setSelectedBlockId(null);
@@ -8262,6 +9078,37 @@ const MAX_HISTORY_STEPS = 50;
                 </div>
 
                 <div className="space-y-3 p-3">
+                  {sheetSelectionCount > 1 && (
+                    <div className="rounded border border-violet-500/25 bg-violet-500/[0.07] p-2.5">
+                      <p className="text-[10px] font-semibold text-violet-200">
+                        {sheetSelectionCount} éléments sélectionnés ensemble
+                      </p>
+                      <p className="mt-1 text-[9px] leading-relaxed text-neutral-400">
+                        Glissez le cadre bleu ou utilisez les flèches pour déplacer toute la sélection.
+                      </p>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={handleGroupSheetSelection}
+                          className="flex cursor-pointer items-center justify-center gap-1.5 rounded border border-violet-500/30 bg-violet-500/10 py-1.5 text-[10px] font-semibold text-violet-200 transition-colors hover:bg-violet-500/20"
+                        >
+                          <GroupIcon className="h-3.5 w-3.5" />
+                          {sharedSheetObjectGroupId ? "Groupe actif" : "Regrouper"}
+                        </button>
+                        {selectedSheetObjectGroupIds.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleUngroupSheetSelection}
+                            className="flex cursor-pointer items-center justify-center gap-1.5 rounded border border-white/10 bg-white/5 py-1.5 text-[10px] font-semibold text-neutral-300 transition-colors hover:bg-white/10"
+                          >
+                            <Ungroup className="h-3.5 w-3.5" />
+                            Dissocier
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {selectedBlock.kind === "plan" ? (
                     <>
                       <div className="rounded border border-white/10 bg-black/20 p-2.5">
@@ -8311,6 +9158,42 @@ const MAX_HISTORY_STEPS = 50;
                       </button>
                     </>
                   ) : null}
+
+                  {selectedBlock.kind === "picto" && (
+                    <div className="rounded border border-sky-500/25 bg-sky-500/[0.07] p-2.5">
+                      <span className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.12em] text-sky-300">
+                        Miroir du pictogramme
+                      </span>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => updateSelectedBlock({ flipX: !selectedBlock.flipX })}
+                          className={`flex items-center justify-center gap-1.5 rounded border px-2 py-1.5 text-[10px] font-semibold transition-colors ${
+                            selectedBlock.flipX
+                              ? "border-sky-400 bg-sky-500/25 text-sky-200"
+                              : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10"
+                          }`}
+                          title="Miroir horizontal — gauche/droite"
+                        >
+                          <FlipHorizontal className="h-3.5 w-3.5" />
+                          Horizontal
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => updateSelectedBlock({ flipY: !selectedBlock.flipY })}
+                          className={`flex items-center justify-center gap-1.5 rounded border px-2 py-1.5 text-[10px] font-semibold transition-colors ${
+                            selectedBlock.flipY
+                              ? "border-sky-400 bg-sky-500/25 text-sky-200"
+                              : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10"
+                          }`}
+                          title="Miroir vertical — haut/bas"
+                        >
+                          <FlipVertical className="h-3.5 w-3.5" />
+                          Vertical
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {selectedBlock.kind !== "plan" &&
                     selectedBlock.kind !== "image" &&
@@ -8375,21 +9258,33 @@ const MAX_HISTORY_STEPS = 50;
                         </label>
                       </div>
 
-                      <div className="flex items-center gap-1">
-                        {(["left", "center", "right"] as const).map((align) => (
-                          <button
-                            key={align}
-                            type="button"
-                            onClick={() => updateSelectedBlock({ align })}
-                            className={`flex-1 rounded py-1 text-[10px] font-semibold transition-colors ${
-                              (selectedBlock.align ?? "left") === align
-                                ? "bg-emerald-500/20 text-emerald-300"
-                                : "text-neutral-400 hover:bg-white/10"
-                            }`}
-                          >
-                            {align === "left" ? "Gauche" : align === "center" ? "Centre" : "Droite"}
-                          </button>
-                        ))}
+                      <div>
+                        <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                          Alignement du texte
+                        </span>
+                        <div className="grid grid-cols-3 gap-1">
+                          {([
+                            { value: "left", label: "Gauche", Icon: AlignLeft },
+                            { value: "center", label: "Centrer", Icon: AlignCenter },
+                            { value: "right", label: "Droite", Icon: AlignRight },
+                          ] as const).map(({ value, label, Icon }) => (
+                            <button
+                              key={value}
+                              type="button"
+                              title={label}
+                              aria-label={label}
+                              onClick={() => updateSelectedBlock({ align: value })}
+                              className={`flex items-center justify-center gap-1 rounded border py-1.5 text-[10px] font-semibold transition-colors ${
+                                (selectedBlock.align ?? "left") === value
+                                  ? "border-emerald-500 bg-emerald-500/15 text-emerald-300"
+                                  : "border-white/10 bg-white/[0.04] text-neutral-400 hover:bg-white/10"
+                              }`}
+                            >
+                              <Icon className="h-3.5 w-3.5" />
+                              {label}
+                            </button>
+                          ))}
+                        </div>
                       </div>
 
                       <div className="flex items-center gap-3">
@@ -8472,7 +9367,9 @@ const MAX_HISTORY_STEPS = 50;
                           />
                         </label>
                       </div>
-                      {selectedBlock.shapeType !== "line" && selectedBlock.shapeType !== "polyline" && (
+                      {selectedBlock.shapeType !== "line"
+                        && selectedBlock.shapeType !== "polyline"
+                        && selectedBlock.shapeClosed !== false && (
                         <button
                           type="button"
                           onClick={() => updateSelectedBlock({
@@ -8549,19 +9446,83 @@ const MAX_HISTORY_STEPS = 50;
                             aria-label={swatch.label}
                           />
                         ))}
-                        <input
-                          type="color"
-                          value={selectedBlock.color || "#ef4444"}
-                          onChange={(event) => updateSelectedBlock({ color: event.target.value.toLowerCase() })}
-                          className="h-6 w-8 cursor-pointer rounded border border-black/50 bg-transparent p-0"
-                          title="Choisir une couleur libre"
-                        />
+                        <button
+                          type="button"
+                          onClick={() => setNonStandardIconColorOpen((current) => !current)}
+                          className={`rounded border px-2 py-1 text-[10px] font-semibold transition-colors ${
+                            nonStandardIconColorOpen || Boolean(
+                              selectedBlock.color
+                              && !ICON_COLOR_SWATCHES.some(
+                                (swatch) => swatch.value === selectedBlock.color?.toLowerCase()
+                              )
+                            )
+                              ? "border-amber-400 bg-amber-400/15 text-amber-300"
+                              : "border-black/50 bg-[#1b1b1d] text-neutral-300 hover:bg-white/10"
+                          }`}
+                        >
+                          Hors norme…
+                        </button>
                       </div>
-                      {selectedBlock.color ? (
-                        <p className="mt-1.5 text-[10px] leading-snug text-amber-400/90">
-                          Une teinte modifiée peut ne plus être conforme à la couleur réglementaire du pictogramme.
-                        </p>
-                      ) : null}
+                      {(nonStandardIconColorOpen || Boolean(
+                        selectedBlock.color
+                        && !ICON_COLOR_SWATCHES.some(
+                          (swatch) => swatch.value === selectedBlock.color?.toLowerCase()
+                        )
+                      )) && (
+                        <div className="mt-2 rounded-lg border border-amber-400/30 bg-amber-400/[0.07] p-2">
+                          <span className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-300">
+                            Couleur hors norme
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              value={normalizeHexColor(selectedBlock.color || "", "#7c3aed")}
+                              onChange={(event) => updateSelectedBlock({ color: event.target.value.toLowerCase() })}
+                              className="h-8 w-10 shrink-0 cursor-pointer rounded border border-amber-400/30 bg-transparent p-0"
+                              title="Choisir une couleur précise"
+                              aria-label="Choisir une couleur hors norme"
+                            />
+                            <input
+                              key={`sheet-picto-color-${selectedBlock.id}-${selectedBlock.color || "none"}`}
+                              defaultValue={selectedBlock.color || "#7c3aed"}
+                              onBlur={(event) => {
+                                if (isValidHexColor(event.target.value)) {
+                                  updateSelectedBlock({
+                                    color: normalizeHexColor(event.target.value, "#7c3aed")
+                                  });
+                                }
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") event.currentTarget.blur();
+                              }}
+                              placeholder="#7c3aed"
+                              spellCheck={false}
+                              className="min-w-0 flex-1 rounded border border-amber-400/30 bg-black/30 px-2 py-1.5 font-mono text-[11px] uppercase text-neutral-100 outline-none focus:border-amber-300"
+                              aria-label="Code HEX de la couleur hors norme"
+                            />
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {ICON_NON_STANDARD_COLOR_SWATCHES.map((swatch) => (
+                              <button
+                                key={swatch.value}
+                                type="button"
+                                onClick={() => updateSelectedBlock({ color: swatch.value })}
+                                className={`h-6 w-6 rounded border transition-transform hover:scale-110 ${
+                                  selectedBlock.color?.toLowerCase() === swatch.value
+                                    ? "border-white ring-2 ring-amber-400"
+                                    : "border-black/50"
+                                }`}
+                                style={{ backgroundColor: swatch.value }}
+                                title={`${swatch.label} - hors norme`}
+                                aria-label={`${swatch.label} - hors norme`}
+                              />
+                            ))}
+                          </div>
+                          <p className="mt-2 text-[10px] leading-snug text-amber-300/90">
+                            Cette couleur est personnalisée et peut ne pas respecter la couleur réglementaire du pictogramme.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -8615,6 +9576,44 @@ const MAX_HISTORY_STEPS = 50;
                     ))}
                   </div>
 
+                  {isCopyableSheetBlock(selectedBlock) && (
+                    <div className="border-t border-white/10 pt-3">
+                      <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                        Presse-papier
+                      </span>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={handleCopySheetBlock}
+                          title="Copier l’objet de la feuille (⌘C / Ctrl+C)"
+                          className="flex cursor-pointer items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] py-1.5 text-[10px] font-semibold text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                          Copier
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDuplicateSheetBlock}
+                          title="Dupliquer l’objet avec un léger décalage (⌘D / Ctrl+D)"
+                          className="flex cursor-pointer items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] py-1.5 text-[10px] font-semibold text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
+                        >
+                          <CopyPlus className="h-3.5 w-3.5" />
+                          Dupliquer
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => pasteSheetBlockFromClipboard(16)}
+                        disabled={!clipboardHasSheetBlock}
+                        title="Coller le dernier objet copié (⌘V / Ctrl+V)"
+                        className="mt-2 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 py-1.5 text-[10px] font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-30"
+                      >
+                        <ClipboardPaste className="h-3.5 w-3.5" />
+                        Coller dans la feuille
+                      </button>
+                    </div>
+                  )}
+
                   <div className="flex items-center justify-between border-t border-white/10 pt-3">
                     <label className="flex cursor-pointer items-center gap-1.5 text-[10px] font-semibold text-neutral-400">
                       <input
@@ -8628,14 +9627,11 @@ const MAX_HISTORY_STEPS = 50;
                     {selectedBlock.kind !== "plan" && (
                       <button
                         type="button"
-                        onClick={() => {
-                          setSheetBlocks((blocks) => blocks.filter((block) => block.id !== selectedBlock.id));
-                          setSelectedBlockId(null);
-                        }}
+                        onClick={handleDeleteSheetSelection}
                         className="flex cursor-pointer items-center gap-1.5 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] font-semibold text-red-400 transition-colors hover:bg-red-500/20"
                       >
                         <Trash2 className="h-3 w-3" />
-                        Supprimer
+                        {sheetSelectionCount > 1 ? "Supprimer la sélection" : "Supprimer"}
                       </button>
                     )}
                   </div>
@@ -8794,11 +9790,7 @@ const MAX_HISTORY_STEPS = 50;
                           color: definition?.color || "#22c55e"
                         }}
                       >
-                        {definition?.imageUrl ? (
-                          <img src={definition.imageUrl} alt="" className="h-full w-full object-contain" />
-                        ) : (
-                          <span className="h-full w-full" dangerouslySetInnerHTML={{ __html: definition?.svg || "" }} />
-                        )}
+                        <SafetyIconArtwork definition={definition} />
                       </div>
                       <div className="min-w-0">
                         <p className="truncate text-xs font-semibold text-neutral-100">
@@ -8811,6 +9803,41 @@ const MAX_HISTORY_STEPS = 50;
                 })()}
 
                 <div className="space-y-4 p-3">
+                  {/* Kept first so the mirror command is visible without scrolling. */}
+                  <div className="rounded border border-sky-500/25 bg-sky-500/[0.07] p-2.5">
+                    <span className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.12em] text-sky-300">
+                      Miroir du pictogramme
+                    </span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateSelectedIcon("flip_x", !selectedIcon.flip_x)}
+                        className={`flex items-center justify-center gap-1.5 rounded border px-2 py-1.5 text-[10px] font-semibold transition-colors ${
+                          selectedIcon.flip_x
+                            ? "border-sky-400 bg-sky-500/25 text-sky-200"
+                            : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10"
+                        }`}
+                        title="Miroir horizontal — gauche/droite"
+                      >
+                        <FlipHorizontal className="h-3.5 w-3.5" />
+                        Horizontal
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateSelectedIcon("flip_y", !selectedIcon.flip_y)}
+                        className={`flex items-center justify-center gap-1.5 rounded border px-2 py-1.5 text-[10px] font-semibold transition-colors ${
+                          selectedIcon.flip_y
+                            ? "border-sky-400 bg-sky-500/25 text-sky-200"
+                            : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10"
+                        }`}
+                        title="Miroir vertical — haut/bas"
+                      >
+                        <FlipVertical className="h-3.5 w-3.5" />
+                        Vertical
+                      </button>
+                    </div>
+                  </div>
+
                   {/* The marker that orients the whole sheet */}
                   {isYouAreHereIcon(selectedIcon.icon_type, iconDefinitions) && (
                     <div className="rounded border border-emerald-500/30 bg-emerald-500/10 p-2.5">
@@ -8968,41 +9995,6 @@ const MAX_HISTORY_STEPS = 50;
                     </div>
                   </div>
 
-                  {/* Flip / Mirror controls */}
-                  <div className="border-t border-black/40 pt-3">
-                    <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
-                      Sens & Miroir (Retourner)
-                    </span>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleUpdateSelectedIcon("flip_x", !selectedIcon.flip_x)}
-                        className={`flex items-center justify-center gap-1.5 rounded border px-2 py-1.5 text-xs font-medium transition-colors ${
-                          selectedIcon.flip_x
-                            ? "border-sky-500 bg-sky-500/20 text-sky-300 ring-1 ring-sky-500/50"
-                            : "border-black/50 bg-[#1b1b1d] text-neutral-300 hover:bg-white/10"
-                        }`}
-                        title="Retourner l'icône de gauche à droite (Miroir horizontal)"
-                      >
-                        <FlipHorizontal className="h-3.5 w-3.5" />
-                        <span>Miroir ↔</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleUpdateSelectedIcon("flip_y", !selectedIcon.flip_y)}
-                        className={`flex items-center justify-center gap-1.5 rounded border px-2 py-1.5 text-xs font-medium transition-colors ${
-                          selectedIcon.flip_y
-                            ? "border-sky-500 bg-sky-500/20 text-sky-300 ring-1 ring-sky-500/50"
-                            : "border-black/50 bg-[#1b1b1d] text-neutral-300 hover:bg-white/10"
-                        }`}
-                        title="Retourner l'icône de haut en bas (Miroir vertical)"
-                      >
-                        <FlipVertical className="h-3.5 w-3.5" />
-                        <span>Miroir ↕</span>
-                      </button>
-                    </div>
-                  </div>
-
                   {/* Pictogram colour */}
                   <div className="border-t border-black/40 pt-3">
                     <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
@@ -9036,20 +10028,84 @@ const MAX_HISTORY_STEPS = 50;
                           aria-label={swatch.label}
                         />
                       ))}
-                      <input
-                        type="color"
-                        value={selectedIcon.color || "#ef4444"}
-                        onChange={(event) => handleUpdateSelectedIcon("color", event.target.value.toLowerCase())}
-                        className="h-6 w-8 cursor-pointer rounded border border-black/50 bg-transparent p-0"
-                        title="Choisir une couleur libre"
-                      />
+                      <button
+                        type="button"
+                        onClick={() => setNonStandardIconColorOpen((current) => !current)}
+                        className={`rounded border px-2 py-1 text-[10px] font-semibold transition-colors ${
+                          nonStandardIconColorOpen || Boolean(
+                            selectedIcon.color
+                            && !ICON_COLOR_SWATCHES.some(
+                              (swatch) => swatch.value === selectedIcon.color?.toLowerCase()
+                            )
+                          )
+                            ? "border-amber-400 bg-amber-400/15 text-amber-300"
+                            : "border-black/50 bg-[#1b1b1d] text-neutral-300 hover:bg-white/10"
+                        }`}
+                      >
+                        Hors norme…
+                      </button>
                     </div>
-                    {selectedIcon.color ? (
-                      <p className="mt-1.5 text-[10px] leading-snug text-amber-400/90">
-                        Les couleurs des pictogrammes sont normalisées (NF X08-070) : une
-                        teinte modifiée peut ne plus être conforme.
-                      </p>
-                    ) : null}
+                    {(nonStandardIconColorOpen || Boolean(
+                      selectedIcon.color
+                      && !ICON_COLOR_SWATCHES.some(
+                        (swatch) => swatch.value === selectedIcon.color?.toLowerCase()
+                      )
+                    )) && (
+                      <div className="mt-2 rounded-lg border border-amber-400/30 bg-amber-400/[0.07] p-2">
+                        <span className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-300">
+                          Couleur hors norme
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={normalizeHexColor(selectedIcon.color || "", "#7c3aed")}
+                            onChange={(event) => handleUpdateSelectedIcon("color", event.target.value.toLowerCase())}
+                            className="h-8 w-10 shrink-0 cursor-pointer rounded border border-amber-400/30 bg-transparent p-0"
+                            title="Choisir une couleur précise"
+                            aria-label="Choisir une couleur hors norme"
+                          />
+                          <input
+                            key={`canvas-picto-color-${selectedIcon.tempId}-${selectedIcon.color || "none"}`}
+                            defaultValue={selectedIcon.color || "#7c3aed"}
+                            onBlur={(event) => {
+                              if (isValidHexColor(event.target.value)) {
+                                handleUpdateSelectedIcon(
+                                  "color",
+                                  normalizeHexColor(event.target.value, "#7c3aed")
+                                );
+                              }
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") event.currentTarget.blur();
+                            }}
+                            placeholder="#7c3aed"
+                            spellCheck={false}
+                            className="min-w-0 flex-1 rounded border border-amber-400/30 bg-black/30 px-2 py-1.5 font-mono text-[11px] uppercase text-neutral-100 outline-none focus:border-amber-300"
+                            aria-label="Code HEX de la couleur hors norme"
+                          />
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {ICON_NON_STANDARD_COLOR_SWATCHES.map((swatch) => (
+                            <button
+                              key={swatch.value}
+                              type="button"
+                              onClick={() => handleUpdateSelectedIcon("color", swatch.value)}
+                              className={`h-6 w-6 rounded border transition-transform hover:scale-110 ${
+                                selectedIcon.color?.toLowerCase() === swatch.value
+                                  ? "border-white ring-2 ring-amber-400"
+                                  : "border-black/50"
+                              }`}
+                              style={{ backgroundColor: swatch.value }}
+                              title={`${swatch.label} - hors norme`}
+                              aria-label={`${swatch.label} - hors norme`}
+                            />
+                          ))}
+                        </div>
+                        <p className="mt-2 text-[10px] leading-snug text-amber-300/90">
+                          Cette couleur est personnalisée et peut ne pas respecter la couleur réglementaire du pictogramme.
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   {/* Offset with a leader line */}
@@ -9230,6 +10286,36 @@ const MAX_HISTORY_STEPS = 50;
                       >
                         Italique
                       </button>
+                    </div>
+                  </div>
+
+                  {/* Horizontal alignment */}
+                  <div>
+                    <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                      Alignement du texte
+                    </span>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {([
+                        { value: "left", label: "Gauche", Icon: AlignLeft },
+                        { value: "center", label: "Centrer", Icon: AlignCenter },
+                        { value: "right", label: "Droite", Icon: AlignRight },
+                      ] as const).map(({ value, label, Icon }) => (
+                        <button
+                          key={value}
+                          type="button"
+                          title={label}
+                          aria-label={label}
+                          onClick={() => handleUpdateSelectedText("align", value)}
+                          className={`flex items-center justify-center gap-1 rounded border py-1.5 text-[10px] font-semibold transition-colors ${
+                            (selectedText.align ?? "left") === value
+                              ? "border-emerald-500 bg-emerald-500/15 text-emerald-300"
+                              : "border-white/10 bg-white/[0.04] text-neutral-400 hover:bg-white/10"
+                          }`}
+                        >
+                          <Icon className="h-3.5 w-3.5" />
+                          {label}
+                        </button>
+                      ))}
                     </div>
                   </div>
 
@@ -9496,7 +10582,9 @@ const MAX_HISTORY_STEPS = 50;
                   )}
 
                   {/* Fill Color (Background) */}
-                  {selectedShape.shape_type !== "line" && selectedShape.shape_type !== "polyline" && (
+                  {selectedShape.shape_type !== "line"
+                    && selectedShape.shape_type !== "polyline"
+                    && selectedShape.closed !== false && (
                     <div>
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
@@ -9724,6 +10812,8 @@ const MAX_HISTORY_STEPS = 50;
                   }}
                   title={kind === "polyline"
                     ? `${label} — Maj trace à 0°/90°; cliquez le dernier point, Entrée ou double-clic pour terminer; la plume reste active pour la ligne suivante`
+                    : kind === "curve_polygon_zone"
+                    ? `${label} — les segments restent droits; déplacez une poignée cyan pour les courber; Maj impose un angle de 0°/90°`
                     : isPolygonTool(kind)
                     ? `${label} — cliquez pour ajouter des points, puis Entrée ou double-clic pour terminer`
                     : `${label} — glissez sur le plan ou sur le template pour tracer`}
@@ -11765,6 +12855,21 @@ const MAX_HISTORY_STEPS = 50;
             </div>
           </div>
         )}
+
+        <SheetTemplateLibraryModal
+          open={templateLibraryOpen}
+          items={sheetTemplateLibraryItems}
+          activeItemId={activeSheetTemplateLibraryItemId}
+          onClose={() => setTemplateLibraryOpen(false)}
+          onUsePlanOnly={() => {
+            applySheetTemplate("none");
+            setTemplateLibraryOpen(false);
+          }}
+          onUse={handleUseSheetTemplateLibraryItem}
+          onClone={handleCloneSheetTemplate}
+          onCreate={handleCreateBlankSheetTemplate}
+          onDelete={handleDeleteCustomSheetTemplate}
+        />
 
         <WatermarkModal
           open={watermarkModalOpen}

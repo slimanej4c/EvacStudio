@@ -6,7 +6,7 @@ import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { useAuth } from "@/context/AuthContext";
 import { buildApiUrl } from "@/lib/api";
-import { CalendarDays, Edit2, Eye, FileText, Plus, Search, SearchX, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { CalendarDays, CopyPlus, Edit2, Eye, FileText, Loader2, Plus, Search, SearchX, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 type PlanDateFilter = "all" | "today" | "7days" | "30days" | "custom";
 type PlanSort = "updated_desc" | "updated_asc" | "name_asc" | "name_desc";
@@ -48,7 +48,7 @@ const planTimestamp = (plan: EvacuationPlan) => {
 };
 
 export default function EvacuationPlansPage() {
-  const { loading: authLoading, token } = useAuth();
+  const { loading: authLoading, token, authenticatedFetch } = useAuth();
   const [plans, setPlans] = useState<EvacuationPlan[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -57,6 +57,8 @@ export default function EvacuationPlansPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [sort, setSort] = useState<PlanSort>("updated_desc");
+  const [duplicatingPlanId, setDuplicatingPlanId] = useState<number | null>(null);
+  const [actionNotice, setActionNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   const getPlanAuthHeaders = (): Record<string, string> => {
     const authToken = token || (typeof window !== "undefined" ? localStorage.getItem("token") : null);
@@ -124,6 +126,36 @@ export default function EvacuationPlansPage() {
     });
     if (res.ok) {
       setPlans((current) => current.filter((plan) => plan.id !== id));
+    }
+  };
+
+  const handleDuplicate = async (plan: EvacuationPlan) => {
+    if (duplicatingPlanId !== null) return;
+    setDuplicatingPlanId(plan.id);
+    setActionNotice(null);
+    try {
+      const response = await authenticatedFetch(buildApiUrl(`/api/plans/${plan.id}/duplicate/`), {
+        method: "POST",
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.detail || payload?.error || "Impossible de dupliquer ce plan.");
+      }
+      const duplicated = payload as EvacuationPlan;
+      setPlans((current) => [duplicated, ...current.filter((item) => item.id !== duplicated.id)]);
+      setActionNotice({
+        type: "success",
+        message: `Le plan « ${plan.title} » a été dupliqué sous le nom « ${duplicated.title} ».`,
+      });
+    } catch (duplicateError) {
+      setActionNotice({
+        type: "error",
+        message: duplicateError instanceof Error
+          ? duplicateError.message
+          : "Impossible de dupliquer ce plan.",
+      });
+    } finally {
+      setDuplicatingPlanId(null);
     }
   };
 
@@ -212,6 +244,26 @@ export default function EvacuationPlansPage() {
           </div>
         ) : (
           <>
+            {actionNotice && (
+              <div
+                role="status"
+                className={`mb-4 flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm font-medium ${
+                  actionNotice.type === "success"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    : "border-red-200 bg-red-50 text-red-700"
+                }`}
+              >
+                <span>{actionNotice.message}</span>
+                <button
+                  type="button"
+                  onClick={() => setActionNotice(null)}
+                  title="Fermer"
+                  className="shrink-0 rounded p-1 transition hover:bg-black/5"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
             <div className="mb-6 rounded-2xl border border-brand-orange/15 bg-white p-4 shadow-sm">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
@@ -377,6 +429,20 @@ export default function EvacuationPlansPage() {
                           Éditer
                         </Link>
                         <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => void handleDuplicate(plan)}
+                            disabled={duplicatingPlanId !== null}
+                            title={`Dupliquer « ${plan.title} » avec tous ses éléments`}
+                            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 transition hover:text-brand-orange disabled:cursor-wait disabled:opacity-45"
+                          >
+                            {duplicatingPlanId === plan.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <CopyPlus className="h-4 w-4" />
+                            )}
+                            <span>Dupliquer</span>
+                          </button>
                           <a href={plan.background_file} target="_blank" rel="noreferrer" title="Voir le fond de plan" className="text-slate-400 hover:text-brand-orange">
                             <Eye className="h-4 w-4" />
                           </a>

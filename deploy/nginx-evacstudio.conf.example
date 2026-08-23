@@ -1,0 +1,152 @@
+# EvacStudio — exemple de configuration Nginx durcie.
+#
+# Ce fichier n'est pas appliqué automatiquement : adaptez les domaines et les
+# chemins, puis placez-le dans /etc/nginx/sites-available/.
+#
+# Il complète le durcissement fait dans Django. Certaines protections ne
+# peuvent exister QU'ici : Django ne voit jamais une requête vers /media/.env
+# ou vers /db.sqlite3 si Nginx sert ces répertoires lui-même.
+
+upstream evacstudio_django {
+    server 127.0.0.1:8000;   # gunicorn — à n'exposer QUE sur la boucle locale
+}
+
+upstream evacstudio_next {
+    server 127.0.0.1:3000;   # next start — idem
+}
+
+# HTTP : redirection intégrale vers HTTPS.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name evacstudio.example.fr;
+
+    # Seule exception : le renouvellement des certificats.
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name evacstudio.example.fr;
+
+    ssl_certificate     /etc/letsencrypt/live/evacstudio.example.fr/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/evacstudio.example.fr/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    # ── En-têtes de sécurité ────────────────────────────────────────────────
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header X-Frame-Options           "DENY" always;
+    add_header Referrer-Policy           "same-origin" always;
+    add_header Permissions-Policy        "camera=(), microphone=(), geolocation=(), payment=()" always;
+
+    # ── Content-Security-Policy ─────────────────────────────────────────────
+    # Établie en mesurant ce que le frontend utilise réellement, pas en copiant
+    # une politique type. Chaque permissivité restante est justifiée :
+    #
+    #   script-src 'unsafe-inline'
+    #       Next.js (App Router) injecte des <script> en ligne pour les données
+    #       d'hydratation — vérifié dans le build. Sans cela l'application ne
+    #       s'hydrate pas. La suppression propre passe par des nonces, ce qui
+    #       impose un middleware Next : voir DEPLOYMENT.md.
+    #       'unsafe-eval' n'est PAS accordé et n'est pas nécessaire : ni le code
+    #       applicatif ni pdf.js v6 n'utilisent eval (vérifié).
+    #
+    #   style-src 'unsafe-inline' + fonts.googleapis.com
+    #       Konva pose des styles en ligne sur le canvas, et l'application
+    #       charge la police Outfit depuis Google Fonts (src/app/layout.tsx).
+    #
+    #   img-src data: blob:
+    #       Exports PNG/JPEG via toDataURL, aperçus via createObjectURL.
+    #
+    #   worker-src 'self' blob:
+    #       Worker de pdf.js, pour lire les fonds de plan en PDF.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests" always;
+
+    # Plans scannés : doit rester AU-DESSUS de MAX_BACKGROUND_UPLOAD_BYTES
+    # (30 Mo côté Django), sinon Nginx coupe la requête avant que Django puisse
+    # renvoyer un message d'erreur lisible.
+    client_max_body_size 32m;
+    server_tokens off;
+
+    # ── Ce qui ne doit jamais sortir ────────────────────────────────────────
+    # La base SQLite vit dans backend/, hors des répertoires servis ; ces règles
+    # sont une seconde barrière au cas où l'arborescence changerait.
+    location ~* \.(sqlite3|sqlite|db|env|py|pyc|log|bak|sql)$ { deny all; return 404; }
+    location ~ /\.(git|env|ht) { deny all; return 404; }
+    location ~ /__pycache__/   { deny all; return 404; }
+
+    # ── Médias téléversés ───────────────────────────────────────────────────
+    # /media/ n'est PLUS servi publiquement. Les fichiers passent par
+    # /api/media/, qui vérifie une signature ou une authentification, puis
+    # délègue le transfert ici via X-Accel-Redirect.
+    #
+    # `internal` est le point essentiel : cette location est inatteignable
+    # depuis l'extérieur, seule une réponse Django peut y renvoyer. Django
+    # décide, Nginx transporte — sans mobiliser un worker Python pendant tout
+    # le téléchargement.
+    location /protected-media/ {
+        internal;
+        alias /srv/evacstudio/backend/media/;
+        add_header X-Content-Type-Options "nosniff" always;
+    }
+
+    # Ancienne URL publique : fermée explicitement, au cas où un lien ancien ou
+    # une configuration résiduelle la viserait encore.
+    location /media/ {
+        deny all;
+        return 404;
+    }
+
+    location /static/ {
+        alias /srv/evacstudio/backend/staticfiles/;
+        autoindex off;
+        expires 30d;
+    }
+
+    # ── Application ─────────────────────────────────────────────────────────
+    location /api/ {
+        proxy_pass         http://evacstudio_django;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        # Lu par SECURE_PROXY_SSL_HEADER : sans lui Django croit être en clair.
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;   # les nettoyages IA sont longs
+
+        # Nécessaire pour X-Accel-Redirect : Nginx doit lire les en-têtes de
+        # Django avant de décider de servir le fichier lui-même.
+        proxy_buffering on;
+    }
+
+    # L'admin est le point le plus sensible : restreignez-le au réseau interne
+    # ou au VPN. Décommentez et adaptez.
+    location /admin/ {
+        # allow 10.0.0.0/8;
+        # allow 192.168.0.0/16;
+        # deny all;
+        proxy_pass       http://evacstudio_django;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        proxy_pass       http://evacstudio_next;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# Rappel pare-feu : 8000 et 3000 ne doivent écouter que sur 127.0.0.1.
+#   ufw allow 80,443/tcp
+#   ufw deny 8000
+#   ufw deny 3000
+# Et vérifier :  ss -tlnp | grep -E '3000|8000'   → doit montrer 127.0.0.1, pas 0.0.0.0

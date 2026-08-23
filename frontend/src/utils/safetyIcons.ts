@@ -204,6 +204,18 @@ export function inferPictogramColor(type: IconType, label?: string): string {
   return getIconLeaderColor(type, { label });
 }
 
+/**
+ * A pictogram colour override is deliberately limited to the value produced by
+ * the editor's colour controls. Old clipboard/template data can contain values
+ * such as `transparent` or `none`; treating those as a real repaint makes the
+ * SVG disappear on the white sheet. An invalid value therefore means "keep the
+ * original artwork".
+ */
+export function normalizePictogramColorOverride(color?: string | null): string {
+  const normalized = color?.trim().toLowerCase() ?? "";
+  return /^#[0-9a-f]{6}$/.test(normalized) ? normalized : "";
+}
+
 export const SAFETY_ICONS: Record<IconType, SafetyIconDefinition> = {
   extincteur: {
     type: "extincteur",
@@ -311,7 +323,42 @@ const RECOLOR_PRESERVED = new Set([
   "black", "#000", "#000000",
 ]);
 
-const isPreservedColor = (value: string) => RECOLOR_PRESERVED.has(value.trim().toLowerCase());
+/**
+ * Traced/cleaned SVGs rarely keep their paper and white glyphs at exactly
+ * `#ffffff`: antialiasing produces values such as `#fefefe`, `#fafbfc` or
+ * `#fdeeef`. Repainting those pixels turns the complete viewport into a solid
+ * square and erases the symbol. Treat every very-light RGB colour as white
+ * while still allowing genuinely coloured pale artwork to be replaced.
+ */
+function isNearWhiteColor(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  const hex = normalized.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+  if (hex) {
+    const digits = hex[1];
+    const expanded = digits.length === 3
+      ? digits.split("").map((digit) => `${digit}${digit}`).join("")
+      : digits;
+    if (expanded.length === 8 && Number.parseInt(expanded.slice(6, 8), 16) === 0) return true;
+    const red = Number.parseInt(expanded.slice(0, 2), 16);
+    const green = Number.parseInt(expanded.slice(2, 4), 16);
+    const blue = Number.parseInt(expanded.slice(4, 6), 16);
+    return Math.min(red, green, blue) >= 218;
+  }
+
+  const rgb = normalized.match(
+    /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*(0(?:\.\d+)?|1(?:\.0+)?))?\s*\)$/
+  );
+  if (!rgb) return false;
+  if (rgb[4] !== undefined && Number(rgb[4]) === 0) return true;
+  return Math.min(Number(rgb[1]), Number(rgb[2]), Number(rgb[3])) >= 218;
+}
+
+const isPreservedColor = (value: string) => {
+  const normalized = value.trim().toLowerCase();
+  return RECOLOR_PRESERVED.has(normalized)
+    || normalized.startsWith("url(")
+    || isNearWhiteColor(normalized);
+};
 
 /**
  * Repaints an SVG's ground colour.
@@ -375,6 +422,111 @@ export function recolorSvgMarkup(svg: string, color: string, baseColor?: string)
 
 const svgToDataUrl = (svg: string) => `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 
+const svgMarkupRequests = new Map<string, Promise<string>>();
+
+const definitionUsesSvgFile = (definition: SafetyIconDefinition) =>
+  Boolean(
+    definition.fileName?.toLowerCase().endsWith(".svg")
+    || definition.imageUrl?.split("?", 1)[0].toLowerCase().endsWith(".svg")
+    || definition.imageUrl?.toLowerCase().startsWith("data:image/svg+xml")
+  );
+
+async function fetchSvgMarkup(imageUrl: string): Promise<string> {
+  let pending = svgMarkupRequests.get(imageUrl);
+  if (!pending) {
+    pending = fetch(imageUrl).then(async (response) => {
+      if (!response.ok) throw new Error(`SVG unavailable (${response.status})`);
+      const markup = await response.text();
+      if (!/<svg[\s>]/i.test(markup)) throw new Error("Invalid SVG response");
+      return markup;
+    });
+    svgMarkupRequests.set(imageUrl, pending);
+  }
+
+  try {
+    return await pending;
+  } catch (error) {
+    // A signed URL may have expired. Do not permanently cache the failure so a
+    // refreshed URL can be tried on the next render.
+    svgMarkupRequests.delete(imageUrl);
+    throw error;
+  }
+}
+
+/**
+ * Browser-renderable source for thumbnails and legends.
+ *
+ * The media endpoint deliberately serves SVG files as downloads so navigating
+ * to one can never execute it as a same-origin document. An <img> combined
+ * with `nosniff` therefore cannot display that URL directly. Fetching the
+ * validated markup and turning it into a data-image keeps the server policy
+ * intact while making the artwork render normally inside the application.
+ */
+export async function buildIconPreviewSource(
+  definition?: SafetyIconDefinition
+): Promise<string> {
+  if (!definition) return "";
+  if (definition.svg) return svgToDataUrl(definition.svg);
+  if (!definition.imageUrl) return "";
+  if (!definitionUsesSvgFile(definition)) return definition.imageUrl;
+
+  try {
+    return svgToDataUrl(await fetchSvgMarkup(definition.imageUrl));
+  } catch {
+    return definition.imageUrl;
+  }
+}
+
+/**
+ * Makes the SVG viewport follow the exact width and height chosen in the
+ * editor. SVG defaults to `meet` (contain), which can leave the artwork at its
+ * original proportions even though the pictogram's selection frame changed.
+ */
+export function makeSvgStretchable(svg: string): string {
+  return svg.replace(/<svg\b([^>]*)>/i, (_root, attributes: string) => {
+    const withoutAspectRatio = attributes.replace(
+      /\s+preserveAspectRatio\s*=\s*(?:"[^"]*"|'[^']*')/gi,
+      ""
+    );
+    return `<svg${withoutAspectRatio} preserveAspectRatio="none">`;
+  });
+}
+
+/**
+ * Source used by pictograms placed on the editable canvas. Unlike thumbnails
+ * and legend rows, canvas pictograms must be allowed to deform freely when the
+ * user resizes only one axis. Holding Shift still protects the proportions by
+ * keeping the outer box ratio locked.
+ */
+export async function buildStretchableIconSource(
+  type: IconType,
+  color = "",
+  definitions: Record<string, SafetyIconDefinition> = SAFETY_ICONS
+): Promise<string> {
+  const definition = definitions[type];
+  if (!definition) return "";
+
+  const prepare = (markup: string) =>
+    svgToDataUrl(
+      makeSvgStretchable(
+        color ? recolorSvgMarkup(markup, color, definition.svg ? definition.color : undefined) : markup
+      )
+    );
+
+  if (definition.svg) return prepare(definition.svg);
+
+  if (definition.imageUrl) {
+    if (!definitionUsesSvgFile(definition)) return definition.imageUrl;
+    try {
+      return prepare(await fetchSvgMarkup(definition.imageUrl));
+    } catch {
+      return definition.imageUrl;
+    }
+  }
+
+  return "";
+}
+
 /**
  * Source for a pictogram drawn in a chosen colour. Uploaded pictograms live as
  * files, so their markup has to be fetched before it can be repainted; if that
@@ -393,14 +545,12 @@ export async function buildRecoloredIconSource(
   }
 
   if (definition.imageUrl) {
-    if (!definition.imageUrl.toLowerCase().includes(".svg")) {
+    if (!definitionUsesSvgFile(definition)) {
       // A raster pictogram carries no colours to swap.
       return definition.imageUrl;
     }
     try {
-      const response = await fetch(definition.imageUrl);
-      if (!response.ok) return definition.imageUrl;
-      const markup = await response.text();
+      const markup = await fetchSvgMarkup(definition.imageUrl);
       return svgToDataUrl(recolorSvgMarkup(markup, color));
     } catch {
       return definition.imageUrl;

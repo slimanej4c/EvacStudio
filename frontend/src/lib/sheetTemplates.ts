@@ -67,6 +67,8 @@ export interface SheetBlock {
   visible: boolean;
   /** Prevents accidental movement/resizing while keeping the block selectable. */
   locked?: boolean;
+  /** Independent editor group. Members are selected and moved together. */
+  objectGroupId?: string;
 
   // ── Content ──────────────────────────────────────────────────────────────
   /** Title bar text. Empty or absent means no title bar. */
@@ -76,9 +78,16 @@ export interface SheetBlock {
   imageKey?: SheetImageKey;
   /** For `picto` blocks: which safety pictogram is shown. */
   iconType?: string;
+  /** Mirror the pictogram artwork without changing its frame geometry. */
+  flipX?: boolean;
+  flipY?: boolean;
   /** Geometry used by blocks created with the sheet drawing tools. */
   shapeType?: SheetShapeKind;
   shapePoints?: SheetShapePoint[];
+  /** Optional Bézier handles, normalised inside the shape block by segment. */
+  shapeControlPoints?: Record<number, SheetShapePoint>;
+  shapeClosed?: boolean;
+  shapeStraightSegments?: number[];
   shapeTension?: number;
   fillOpacity?: number;
 
@@ -1114,44 +1123,136 @@ export function createConsignesChambreBlocks(
   const text = "#171717";
   const paper = "#ffffff";
 
-  const instructionPanel = (
-    id: string,
+  const instructionElements = (
+    language: "fr" | "en" | "de" | "es",
     label: string,
+    flag: string,
     title: string,
     subtitle: string,
     body: string,
     x: number,
-    y: number,
-    panelWidth: number,
-    panelHeight: number
-  ): SheetBlock => ({
-    id,
-    kind: "text",
-    label,
-    x,
-    y,
-    width: panelWidth,
-    height: panelHeight,
-    rotation: 0,
-    visible: true,
-    title: `${title}\n${subtitle}`,
-    titleColor: text,
-    titleFontSize: 13,
-    titleHeight: 46,
-    titleAlign: "center",
-    titleRule: true,
-    text: body,
-    fill: paper,
-    stroke: purple,
-    strokeWidth: 2,
-    color: text,
-    fontSize: 10.5,
-    fontStyle: "bold",
-    align: "left",
-    verticalAlign: "top",
-    lineHeight: 1.16,
-    padding: 10
-  });
+    y: number
+  ): SheetBlock[] => [
+    {
+      id: `room-${language}-flag`,
+      kind: "text",
+      label: `Drapeau - ${label}`,
+      x: x - 9,
+      y: y - 3,
+      width: 80,
+      height: 60,
+      rotation: 0,
+      visible: true,
+      text: flag,
+      color: text,
+      fontSize: 33.5,
+      fontStyle: "bold",
+      align: "center",
+      verticalAlign: "middle",
+      lineHeight: 1.3,
+      padding: 6,
+      uppercase: false,
+    },
+    {
+      id: `room-${language}-frame`,
+      kind: "shape",
+      label: `Cadre - ${label}`,
+      x: x + 2,
+      y: y + 3,
+      width: 447,
+      height: 239,
+      rotation: 0,
+      visible: true,
+      shapeType: "rect",
+      shapePoints: [],
+      shapeClosed: false,
+      shapeStraightSegments: [],
+      stroke: "#010305",
+      strokeWidth: 1,
+    },
+    {
+      id: `room-${language}-title-rule`,
+      kind: "shape",
+      label: `Séparateur du titre - ${label}`,
+      x: x + 33,
+      y: y + 57,
+      width: 385.9530970485757,
+      height: 4,
+      rotation: 0,
+      visible: true,
+      shapeType: "polyline",
+      shapePoints: [
+        { x: -0.05161290322580639, y: 0.4999999999999858 },
+        { x: 1.0483870967741937, y: 0.4999999999999858 },
+      ],
+      shapeClosed: false,
+      shapeStraightSegments: [],
+      shapeTension: 0,
+      stroke: "#081121",
+      strokeWidth: 2,
+      fillOpacity: 0,
+    },
+    {
+      id: `room-${language}-title`,
+      kind: "text",
+      label: `Titre - ${label}`,
+      x: x + 68,
+      y: y - 2,
+      width: 300,
+      height: 39,
+      rotation: 0,
+      visible: true,
+      text: ` ${title} `,
+      color: text,
+      fontSize: 14,
+      fontStyle: "bold",
+      align: "center",
+      verticalAlign: "middle",
+      lineHeight: 1.3,
+      padding: 6,
+      uppercase: false,
+    },
+    {
+      id: `room-${language}-subtitle`,
+      kind: "text",
+      label: `Sous-titre - ${label}`,
+      x: x + 23,
+      y: y + 28,
+      width: 432,
+      height: 26,
+      rotation: 0,
+      visible: true,
+      text: subtitle,
+      color: text,
+      fontSize: 17,
+      fontStyle: "normal",
+      align: "center",
+      verticalAlign: "middle",
+      lineHeight: 1.3,
+      padding: 6,
+      uppercase: false,
+    },
+    {
+      id: `room-${language}-body`,
+      kind: "text",
+      label: `Texte - ${label}`,
+      x: x + 15,
+      y: y + 57,
+      width: 446,
+      height: 188,
+      rotation: 0,
+      visible: true,
+      text: body,
+      color: text,
+      fontSize: 9,
+      fontStyle: "bold",
+      align: "left",
+      verticalAlign: "middle",
+      lineHeight: 1.3,
+      padding: 6,
+      uppercase: false,
+    },
+  ];
 
   return [
     {
@@ -1292,7 +1393,7 @@ export function createConsignesChambreBlocks(
       height: 64,
       rotation: 0,
       visible: true,
-      text: "🚭  CHAMBRE NON-FUMEUR · NICHTRAUCHER-ZIMMER\nNON-SMOKING ROOM · HABITACIÓN PARA NO FUMADORES",
+      text: "🚭  Chambre non-fumeur - Nichtraucher-Zimmer\nNon-smoking room - Habitación para no fumadores",
       fill: paper,
       color: text,
       fontSize: 12.5,
@@ -1335,49 +1436,45 @@ export function createConsignesChambreBlocks(
       visible: true
     },
 
-    instructionPanel(
-      "room-fr-instructions",
+    ...instructionElements(
+      "fr",
       "Consigne incendie en français",
-      "🇫🇷  CONSIGNE D'INCENDIE",
+      "🇫🇷 ",
+      "CONSIGNE D'INCENDIE",
       "Conduite à tenir en cas d'incendie",
-      "EN CAS D'INCENDIE DANS VOTRE CHAMBRE :\n• Gardez votre sang-froid, ne criez pas « Au feu ».\n\nEN CAS D'AUDITION DU SIGNAL D'ALARME :\n• Quittez rapidement les lieux.\n• Fermez si possible la fenêtre.\n• Refermez votre porte en sortant et gagnez la sortie sans affolement.\n\nSI VOUS NE POUVEZ MAÎTRISER LE FEU :\n• Quittez la chambre en fermant porte et fenêtre.\n• Prévenez le garçon d'étage ou la direction.",
+      "EN CAS D'INCENDIE DANS VOTRE CHAMBRE :\n- Gardez votre sang-froid, ne criez pas « Au feu ».\n\nEN CAS D'AUDITION DU SIGNAL D'ALARME DONNANT\nL'ORDRE D'ÉVACUATION DE L'HÔTEL :\n- Quittez votre chambre dans les plus brefs délais.\n- Fermez si possible la fenêtre.\n- Refermez votre porte en sortant et gagnez la sortie\nsans affolement en empruntant l'escalier le plus proche.\n\nSI VOUS NE POUVEZ MAÎTRISER LE FEU :\n- Quittez votre chambre en prenant soin de fermer\nla porte et la fenêtre.\n- Prévenez le garçon d'étage ou la direction.",
       48,
-      1034,
-      448,
-      236
+      1034
     ),
-    instructionPanel(
-      "room-en-instructions",
+    ...instructionElements(
+      "en",
       "Special instructions in English",
-      "🇬🇧  SPECIAL INSTRUCTIONS",
+      "🇬🇧 ",
+      "SPECIAL INSTRUCTIONS",
       "What to do in case of fire",
-      "IN CASE OF FIRE IN YOUR ROOM:\n• Keep your calm, do not shout « Fire ».\n\nIF YOU HEAR THE FIRE ALARM:\n• Leave your room as quickly as possible.\n• If possible, close the window.\n• Close the door behind you and leave the hotel without panic by the nearest staircase.\n\nIF YOU CANNOT PUT OUT THE FIRE:\n• Leave the room and windows behind you.\n• Report the fire to staff or management.",
+      "IN CASE OF FIRE IN YOUR ROOM :\n- Keep calm, do not shout « Fire ».\n\nIF YOU HEAR THE FIRE ALARM REQUIRING\nTHE EVACUATION OF THE HOTEL :\n- Leave your room as quickly as possible.\n- If possible, close the window.\n- Close the door behind you and leave the hotel without\npanic, by the nearest staircase.\n\nIF YOU CANNOT PUT OUT THE FIRE :\n- Leave your room, making sure to close the door\nand the window.\n- Report the fire to your floor attendant or to management.",
       48,
-      1284,
-      448,
-      244
+      1284
     ),
-    instructionPanel(
-      "room-de-instructions",
+    ...instructionElements(
+      "de",
       "Spezialanweisung auf Deutsch",
-      "🇩🇪  SPEZIALANWEISUNG",
+      "🇩🇪 ",
+      "SPEZIALANWEISUNG",
       "Wie Sie sich im Falle eines Brandes verhalten",
-      "IM FALLE EINES BRANDES IM ZIMMER:\n• Bleiben Sie ruhig, rufen Sie nicht « Feuer ».\n\nBEI ERTÖNEN DES ALARMSIGNALS:\n• Verlassen Sie Ihr Zimmer unverzüglich.\n• Schliessen Sie das Fenster, wenn möglich.\n• Schliessen Sie Ihre Tür beim Herausgehen und benutzen Sie die nächste Treppe.\n\nWENN SIE DEM FEUER NICHT HERR WERDEN:\n• Verlassen Sie Ihr Zimmer und schliessen Sie Tür und Fenster.\n• Benachrichtigen Sie das Personal.",
+      "IM FALLE EINES BRANDES IM ZIMMER :\n- Bleiben Sie ruhig, rufen Sie nicht « Feuer ».\n\nBEI ERTÖNEN DES ALARMSIGNALS, WELCHES DEN BEFEHL\nZUR RÄUMUNG DES HOTELS GIBT :\n- Verlassen Sie Ihr Zimmer unverzüglich.\n- Schließen Sie das Fenster, wenn möglich.\n- Schließen Sie Ihre Tür beim Herausgehen und begeben Sie sich\nohne Aufregung zum Ausgang, indem Sie die nächstgelegene\nTreppe benutzen.\n\nWENN SIE DEM FEUER NICHT HERR WERDEN KÖNNEN :\n- Verlassen Sie Ihr Zimmer und achten Sie darauf,\nTür und Fenster zu schließen.\n- Benachrichtigen Sie den Etagendiener oder die Geschäftsleitung.",
       635,
-      1034,
-      448,
-      236
+      1034
     ),
-    instructionPanel(
-      "room-es-instructions",
+    ...instructionElements(
+      "es",
       "Consigna especial en español",
-      "🇪🇸  CONSIGNA ESPECIAL",
+      "🇪🇸 ",
+      "CONSIGNA ESPECIAL",
       "Conducta a respetar en caso de incendio",
-      "EN CASO DE INCENDIO EN SU HABITACIÓN:\n• Mantenga la sangre fría sin gritar « Fuego ».\n\nEN CASO DE QUE OIGA LA SEÑAL DE ALARMA:\n• Abandone su habitación lo antes posible.\n• Cierre, si puede, la ventana.\n• Cierre su puerta al salir y diríjase a la salida por la escalera más cercana.\n\nSI NO PUEDE DOMINAR EL FUEGO:\n• Salga cerrando la puerta y la ventana.\n• Avise al personal o a la dirección.",
+      "EN CASO DE INCENDIO EN SU HABITACIÓN :\n- Mantenga la sangre fría sin gritar « Fuego ».\n\nEN CASO DE QUE OIGA LA SEÑAL DE ALARMA,\nADVIRTIENDO LA EVACUACIÓN DEL HOTEL :\n- Abandone su habitación lo antes posible.\n- Cierre, si puede, la ventana.\n- Cierre su puerta al salir. Vaya a la salida, sin precipitarse,\npor la escalera que esté más cerca.\n\nSI NO PUEDE DOMINAR EL FUEGO :\n- Salga de su habitación cuidando de cerrar\nla puerta y la ventana.\n- Advierta al responsable de la planta o a la dirección.",
       635,
-      1284,
-      448,
-      244
+      1284
     ),
     {
       id: "room-centre-instructions",
@@ -1458,6 +1555,52 @@ export function createConsignesChambreBlocks(
   ];
 }
 
+/**
+ * Replaces the former all-in-one language panels with the independent elements
+ * used by the corrected German section: flag, frame, heading, subtitle, rule
+ * and body. Existing German elements and every unrelated custom item remain
+ * untouched.
+ */
+export function upgradeConsignesChambreIndependentTextElements(
+  blocks: SheetBlock[]
+): SheetBlock[] {
+  const canonical = createConsignesChambreBlocks();
+  const legacyLanguages: Record<string, "fr" | "en" | "de" | "es"> = {
+    "room-fr-instructions": "fr",
+    "room-en-instructions": "en",
+    "room-de-instructions": "de",
+    "room-es-instructions": "es",
+  };
+  const inserted = new Set<string>();
+  const upgraded: SheetBlock[] = [];
+
+  blocks.forEach((block) => {
+    const language = legacyLanguages[block.id];
+    if (language) {
+      if (!inserted.has(language)) {
+        canonical
+          .filter((item) => item.id.startsWith(`room-${language}-`))
+          .forEach((item) => upgraded.push(JSON.parse(JSON.stringify(item)) as SheetBlock));
+        inserted.add(language);
+      }
+      return;
+    }
+
+    if (
+      block.id === "room-no-smoking"
+      && block.text?.includes("CHAMBRE NON-FUMEUR · NICHTRAUCHER-ZIMMER")
+    ) {
+      const corrected = canonical.find((item) => item.id === "room-no-smoking");
+      upgraded.push({ ...block, text: corrected?.text ?? block.text });
+      return;
+    }
+
+    upgraded.push(block);
+  });
+
+  return upgraded;
+}
+
 export function createSheetBlocks(
   template: SheetTemplateKey,
   context: SheetTemplateContext = {}
@@ -1496,6 +1639,44 @@ function createOfficialEditableBlocks(
 
   if (template === "official_a2_pay_pi") {
     return createOfficialBlankInterventionBlocks(template, title, sheetW, sheetH, accent);
+  }
+
+  if (template === "official_psi_ph_a3_por") {
+    return createOfficialPsiPortraitBlocks(template, title, sheetW, sheetH);
+  }
+
+  if (template === "official_a3_pe_ph_por") {
+    return createOfficialEvacuationPortraitFromPsiBlocks(
+      template,
+      createOfficialPsiPortraitBlocks(template, title, sheetW, sheetH),
+      title
+    );
+  }
+
+  if (template === "official_ph_pe_a3_pay") {
+    return createOfficialEvacuationLandscapeBlocks(template, title, sheetW, sheetH);
+  }
+
+  if (template === "official_pi_a3_ph_por") {
+    return createOfficialInterventionPortraitBlocks(template, title, sheetW, sheetH);
+  }
+
+  if (template === "official_pe_a3_port") {
+    return createOfficialEvacuationModernPortraitBlocks(template, title, sheetW, sheetH);
+  }
+
+  if (template === "official_a3_pe_pay") {
+    return createOfficialEvacuationModernLandscapeFromPortraitBlocks(
+      template,
+      createOfficialEvacuationModernPortraitBlocks(
+        "official_pe_a3_port",
+        title,
+        PORTRAIT_SHEET_WIDTH,
+        PORTRAIT_SHEET_HEIGHT
+      ),
+      sheetW,
+      sheetH
+    );
   }
 
   return portrait
@@ -1677,6 +1858,1699 @@ function createOfficialLandscapeBlocks(
   ];
 }
 
+/**
+ * Editable reconstruction of the supplied "FOND PH PE A3 PAY" plate.
+ *
+ * The PDF stores the landscape artwork on a portrait page rotated by 90°.
+ * Coordinates below describe the corrected, upright 1600 × 1131 studio sheet.
+ * The plan remains one large block on the right while every notice, heading,
+ * pictogram and logo in the left column stays independently editable.
+ */
+function createOfficialEvacuationLandscapeBlocks(
+  template: string,
+  title: string,
+  sheetW: number,
+  sheetH: number
+): SheetBlock[] {
+  const green = "#019501";
+  const red = "#ff0000";
+  const yellow = "#f8d731";
+  const black = "#111111";
+  const paper = "#ffffff";
+  const displayTitle = title === "PLAN D'EVACUATION"
+    ? "PLAN D'ÉVACUATION"
+    : title;
+
+  const textBlock = (
+    id: string,
+    label: string,
+    text: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    options: Partial<SheetBlock> = {}
+  ): SheetBlock => ({
+    id: `${template}-pe-landscape-${id}`,
+    kind: "text",
+    label,
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+    visible: true,
+    text,
+    color: black,
+    fontSize: 10.5,
+    fontStyle: "bold",
+    align: "center",
+    verticalAlign: "top",
+    lineHeight: 1.14,
+    padding: 0,
+    uppercase: true,
+    ...options,
+  });
+
+  const pictogram = (
+    id: string,
+    label: string,
+    iconType: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    color?: string
+  ): SheetBlock => ({
+    id: `${template}-pe-landscape-${id}`,
+    kind: "picto",
+    label,
+    iconType,
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+    visible: true,
+    color,
+  });
+
+  const heading = (
+    id: string,
+    label: string,
+    y: number,
+    fill: string,
+    color: string,
+    iconType?: string
+  ): SheetBlock[] => [
+    {
+      id: `${template}-pe-landscape-${id}-heading`,
+      kind: "band",
+      label: `Bandeau ${label}`,
+      x: 65,
+      y,
+      width: 261,
+      height: 30,
+      rotation: 0,
+      visible: true,
+      text: label,
+      fill,
+      cornerRadius: 15,
+      color,
+      fontSize: 27,
+      fontStyle: "bold",
+      align: "left",
+      verticalAlign: "middle",
+      lineHeight: 1,
+      padding: 23,
+      uppercase: true,
+    },
+    ...(iconType ? [pictogram(
+      `${id}-heading-icon`,
+      `Pictogramme ${label}`,
+      iconType,
+      281,
+      y + 3,
+      24,
+      24,
+      fill
+    )] : []),
+  ];
+
+  const framedBox = (
+    id: string,
+    label: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    stroke: string
+  ): SheetBlock => ({
+    id: `${template}-pe-landscape-${id}`,
+    kind: "shape",
+    label,
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+    visible: true,
+    shapeType: "rect",
+    fill: paper,
+    fillOpacity: 0,
+    stroke,
+    strokeWidth: 1,
+  });
+
+  return [
+    {
+      id: `${template}-pe-landscape-reference-layout`,
+      kind: "plan",
+      planSlot: "main",
+      label: "Zone principale du plan",
+      x: 340,
+      y: 132,
+      width: sheetW - 395,
+      height: sheetH - 180,
+      rotation: 0,
+      visible: true,
+      fill: paper,
+      strokeWidth: 0,
+    },
+    {
+      id: `${template}-pe-landscape-header-background`,
+      kind: "band",
+      label: "Bandeau Plan d'évacuation",
+      x: 54,
+      y: 43,
+      width: sheetW - 122,
+      height: 68,
+      rotation: 0,
+      visible: true,
+      text: "",
+      fill: green,
+      color: paper,
+      padding: 0,
+    },
+    pictogram(
+      "header-exit",
+      "Sortie dans le bandeau",
+      "issue_de_secours",
+      528,
+      48,
+      50,
+      56,
+      green
+    ),
+    textBlock(
+      "header-title",
+      "Titre principal",
+      displayTitle || "PLAN D'ÉVACUATION",
+      574,
+      47,
+      590,
+      58,
+      {
+        color: paper,
+        fontSize: 51,
+        align: "center",
+        verticalAlign: "middle",
+        lineHeight: 1,
+      }
+    ),
+    textBlock(
+      "conformity",
+      "Mention de conformité",
+      "CONFORME A LA NORME NF X08-070",
+      sheetW - 270,
+      91,
+      200,
+      12,
+      {
+        color: paper,
+        fontSize: 6.5,
+        fontStyle: "normal",
+        align: "right",
+        verticalAlign: "middle",
+        lineHeight: 1,
+      }
+    ),
+
+    ...heading("fire", "INCENDIE", 159, red, paper, "extincteur"),
+    textBlock(
+      "fire-copy",
+      "Consignes incendie",
+      "EN CAS D'INCENDIE, GARDEZ VOTRE CALME ET\nDÉCLENCHEZ LE BOÎTIER LE PLUS PROCHE.\n\nATTAQUEZ LE FOYER PAR LA BASE AU MOYEN\nDES EXTINCTEURS SANS PRENDRE DE\nRISQUES.\n\nDANS LA CHALEUR ET LA FUMÉE,\nBAISSEZ-VOUS, L'AIR FRAIS EST PRÈS DU\nSOL.",
+      67,
+      201,
+      257,
+      111,
+      { fontSize: 10.3, lineHeight: 1.12 }
+    ),
+    pictogram(
+      "fire-phone",
+      "Téléphone d'urgence incendie",
+      "telephone_rouge_final_corrige",
+      79,
+      312,
+      34,
+      38,
+      red
+    ),
+    textBlock(
+      "fire-call-label",
+      "Libellé appel d'urgence",
+      "Appel d'urgence :",
+      110,
+      318,
+      106,
+      14,
+      { fontSize: 11.2, align: "left", verticalAlign: "middle", uppercase: false }
+    ),
+    textBlock(
+      "fire-numbers",
+      "Numéros pompiers",
+      "18 ou 112",
+      214,
+      318,
+      83,
+      14,
+      { color: red, fontSize: 11.2, align: "left", verticalAlign: "middle", uppercase: false }
+    ),
+    textBlock(
+      "fire-security",
+      "Service de sécurité",
+      "ou le service de sécurité :",
+      110,
+      333,
+      190,
+      14,
+      { fontSize: 11.2, align: "left", verticalAlign: "middle", uppercase: false }
+    ),
+
+    ...heading("evacuation", "ÉVACUATION", 370, green, paper, "issue_de_secours"),
+    textBlock(
+      "evacuation-copy",
+      "Consignes évacuation",
+      "À L'AUDITION DU SIGNAL OU SUR ORDRE D'UN\nRESPONSABLE, FERMEZ LES PORTES ET LES\nFENÊTRES.\n\nSUIVEZ LES INDICATIONS DU GUIDE OU\nDIRIGEZ-VOUS VERS LES SORTIES LES PLUS\nPROCHES.\n\nN'UTILISEZ PAS LES ASCENSEURS OU\nMONTE-CHARGES S'ILS EXISTENT.\n\nNE REVENEZ PAS EN ARRIÈRE SANS\nY AVOIR ÉTÉ INVITÉ.",
+      67,
+      406,
+      257,
+      142,
+      { fontSize: 10.3, lineHeight: 1.12 }
+    ),
+
+    ...heading("prevention", "PRÉVENTION", 568, yellow, black),
+    textBlock(
+      "prevention-copy",
+      "Consignes prévention",
+      "FERMEZ FENÊTRES ET PORTES EN\nQUITTANT LES LIEUX.\n\nN'ENCOMBREZ PAS LE MATÉRIEL\nINCENDIE, LES ISSUES ET LES\nCIRCULATIONS.\n\nIL EST FORMELLEMENT INTERDIT DE FUMER\nET DE VAPOTER.",
+      67,
+      616,
+      257,
+      100,
+      { fontSize: 10.3, lineHeight: 1.12 }
+    ),
+
+    framedBox("assembly-frame", "Cadre point de rassemblement", 76, 758, 239, 85, green),
+    pictogram(
+      "assembly",
+      "Point de rassemblement",
+      "point_rassemblement",
+      86,
+      771,
+      59,
+      59,
+      green
+    ),
+    textBlock(
+      "assembly-copy",
+      "Libellé point de rassemblement",
+      "POINT DE RASSEMBLEMENT :",
+      149,
+      770,
+      157,
+      28,
+      { fontSize: 10.4, fontStyle: "normal", align: "left", verticalAlign: "middle" }
+    ),
+    framedBox("deaf-frame", "Cadre urgence 114", 76, 852, 239, 86, red),
+    pictogram(
+      "deaf",
+      "Urgence personnes malentendantes",
+      "urgence-sourds",
+      86,
+      865,
+      59,
+      59,
+      red
+    ),
+    textBlock(
+      "deaf-copy",
+      "Appel d'urgence 114",
+      "Numéro d'urgence pour les\npersonnes ayant des soucis\nà entendre ou à parler.",
+      153,
+      869,
+      151,
+      51,
+      {
+        color: red,
+        fontSize: 10.7,
+        fontStyle: "normal",
+        align: "center",
+        verticalAlign: "middle",
+        lineHeight: 1.12,
+        uppercase: false,
+      }
+    ),
+    {
+      id: `${template}-pe-landscape-studio-logo`,
+      kind: "image",
+      label: "Logo studio",
+      imageKey: "studioLogo",
+      x: 101,
+      y: 953,
+      width: 188,
+      height: 80,
+      rotation: 0,
+      visible: true,
+    },
+  ];
+}
+
+/**
+ * Editable reconstruction of the supplied "FOND PI A3 PH POR" plate.
+ * The reference contains only the red regulatory header and a large, clear
+ * portrait window for the intervention plan: no legend and no client logo.
+ */
+function createOfficialInterventionPortraitBlocks(
+  template: string,
+  title: string,
+  sheetW: number,
+  sheetH: number
+): SheetBlock[] {
+  const red = "#ff0000";
+  const paper = "#ffffff";
+
+  return [
+    {
+      id: `${template}-pi-portrait-reference-layout`,
+      kind: "plan",
+      planSlot: "main",
+      label: "Zone principale du plan",
+      x: 46,
+      y: 185,
+      width: sheetW - 92,
+      height: sheetH - 231,
+      rotation: 0,
+      visible: true,
+      fill: paper,
+      strokeWidth: 0,
+    },
+    {
+      id: `${template}-pi-portrait-header-background`,
+      kind: "band",
+      label: "Bandeau Plan d'intervention",
+      x: 46,
+      y: 100,
+      width: sheetW - 92,
+      height: 67,
+      rotation: 0,
+      visible: true,
+      text: "",
+      fill: red,
+      color: paper,
+      padding: 0,
+    },
+    {
+      id: `${template}-pi-portrait-title`,
+      kind: "text",
+      label: "Titre principal",
+      x: 302,
+      y: 107,
+      width: 574,
+      height: 51,
+      rotation: 0,
+      visible: true,
+      text: title || "PLAN D'INTERVENTION",
+      color: paper,
+      fontSize: 45,
+      fontStyle: "bold",
+      align: "center",
+      verticalAlign: "middle",
+      lineHeight: 1,
+      padding: 0,
+      uppercase: true,
+    },
+    {
+      id: `${template}-pi-portrait-conformity`,
+      kind: "text",
+      label: "Mention de conformité",
+      x: sheetW - 246,
+      y: 145,
+      width: 190,
+      height: 11,
+      rotation: 0,
+      visible: true,
+      text: "CONFORME A LA NORME NF X08-070",
+      color: paper,
+      fontSize: 7,
+      fontStyle: "normal",
+      align: "right",
+      verticalAlign: "middle",
+      lineHeight: 1,
+      padding: 0,
+      uppercase: true,
+    },
+  ];
+}
+
+/**
+ * Editable reconstruction of the supplied modern "PE A3 PORT" plate.
+ * Its large central plan is framed by a blueprint-green masthead and four
+ * compact information panels along the bottom edge.
+ */
+function createOfficialEvacuationModernPortraitBlocks(
+  template: string,
+  title: string,
+  sheetW: number,
+  sheetH: number
+): SheetBlock[] {
+  const headerGreen = "#0b8c37";
+  const darkGreen = "#025f21";
+  const red = "#d90005";
+  const blue = "#012e7e";
+  const paper = "#ffffff";
+  const black = "#111111";
+  const displayTitle = title === "PLAN D'EVACUATION"
+    ? "PLAN D’ÉVACUATION"
+    : title;
+
+  const textBlock = (
+    id: string,
+    label: string,
+    text: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    options: Partial<SheetBlock> = {}
+  ): SheetBlock => ({
+    id: `${template}-modern-${id}`,
+    kind: "text",
+    label,
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+    visible: true,
+    text,
+    color: black,
+    fontSize: 10,
+    fontStyle: "normal",
+    align: "left",
+    verticalAlign: "top",
+    lineHeight: 1.12,
+    padding: 0,
+    ...options,
+  });
+
+  const panel = (
+    id: string,
+    label: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    stroke: string,
+    radius = 6
+  ): SheetBlock => ({
+    id: `${template}-modern-${id}`,
+    kind: "band",
+    label,
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+    visible: true,
+    text: "",
+    fill: paper,
+    stroke,
+    strokeWidth: 1,
+    cornerRadius: radius,
+    padding: 0,
+  });
+
+  const band = (
+    id: string,
+    label: string,
+    text: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    fill: string,
+    options: Partial<SheetBlock> = {}
+  ): SheetBlock => ({
+    id: `${template}-modern-${id}`,
+    kind: "band",
+    label,
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+    visible: true,
+    text,
+    fill,
+    color: paper,
+    fontSize: 27,
+    fontStyle: "bold",
+    align: "left",
+    verticalAlign: "middle",
+    lineHeight: 1,
+    padding: 62,
+    uppercase: true,
+    ...options,
+  });
+
+  const pictogram = (
+    id: string,
+    label: string,
+    iconType: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    color?: string
+  ): SheetBlock => ({
+    id: `${template}-modern-${id}`,
+    kind: "picto",
+    label,
+    iconType,
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+    visible: true,
+    color,
+  });
+
+  const line = (
+    id: string,
+    label: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    stroke: string
+  ): SheetBlock => ({
+    id: `${template}-modern-${id}`,
+    kind: "shape",
+    label,
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+    visible: true,
+    shapeType: "line",
+    shapePoints: [{ x: 0, y: 0.5 }, { x: 1, y: 0.5 }],
+    stroke,
+    strokeWidth: 1,
+  });
+
+  const roundIcon = (
+    id: string,
+    label: string,
+    symbol: string,
+    x: number,
+    y: number,
+    fill: string
+  ): SheetBlock[] => [
+    {
+      id: `${template}-modern-${id}-circle`,
+      kind: "shape",
+      label: `Fond ${label}`,
+      x,
+      y,
+      width: 38,
+      height: 38,
+      rotation: 0,
+      visible: true,
+      shapeType: "circle",
+      fill,
+      fillOpacity: 1,
+      strokeWidth: 0,
+    },
+    textBlock(`${id}-symbol`, label, symbol, x, y + 1, 38, 36, {
+      color: paper,
+      fontSize: 21,
+      fontStyle: "bold",
+      align: "center",
+      verticalAlign: "middle",
+      lineHeight: 1,
+    }),
+  ];
+
+  return [
+    {
+      id: `${template}-modern-portrait-reference-layout`,
+      kind: "plan",
+      planSlot: "main",
+      label: "Zone principale du plan",
+      x: 30,
+      y: 170,
+      width: sheetW - 60,
+      height: 1020,
+      rotation: 0,
+      visible: true,
+      fill: paper,
+      strokeWidth: 0,
+    },
+
+    // Masthead.
+    band("header", "Bandeau Plan d'évacuation", "", 0, 26, sheetW, 122, headerGreen, {
+      padding: 0,
+    }),
+    textBlock("header-title", "Titre principal", displayTitle || "PLAN D’ÉVACUATION", 125, 42, 881, 88, {
+      color: paper,
+      fontSize: 70,
+      fontStyle: "bold",
+      align: "center",
+      verticalAlign: "middle",
+      lineHeight: 1,
+      uppercase: true,
+    }),
+
+    // Main lower panels.
+    panel("fire-panel", "Cadre Incendie", 13, 1221, 479, 279, red),
+    band("fire-heading", "Bandeau Incendie", "INCENDIE", 13, 1221, 479, 51, red),
+    pictogram("fire-heading-icon", "Pictogramme incendie", "extincteur", 26, 1227, 39, 39, red),
+
+    line("fire-column-rule", "Séparateur Incendie", 257, 1285, 1, 196, red),
+    line("fire-row-1", "Séparateur consigne incendie", 29, 1359, 216, 1, red),
+    line("fire-row-2", "Séparateur consigne incendie", 29, 1427, 216, 1, red),
+    pictogram("alarm", "Déclencheur manuel", "alarme_incendie", 32, 1290, 47, 47, red),
+    textBlock("calm-title", "Gardez votre calme", "GARDEZ\nVOTRE CALME", 92, 1289, 145, 34, {
+      color: red, fontSize: 13, fontStyle: "bold", lineHeight: 1.02, uppercase: true,
+    }),
+    textBlock("calm-copy", "Déclencher le boîtier", "En cas d'incendie,\ndéclenchez le boîtier\nle plus proche.", 92, 1324, 145, 32, {
+      fontSize: 9, lineHeight: 1.08,
+    }),
+    pictogram("extinguisher", "Extincteur", "extincteur", 32, 1368, 47, 47, red),
+    textBlock("attack-title", "Attaquez le feu", "ATTAQUEZ\nLE FEU", 92, 1366, 145, 32, {
+      color: red, fontSize: 13, fontStyle: "bold", lineHeight: 1.02, uppercase: true,
+    }),
+    textBlock("attack-copy", "Attaquer le foyer", "Attaquez le foyer à la base\nau moyen des extincteurs\nsans prendre de risques.", 92, 1399, 145, 29, {
+      fontSize: 8.6, lineHeight: 1.05,
+    }),
+    pictogram("smoke-air", "Air frais au sol", "air", 32, 1437, 47, 47, red),
+    textBlock("smoke-title", "Baissez-vous", "BAISSEZ-VOUS", 92, 1436, 145, 20, {
+      color: red, fontSize: 13, fontStyle: "bold", uppercase: true,
+    }),
+    textBlock("smoke-copy", "Conduite dans les fumées", "Dans la chaleur et la fumée,\nbaissez-vous, l'air frais est\nprès du sol.", 92, 1456, 145, 31, {
+      fontSize: 8.6, lineHeight: 1.05,
+    }),
+
+    panel("emergency-panel", "Cadre Appel d'urgence", 273, 1284, 207, 202, red, 5),
+    band("emergency-heading", "Bandeau Appel d'urgence", "APPEL D’URGENCE", 273, 1284, 207, 27, red, {
+      fontSize: 13,
+      align: "center",
+      padding: 2,
+      cornerRadius: 4,
+    }),
+    pictogram("phone-18", "Téléphone pompiers", "telephone_rouge_final_corrige", 283, 1322, 34, 34, red),
+    textBlock("number-18", "Numéro pompiers", "18", 326, 1317, 55, 43, {
+      color: red, fontSize: 35, fontStyle: "bold", align: "center", verticalAlign: "middle", lineHeight: 1,
+    }),
+    textBlock("label-18", "Libellé pompiers", "POMPIERS", 389, 1333, 77, 18, {
+      color: red, fontSize: 10, fontStyle: "bold", verticalAlign: "middle", uppercase: true,
+    }),
+    line("emergency-row-1", "Séparateur numéro d'urgence", 282, 1363, 189, 1, red),
+    pictogram("phone-114", "Urgence SMS 114", "urgence-sourds", 283, 1371, 34, 34, red),
+    textBlock("number-114", "Numéro SMS", "114", 321, 1367, 65, 43, {
+      color: red, fontSize: 32, fontStyle: "bold", align: "center", verticalAlign: "middle", lineHeight: 1,
+    }),
+    textBlock("label-114", "Libellé SMS", "SMS", 389, 1383, 77, 18, {
+      color: red, fontSize: 10, fontStyle: "bold", verticalAlign: "middle", uppercase: true,
+    }),
+    line("emergency-row-2", "Séparateur numéro d'urgence", 282, 1417, 189, 1, red),
+    pictogram("phone-112", "Téléphone urgences européennes", "telephone_rouge_final_corrige", 283, 1424, 34, 34, red),
+    textBlock("number-112", "Numéro européen", "112", 321, 1421, 65, 43, {
+      color: red, fontSize: 31, fontStyle: "bold", align: "center", verticalAlign: "middle", lineHeight: 1,
+    }),
+    textBlock("label-112", "Libellé urgences européennes", "URGENCES\nEUROPÉENNES", 389, 1427, 79, 33, {
+      color: red, fontSize: 9.2, fontStyle: "bold", verticalAlign: "middle", lineHeight: 1.02, uppercase: true,
+    }),
+    textBlock("security-service", "Service de sécurité", "ou le service de sécurité", 300, 1463, 153, 17, {
+      fontSize: 9.2, align: "center", verticalAlign: "middle",
+    }),
+
+    panel("evacuation-panel", "Cadre Évacuation", 501, 1221, 614, 279, darkGreen),
+    band("evacuation-heading", "Bandeau Évacuation", "ÉVACUATION", 501, 1221, 614, 51, darkGreen),
+    pictogram("evacuation-heading-icon", "Sortie de secours", "issue_de_secours", 515, 1226, 42, 42, darkGreen),
+    line("evacuation-column-rule", "Séparateur Évacuation", 821, 1291, 1, 177, darkGreen),
+    line("evacuation-left-row", "Séparateur consigne Évacuation", 515, 1373, 294, 1, darkGreen),
+    line("evacuation-right-row", "Séparateur consigne Évacuation", 833, 1373, 268, 1, darkGreen),
+    pictogram("listen", "Écoutez le signal", "mege-phone", 518, 1299, 52, 52, darkGreen),
+    textBlock("listen-title", "Écoutez", "ÉCOUTEZ", 578, 1301, 220, 20, {
+      color: darkGreen, fontSize: 13, fontStyle: "bold", uppercase: true,
+    }),
+    textBlock("listen-copy", "Consigne du signal", "À l'audition du signal ou sur ordre d'un responsable,\nfermez les portes et les fenêtres.", 578, 1323, 220, 39, {
+      fontSize: 9.2, lineHeight: 1.14,
+    }),
+    pictogram("directions", "Suivre les indications", "direction", 518, 1390, 52, 52, darkGreen),
+    textBlock("directions-title", "Dirigez-vous", "DIRIGEZ-VOUS", 578, 1392, 220, 20, {
+      color: darkGreen, fontSize: 13, fontStyle: "bold", uppercase: true,
+    }),
+    textBlock("directions-copy", "Suivre le guide", "Suivez les indications du guide\nou dirigez-vous vers les sorties les plus proches.", 578, 1414, 220, 39, {
+      fontSize: 9.2, lineHeight: 1.14,
+    }),
+    pictogram("no-lift", "Ne pas utiliser les ascenseurs", "urgence-03", 838, 1299, 52, 52, darkGreen),
+    textBlock("no-lift-title", "Interdiction des ascenseurs", "N’UTILISEZ PAS LES ASCENSEURS", 900, 1313, 197, 20, {
+      color: darkGreen, fontSize: 11.3, fontStyle: "bold", uppercase: true,
+    }),
+    textBlock("no-lift-copy", "Monte-charges", "ou monte-charges s'ils existent.", 900, 1337, 197, 23, {
+      fontSize: 9.2,
+    }),
+    pictogram("no-return", "Ne pas revenir en arrière", "evacuation-3", 838, 1390, 52, 52, darkGreen),
+    textBlock("no-return-title", "Ne revenez pas en arrière", "NE REVENEZ PAS EN ARRIÈRE", 900, 1405, 197, 20, {
+      color: darkGreen, fontSize: 11.3, fontStyle: "bold", uppercase: true,
+    }),
+    textBlock("no-return-copy", "Sans invitation", "sans y avoir été invité.", 900, 1429, 197, 23, {
+      fontSize: 9.2,
+    }),
+
+    // Prevention strip.
+    panel("prevention-panel", "Cadre Prévention", 13, 1508, 564, 75, blue),
+    band("prevention-heading", "Bandeau Prévention", "PRÉVENTION", 13, 1508, 564, 27, blue, {
+      fontSize: 18,
+      padding: 61,
+    }),
+    pictogram("prevention-heading-icon", "Prévention", "alarme_incendie", 28, 1510, 24, 24, blue),
+    line("prevention-column-1", "Séparateur Prévention", 190, 1542, 1, 35, blue),
+    line("prevention-column-2", "Séparateur Prévention", 392, 1542, 1, 35, blue),
+    ...roundIcon("close", "Fermez portes et fenêtres", "▦", 29, 1540, blue),
+    textBlock("close-copy", "Fermer portes et fenêtres", "FERMEZ\nfenêtres et portes\nen quittant les lieux.", 73, 1541, 109, 38, {
+      fontSize: 8.1, lineHeight: 1.04,
+    }),
+    ...roundIcon("clear", "Dégager le matériel incendie", "♨", 205, 1540, blue),
+    textBlock("clear-copy", "Ne pas encombrer", "N’ENCOMBREZ PAS\nle matériel incendie,\nles issues et les circulations.", 249, 1541, 136, 38, {
+      fontSize: 7.8, lineHeight: 1.04,
+    }),
+    ...roundIcon("no-smoking", "Interdiction de fumer", "≠", 407, 1540, blue),
+    textBlock("no-smoking-copy", "Interdiction de fumer", "IL EST INTERDIT\nde fumer\net de vapoter.", 451, 1541, 112, 38, {
+      fontSize: 8.1, lineHeight: 1.04,
+    }),
+
+    // Assembly strip.
+    panel("assembly-panel", "Cadre Point de rassemblement", 586, 1508, 529, 75, darkGreen),
+    pictogram("assembly", "Point de rassemblement", "point_rassemblement", 612, 1517, 55, 55, darkGreen),
+    textBlock("assembly-title", "Point de rassemblement", "POINT DE RASSEMBLEMENT :", 693, 1521, 384, 25, {
+      color: darkGreen,
+      fontSize: 15,
+      fontStyle: "bold",
+      verticalAlign: "middle",
+      uppercase: true,
+    }),
+    line("assembly-line", "Ligne du point de rassemblement", 693, 1559, 400, 1, darkGreen),
+  ];
+}
+
+/**
+ * Landscape counterpart of the modern PE A3 portrait sheet.
+ *
+ * The supplied A3 PE PAY plate uses exactly the same visual language and
+ * notices as PE A3 PORT, but stacks its four information panels down the left
+ * edge.  Taking the portrait blocks as input keeps the chosen pictograms,
+ * colours and copy in one source of truth. It also lets the editor convert the
+ * user's latest corrected PE A3 PORT draft instead of falling back to an older
+ * generic landscape composition.
+ */
+export function createOfficialEvacuationModernLandscapeFromPortraitBlocks(
+  template: string,
+  sourceBlocks: SheetBlock[],
+  sheetW = SHEET_WIDTH,
+  sheetH = SHEET_HEIGHT
+): SheetBlock[] {
+  const panelX = 13;
+  const panelW = 305;
+  const planX = 328;
+  const planY = 148;
+  const planW = sheetW - planX - 14;
+  const planH = sheetH - planY - 13;
+  const fireInteriorY = 222;
+  const fireXScale = panelW / 479;
+  const fireYScale = 321 / 202;
+  const horizontalPoints: SheetShapePoint[] = [
+    { x: 0, y: 0.5 },
+    { x: 1, y: 0.5 },
+  ];
+
+  const keyOf = (block: SheetBlock) => block.id.match(/-modern-(.+)$/)?.[1] ?? "";
+  const outputId = (key: string, index: number) =>
+    key === "portrait-reference-layout"
+      ? `${template}-modern-landscape-reference-layout`
+      : `${template}-modern-landscape-${key || `extra-${index + 1}`}`;
+  const placed = (
+    block: SheetBlock,
+    key: string,
+    index: number,
+    geometry: Partial<SheetBlock>
+  ): SheetBlock => ({
+    ...JSON.parse(JSON.stringify(block)),
+    ...geometry,
+    id: outputId(key, index),
+  });
+
+  const fixedGeometry: Record<string, Partial<SheetBlock>> = {
+    header: { x: 0, y: 25, width: sheetW, height: 117 },
+    "header-title": { x: 350, y: 42, width: 900, height: 82, fontSize: 70 },
+
+    "fire-panel": { x: panelX, y: 151, width: panelW, height: 405 },
+    "fire-heading": { x: panelX, y: 151, width: panelW, height: 65 },
+    "fire-heading-icon": { x: 26, y: 158, width: 40, height: 40 },
+
+    "evacuation-panel": { x: panelX, y: 562, width: panelW, height: 296 },
+    "evacuation-heading": { x: panelX, y: 562, width: panelW, height: 55, padding: 62 },
+    "evacuation-heading-icon": { x: 26, y: 569, width: 41, height: 41 },
+    "evacuation-column-rule": {
+      x: 26, y: 680, width: 279, height: 1, shapePoints: horizontalPoints,
+    },
+    "evacuation-left-row": {
+      x: 26, y: 738, width: 279, height: 1, shapePoints: horizontalPoints,
+    },
+    "evacuation-right-row": {
+      x: 26, y: 796, width: 279, height: 1, shapePoints: horizontalPoints,
+    },
+    listen: { x: 26, y: 625, width: 47, height: 47 },
+    "listen-title": { x: 84, y: 625, width: 220, height: 18 },
+    "listen-copy": { x: 84, y: 645, width: 220, height: 29, fontSize: 8.8 },
+    directions: { x: 26, y: 683, width: 47, height: 47 },
+    "directions-title": { x: 84, y: 683, width: 220, height: 18 },
+    "directions-copy": { x: 84, y: 703, width: 220, height: 29, fontSize: 8.8 },
+    "no-lift": { x: 26, y: 741, width: 47, height: 47 },
+    "no-lift-title": { x: 84, y: 744, width: 220, height: 18 },
+    "no-lift-copy": { x: 84, y: 764, width: 220, height: 23, fontSize: 8.8 },
+    "no-return": { x: 26, y: 799, width: 47, height: 47 },
+    "no-return-title": { x: 84, y: 802, width: 220, height: 18 },
+    "no-return-copy": { x: 84, y: 822, width: 220, height: 23, fontSize: 8.8 },
+
+    "prevention-panel": { x: panelX, y: 864, width: panelW, height: 156 },
+    "prevention-heading": { x: panelX, y: 864, width: panelW, height: 40, padding: 61 },
+    "prevention-heading-icon": { x: 26, y: 870, width: 28, height: 28 },
+    "prevention-column-1": {
+      x: 26, y: 942, width: 279, height: 1, shapePoints: horizontalPoints,
+    },
+    "prevention-column-2": {
+      x: 26, y: 982, width: 279, height: 1, shapePoints: horizontalPoints,
+    },
+    "close-circle": { x: 26, y: 908, width: 32, height: 32 },
+    "close-symbol": { x: 26, y: 909, width: 32, height: 30, fontSize: 18 },
+    "close-copy": { x: 69, y: 908, width: 236, height: 32 },
+    "clear-circle": { x: 26, y: 948, width: 32, height: 32 },
+    "clear-symbol": { x: 26, y: 949, width: 32, height: 30, fontSize: 18 },
+    "clear-copy": { x: 69, y: 948, width: 236, height: 32 },
+    "no-smoking-circle": { x: 26, y: 988, width: 32, height: 32 },
+    "no-smoking-symbol": { x: 26, y: 989, width: 32, height: 30, fontSize: 18 },
+    "no-smoking-copy": { x: 69, y: 988, width: 236, height: 32 },
+
+    "assembly-panel": { x: panelX, y: 1027, width: panelW, height: 42 },
+    assembly: { x: 26, y: 1031, width: 34, height: 34 },
+    "assembly-title": {
+      x: 68, y: 1034, width: 160, height: 23, fontSize: 10, verticalAlign: "middle",
+    },
+    "assembly-line": {
+      x: 213, y: 1054, width: 92, height: 1, shapePoints: horizontalPoints,
+    },
+  };
+
+  return sourceBlocks.flatMap((source, index) => {
+    const block = JSON.parse(JSON.stringify(source)) as SheetBlock;
+    const key = keyOf(block);
+
+    if (key === "portrait-reference-layout" || block.kind === "plan") {
+      return [placed(block, "portrait-reference-layout", index, {
+        label: "Zone principale du plan",
+        x: planX,
+        y: planY,
+        width: planW,
+        height: planH,
+        visible: true,
+      })];
+    }
+
+    const fixed = fixedGeometry[key];
+    if (fixed) return [placed(block, key, index, fixed)];
+
+    // The Incendie panel keeps the portrait composition (instructions on the
+    // left, emergency numbers on the right) and only grows vertically.
+    if (block.x < 500 && block.y >= 1284 && block.y < 1505) {
+      const verticalRule = block.kind === "shape" && block.width <= 2 && block.height > 20;
+      const horizontalRule = block.kind === "shape" && block.height <= 2 && block.width > 20;
+      const geometry: Partial<SheetBlock> = {
+        x: panelX + (block.x - 13) * fireXScale,
+        y: fireInteriorY + (block.y - 1284) * fireYScale,
+        width: block.kind === "picto" ? block.width : block.width * fireXScale,
+        height: block.kind === "picto" || block.kind === "text"
+          ? block.height
+          : block.height * fireYScale,
+      };
+      if (verticalRule) geometry.height = 311;
+      if (horizontalRule) geometry.height = 1;
+      return [placed(block, key, index, geometry)];
+    }
+
+    // Preserve any extra item that the user added to PE A3 PORT. Known blocks
+    // above receive the exact reference layout; extras follow their containing
+    // area proportionally so they are not lost during the conversion.
+    if (block.y >= 1200 && block.y < 1505 && block.x >= 490) {
+      return [placed(block, key, index, {
+        x: panelX + (block.x - 501) * (panelW / 614),
+        y: 562 + (block.y - 1221) * (296 / 279),
+        width: block.width * (panelW / 614),
+        height: block.height * (296 / 279),
+      })];
+    }
+    if (block.y >= 1505 && block.x < 585) {
+      return [placed(block, key, index, {
+        x: panelX + (block.x - 13) * (panelW / 564),
+        y: 864 + (block.y - 1508) * (156 / 75),
+        width: block.width * (panelW / 564),
+        height: block.height * (156 / 75),
+      })];
+    }
+    if (block.y >= 1505 && block.x >= 580) {
+      return [placed(block, key, index, {
+        x: panelX + (block.x - 586) * (panelW / 529),
+        y: 1027 + (block.y - 1508) * (42 / 75),
+        width: block.width * (panelW / 529),
+        height: block.height * (42 / 75),
+      })];
+    }
+    if (block.y < 160) {
+      return [placed(block, key, index, {
+        x: block.x * (sheetW / PORTRAIT_SHEET_WIDTH),
+        y: block.y,
+        width: block.width * (sheetW / PORTRAIT_SHEET_WIDTH),
+        height: block.height,
+      })];
+    }
+    if (block.y < 1220) {
+      return [placed(block, key, index, {
+        x: planX + (block.x - 30) * (planW / (PORTRAIT_SHEET_WIDTH - 60)),
+        y: planY + (block.y - 170) * (planH / 1020),
+        width: block.width * (planW / (PORTRAIT_SHEET_WIDTH - 60)),
+        height: block.height * (planH / 1020),
+      })];
+    }
+
+    return [];
+  });
+}
+
+/**
+ * Editable reconstruction of the supplied "FOND PSI PH A3 POR" plate.
+ *
+ * The reference deliberately leaves most of the portrait page to the plan and
+ * groups the regulatory copy in a compact footer.  Every heading, paragraph,
+ * number box, logo and pictogram remains an independent sheet block so the
+ * studio can move, resize, recolour or replace it without flattening the PDF.
+ */
+function createOfficialPsiPortraitBlocks(
+  template: string,
+  title: string,
+  sheetW: number,
+  sheetH: number
+): SheetBlock[] {
+  const red = "#f51b27";
+  const green = "#00a651";
+  const yellow = "#ffd400";
+  const blue = "#4169bd";
+  const textColor = "#171717";
+  const paper = "#ffffff";
+  const footerY = 1334;
+  const headerTitle = title === "PLAN DE SECURITE INCENDIE"
+    ? "PLAN DE SÉCURITÉ INCENDIE"
+    : title;
+
+  const textBlock = (
+    id: string,
+    label: string,
+    text: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    options: Partial<SheetBlock> = {}
+  ): SheetBlock => ({
+    id: `${template}-psi-${id}`,
+    kind: "text",
+    label,
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+    visible: true,
+    text,
+    color: textColor,
+    fontSize: 10,
+    fontStyle: "bold",
+    align: "left",
+    verticalAlign: "top",
+    lineHeight: 1.18,
+    padding: 0,
+    uppercase: true,
+    ...options
+  });
+
+  const pictogram = (
+    id: string,
+    label: string,
+    iconType: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    color?: string
+  ): SheetBlock => ({
+    id: `${template}-psi-${id}`,
+    kind: "picto",
+    label,
+    iconType,
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+    visible: true,
+    color
+  });
+
+  const heading = (
+    id: string,
+    label: string,
+    x: number,
+    width: number,
+    fill: string,
+    color = "#ffffff"
+  ): SheetBlock[] => [
+    {
+      id: `${template}-psi-${id}-shape`,
+      kind: "shape",
+      label: `Fond ${label}`,
+      x,
+      y: footerY,
+      width,
+      height: 20,
+      rotation: 0,
+      visible: true,
+      shapeType: "polygon_zone",
+      shapePoints: [
+        { x: 0.015, y: 0 },
+        { x: 1, y: 0 },
+        { x: 0.955, y: 1 },
+        { x: 0, y: 1 }
+      ],
+      fill,
+      fillOpacity: 1,
+      strokeWidth: 0
+    },
+    textBlock(`${id}-title`, `Titre ${label}`, label, x, footerY, width, 20, {
+      color,
+      fontSize: 17,
+      align: "center",
+      verticalAlign: "middle",
+      lineHeight: 1,
+      padding: 1
+    })
+  ];
+
+  const separator = (id: string, x: number): SheetBlock => ({
+    id: `${template}-psi-${id}`,
+    kind: "shape",
+    label: "Séparateur de consignes",
+    x,
+    y: footerY + 27,
+    width: 1,
+    height: 166,
+    rotation: 0,
+    visible: true,
+    shapeType: "line",
+    shapePoints: [
+      { x: 0.5, y: 0 },
+      { x: 0.5, y: 1 }
+    ],
+    stroke: "#555555",
+    strokeWidth: 1
+  });
+
+  return [
+    // The plan is intentionally the largest object on the page.  The header
+    // and the compact instruction footer are rendered over the white sheet.
+    {
+      id: `${template}-psi-reference-layout`,
+      kind: "plan",
+      planSlot: "main",
+      label: "Zone principale du plan",
+      x: 60,
+      y: 190,
+      width: sheetW - 120,
+      height: footerY - 208,
+      rotation: 0,
+      visible: true,
+      fill: paper,
+      strokeWidth: 0
+    },
+    {
+      id: `${template}-psi-header`,
+      kind: "band",
+      label: "Bandeau Plan de sécurité incendie",
+      x: 60,
+      y: 71,
+      width: sheetW - 120,
+      height: 74,
+      rotation: 0,
+      visible: true,
+      text: headerTitle || "PLAN DE SÉCURITÉ INCENDIE",
+      fill: red,
+      cornerRadius: 7,
+      color: "#ffffff",
+      fontSize: 52,
+      fontStyle: "bold",
+      align: "center",
+      verticalAlign: "middle",
+      lineHeight: 1,
+      padding: 8,
+      uppercase: true
+    },
+    textBlock(
+      "conformity",
+      "Mention de conformité",
+      "CONFORME A LA NF X08-070 ET ARRETE DU 19/06/2015",
+      72,
+      132,
+      370,
+      10,
+      {
+        color: "#ffffff",
+        fontSize: 5.6,
+        verticalAlign: "middle",
+        lineHeight: 1
+      }
+    ),
+    pictogram(
+      "header-exit",
+      "Sortie dans le bandeau",
+      "cheminement evacuation",
+      sheetW - 156,
+      78,
+      55,
+      55,
+      red
+    ),
+    {
+      id: `${template}-psi-instruction-band`,
+      kind: "band",
+      label: "Bandeau Consignes de sécurité",
+      x: 60,
+      y: 156,
+      width: sheetW - 120,
+      height: 26,
+      rotation: 0,
+      visible: true,
+      text: "CONSIGNES DE SÉCURITÉ",
+      fill: red,
+      cornerRadius: 5,
+      color: "#ffffff",
+      fontSize: 18,
+      fontStyle: "bold",
+      align: "left",
+      verticalAlign: "middle",
+      lineHeight: 1,
+      padding: 10,
+      uppercase: true
+    },
+
+    // Bottom headings and the two fine vertical rules from the reference.
+    ...heading("fire-heading", "INCENDIE", 97, 244, red),
+    ...heading("evacuation-heading", "ÉVACUATION", 347, 437, green),
+    ...heading("prevention-heading", "PRÉVENTION", 800, 244, yellow, textColor),
+    separator("fire-separator", 332),
+    separator("prevention-separator", 799),
+
+    // ── INCENDIE ──────────────────────────────────────────────────────────
+    textBlock(
+      "fire-call",
+      "Appel des services de secours",
+      "VEUILLEZ APPELER LES SERVICES DE SECOURS\nEN COMPOSANT LE :",
+      98,
+      footerY + 27,
+      226,
+      29,
+      { fontSize: 9.4 }
+    ),
+    pictogram(
+      "fire-phone",
+      "Téléphone incendie",
+      "telephone_rouge_final_corrige",
+      98,
+      footerY + 61,
+      30,
+      30
+    ),
+    textBlock("fire-numbers", "Numéros pompiers", "112            18", 130, footerY + 61, 194, 32, {
+      fill: paper,
+      stroke: red,
+      strokeWidth: 1.5,
+      cornerRadius: 4,
+      color: red,
+      fontSize: 18,
+      align: "center",
+      verticalAlign: "middle",
+      lineHeight: 1,
+      padding: 2
+    }),
+    pictogram("fire-number-phone", "Combiné téléphone", "telephone_rouge_final_corrige", 221, footerY + 67, 18, 18),
+    textBlock(
+      "fire-location",
+      "Précision de l'appel",
+      "EN PRÉCISANT LE LIEU EXACT DE L'ACCIDENT",
+      130,
+      footerY + 95,
+      194,
+      14,
+      { fontSize: 7.4, align: "center", lineHeight: 1 }
+    ),
+    {
+      id: `${template}-psi-studio-logo`,
+      kind: "image",
+      label: "Logo studio",
+      imageKey: "studioLogo",
+      x: 112,
+      y: footerY + 112,
+      width: 188,
+      height: 70,
+      rotation: 0,
+      visible: true
+    },
+    textBlock(
+      "update",
+      "Mise à jour du plan",
+      "Mise à jour n° 1 - Date et n° du plan :",
+      98,
+      footerY + 184,
+      226,
+      12,
+      {
+        color: "#777777",
+        fontSize: 5.6,
+        fontStyle: "normal",
+        align: "center",
+        verticalAlign: "middle",
+        uppercase: false
+      }
+    ),
+
+    // ── ÉVACUATION ────────────────────────────────────────────────────────
+    pictogram("evacuation-home", "Évacuation du logement", "evacuation1", 348, footerY + 27, 36, 36, green),
+    textBlock(
+      "evacuation-home-copy",
+      "Incendie déclaré chez vous",
+      "1- SI L'INCENDIE SE DÉCLARE CHEZ VOUS\nET QUE VOUS NE POUVEZ L'ÉTEINDRE\nIMMÉDIATEMENT :\n- ÉVACUEZ LES LIEUX ;\n- FERMEZ LA PORTE DE VOTRE APPARTEMENT ;\n- PRENDRE LA SORTIE LA PLUS PROCHE",
+      388,
+      footerY + 25,
+      190,
+      91,
+      { fontSize: 8.6, lineHeight: 1.13 }
+    ),
+    pictogram("evacuation-below", "Incendie au-dessous du palier", "evacuation-2", 348, footerY + 121, 36, 36, green),
+    textBlock(
+      "evacuation-below-copy",
+      "Incendie au-dessous du palier",
+      "2- SI L'INCENDIE EST AU DESSOUS DE\nVOTRE PALIER :\n- RESTEZ CHEZ VOUS ;\n- FERMEZ LA PORTE DE VOTRE APPARTEMENT ET MOUILLEZ-LA ;\n- MANIFESTEZ VOUS À VOTRE FENÊTRE.",
+      388,
+      footerY + 118,
+      190,
+      78,
+      { fontSize: 8.2, lineHeight: 1.12 }
+    ),
+    pictogram(
+      "evacuation-above",
+      "Incendie au-dessus du palier",
+      "cheminement evacuation",
+      566,
+      footerY + 27,
+      36,
+      36,
+      green
+    ),
+    textBlock(
+      "evacuation-above-copy",
+      "Incendie au-dessus du palier",
+      "3- SI L'INCENDIE EST AU DESSUS\nDE VOTRE PALIER :\n- PRENDRE LA SORTIE\n  LA PLUS PROCHE",
+      606,
+      footerY + 25,
+      172,
+      62,
+      { fontSize: 8.6, lineHeight: 1.14 }
+    ),
+    pictogram("no-lift", "Ne pas utiliser les ascenseurs", "11", 566, footerY + 88, 36, 36),
+    textBlock(
+      "no-lift-copy",
+      "Interdiction d'utiliser l'ascenseur",
+      "NE PAS UTILISER LES ASCENSEURS",
+      606,
+      footerY + 94,
+      172,
+      24,
+      { fontSize: 8.8, verticalAlign: "middle" }
+    ),
+    pictogram("first-aid", "Premiers secours", "Pharmacie", 566, footerY + 132, 36, 36, green),
+    textBlock(
+      "medical-title",
+      "Accident ou malaise",
+      "ACCIDENT OU MALAISE",
+      606,
+      footerY + 126,
+      172,
+      14,
+      { fontSize: 8.8, align: "center", lineHeight: 1 }
+    ),
+    textBlock("medical-numbers", "Numéros médicaux", "112            15", 606, footerY + 141, 172, 28, {
+      fill: paper,
+      stroke: green,
+      strokeWidth: 1.4,
+      cornerRadius: 4,
+      color: green,
+      fontSize: 16,
+      align: "center",
+      verticalAlign: "middle",
+      lineHeight: 1,
+      padding: 2
+    }),
+    pictogram("medical-phone", "Téléphone médical", "telephone_vert", 681, footerY + 146, 17, 17),
+    textBlock(
+      "medical-location",
+      "Précision de l'appel médical",
+      "EN PRÉCISANT LE LIEU EXACT DE L'ACCIDENT",
+      606,
+      footerY + 170,
+      172,
+      11,
+      { fontSize: 5.8, align: "center", lineHeight: 1 }
+    ),
+    pictogram("deaf", "Urgence personnes malentendantes", "ear-svgrepo-com", 566, footerY + 169, 33, 33, blue),
+    textBlock(
+      "deaf-copy",
+      "Appel d'urgence 114",
+      "APPEL D'URGENCE\nPOUR PERSONNES\nMALENTENDANTES",
+      606,
+      footerY + 181,
+      95,
+      34,
+      { fontSize: 7.4, lineHeight: 1.08 }
+    ),
+    textBlock("deaf-number", "Numéro 114", "114", 708, footerY + 185, 68, 27, {
+      fill: paper,
+      stroke: blue,
+      strokeWidth: 1.3,
+      cornerRadius: 4,
+      color: blue,
+      fontSize: 16,
+      align: "center",
+      verticalAlign: "middle",
+      lineHeight: 1,
+      padding: 2
+    }),
+
+    // ── PRÉVENTION ────────────────────────────────────────────────────────
+    textBlock(
+      "smoke-copy",
+      "Conduite à tenir dans les fumées",
+      "EN CAS DE FUMÉES, BAISSEZ VOUS.\nL'AIR FRAIS EST PRÈS DU SOL.",
+      842,
+      footerY + 42,
+      194,
+      38,
+      { fontSize: 8.8, lineHeight: 1.15 }
+    ),
+    pictogram(
+      "smoke",
+      "Danger des fumées",
+      "cheminement evacuation",
+      810,
+      footerY + 80,
+      34,
+      34,
+      yellow
+    ),
+    textBlock(
+      "smoke-warning",
+      "Interdiction d'entrer dans la fumée",
+      "N'ENTREZ JAMAIS DANS LA FUMÉE.",
+      850,
+      footerY + 84,
+      186,
+      27,
+      { fontSize: 8.8, verticalAlign: "middle" }
+    ),
+    textBlock(
+      "circulation",
+      "Dégagement des circulations",
+      "N'ENCOMBREZ PAS LES PALIERS\nET LES CIRCULATIONS",
+      842,
+      footerY + 116,
+      194,
+      38,
+      { fontSize: 8.8, lineHeight: 1.15 }
+    ),
+    pictogram("fire-door", "Fermeture des portes coupe-feu", "Porte coupe-feu", 810, footerY + 158, 34, 34),
+    textBlock(
+      "fire-door-copy",
+      "Limiter la propagation des flammes",
+      "EN CAS D'INCENDIE, VEILLEZ À FERMER\nLES PORTES ET FENÊTRES DERRIÈRE\nVOUS, POUR LIMITER LA PROPAGATION\nDES FLAMMES.",
+      850,
+      footerY + 156,
+      186,
+      56,
+      { fontSize: 8.2, lineHeight: 1.12 }
+    )
+  ];
+}
+
+/**
+ * Builds the supplied PE PH A3 portrait sheet from the proven PSI portrait
+ * composition. Passing a user's saved PSI blocks preserves the exact spacing,
+ * typography and manual styling they already corrected; only the regulatory
+ * differences visible on the PE reference are applied.
+ */
+export function createOfficialEvacuationPortraitFromPsiBlocks(
+  template: string,
+  sourceBlocks: SheetBlock[],
+  title = "PLAN D'ÉVACUATION"
+): SheetBlock[] {
+  const green = "#00a650";
+  const red = "#ed1c24";
+  const yellow = "#fddd04";
+  const textColor = "#171717";
+  const paper = "#ffffff";
+  const footerY = 1334;
+  const fold = (value?: string) => (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+  const slug = (value: string) => fold(value)
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 42) || "bloc";
+
+  const converted: SheetBlock[] = [];
+
+  sourceBlocks.forEach((source, index) => {
+    const block = JSON.parse(JSON.stringify(source)) as SheetBlock;
+    const identity = fold([
+      block.id,
+      block.label,
+      block.text,
+      block.iconType,
+      block.imageKey,
+    ].filter(Boolean).join(" "));
+
+    // These PSI-only items are replaced or deliberately absent in the PE
+    // reference. The studio logo and update line are reinserted in Prévention.
+    if (
+      (block.kind === "image" && block.imageKey === "studioLogo") ||
+      identity.includes("mise a jour du plan") ||
+      identity.includes("ne pas utiliser les ascenseurs") ||
+      identity.includes("urgence-03") ||
+      identity.includes("interdiction d'utiliser l'ascenseur") ||
+      identity.includes("interdiction d'entrer dans la fumee") ||
+      identity.includes("degagement des circulations")
+    ) {
+      return;
+    }
+
+    const isMainPlan = block.kind === "plan" && (block.planSlot === "main" || !block.planSlot);
+    block.id = isMainPlan
+      ? `${template}-pe-reference-layout`
+      : `${template}-pe-${String(index + 1).padStart(2, "0")}-${slug(block.label || block.kind)}`;
+
+    if (isMainPlan) {
+      block.label = "Zone principale du plan";
+    } else if (block.kind === "band" && identity.includes("bandeau plan")) {
+      Object.assign(block, {
+        label: "Bandeau Plan d'évacuation",
+        text: title || "PLAN D'ÉVACUATION",
+        fill: green,
+        color: paper,
+      });
+    } else if (block.kind === "band" && identity.includes("consignes de securite")) {
+      Object.assign(block, {
+        text: "CONSIGNES DE SÉCURITÉ",
+        fill: green,
+        color: paper,
+      });
+    } else if (identity.includes("mention de conformite")) {
+      Object.assign(block, {
+        text: "CONFORME A LA NF X08-070",
+        color: paper,
+      });
+    } else if (identity.includes("sortie dans le bandeau")) {
+      block.color = green;
+    } else if (block.kind === "shape" && identity.includes("separateur de consignes")) {
+      block.x = block.x < 600 ? 332 : 799;
+    }
+
+    const headingText = fold(block.text).trim();
+    const isFooterHeadingShape = block.kind === "shape"
+      && Math.abs(block.y - footerY) <= 12
+      && block.height <= 32;
+    if (isFooterHeadingShape) {
+      if (block.x < 330) {
+        Object.assign(block, { x: 97, y: footerY, width: 218, height: 20, fill: red, fillOpacity: 1 });
+      } else if (block.x < 790) {
+        Object.assign(block, { x: 347, y: footerY, width: 436, height: 20, fill: green, fillOpacity: 1 });
+      } else {
+        Object.assign(block, { x: 815, y: footerY, width: 218, height: 20, fill: yellow, fillOpacity: 1 });
+      }
+    } else if (block.kind === "text" && Math.abs(block.y - footerY) <= 12) {
+      if (headingText === "incendie") {
+        Object.assign(block, { text: "INCENDIE", x: 97, y: footerY, width: 218, height: 20, color: paper });
+      } else if (headingText === "evacuation") {
+        Object.assign(block, { text: "EVACUATION", x: 347, y: footerY, width: 436, height: 20, color: paper });
+      } else if (headingText === "prevention") {
+        Object.assign(block, { text: "PREVENTION", x: 815, y: footerY, width: 218, height: 20, color: textColor });
+      }
+    }
+
+    if (identity.includes("incendie declare chez vous")) {
+      Object.assign(block, {
+        text: "1- SI L'INCENDIE SE DÉCLARE CHEZ VOUS\nET QUE VOUS NE POUVEZ L'ÉTEINDRE\nIMMÉDIATEMENT :\n- ÉVACUEZ LES LIEUX ;\n- FERMEZ LA PORTE DE VOTRE APPARTEMENT ;\n- SORTEZ PAR L'ISSUE DE SECOURS LA PLUS PROCHE.",
+        fontSize: Math.max(8.6, block.fontSize ?? 0),
+      });
+    } else if (identity.includes("incendie au-dessous du palier")) {
+      block.text = "2- SI L'INCENDIE EST AU DESSOUS DE\nVOTRE PALIER :\n- RESTEZ CHEZ VOUS ;\n- FERMEZ LA PORTE DE VOTRE APPARTEMENT ET MOUILLEZ-LA ;\n- MANIFESTEZ VOUS À VOTRE FENÊTRE.";
+    } else if (identity.includes("incendie au-dessus du palier")) {
+      block.text = "3- SI L'INCENDIE EST AU DESSUS\nDE VOTRE PALIER :\n- SORTEZ PAR L'ISSUE DE SECOURS\nLA PLUS PROCHE ET METTEZ VOUS À L'ABRI.";
+    } else if (identity.includes("conduite a tenir dans les fumees")) {
+      Object.assign(block, {
+        x: 847,
+        y: footerY + 31,
+        width: 186,
+        height: 38,
+        text: "EN CAS DE FUMÉES, BAISSEZ VOUS.\nL'AIR FRAIS EST PRÈS DU SOL.",
+        fontSize: 8.8,
+      });
+    } else if (identity.includes("danger des fumees") || block.iconType === "urgence-01") {
+      Object.assign(block, {
+        label: "Danger des fumées",
+        iconType: "urgence-01",
+        x: 815,
+        y: footerY + 32,
+        width: 28,
+        height: 28,
+        color: undefined,
+      });
+    } else if (identity.includes("fermeture des portes coupe-feu")) {
+      Object.assign(block, {
+        iconType: "Porte coupe-feu",
+        x: 815,
+        y: footerY + 72,
+        width: 29,
+        height: 29,
+      });
+    } else if (identity.includes("limiter la propagation des flammes")) {
+      Object.assign(block, {
+        x: 847,
+        y: footerY + 70,
+        width: 186,
+        height: 57,
+        text: "EN CAS D'INCENDIE, VEILLEZ À FERMER\nLES PORTES ET FENÊTRES DERRIÈRE\nVOUS, POUR LIMITER LA PROPAGATION\nDES FLAMMES.",
+      });
+    }
+
+    converted.push(block);
+  });
+
+  // The PE reference replaces the PSI logo area in the Incendie column with
+  // an extinguisher instruction, and moves the studio identity to Prévention.
+  converted.push(
+    {
+      id: `${template}-pe-fire-extinguisher`,
+      kind: "picto",
+      label: "Extincteur",
+      iconType: "exticnteur",
+      x: 98,
+      y: footerY + 114,
+      width: 30,
+      height: 30,
+      rotation: 0,
+      visible: true,
+    },
+    {
+      id: `${template}-pe-fire-extinguisher-copy`,
+      kind: "text",
+      label: "Utilisation de l'extincteur",
+      x: 130,
+      y: footerY + 112,
+      width: 194,
+      height: 48,
+      rotation: 0,
+      visible: true,
+      text: "ATTAQUER LE FEU AVEC L'EXTINCTEUR LE\nPLUS APPROPRIÉ.",
+      color: textColor,
+      fontSize: 8.8,
+      fontStyle: "bold",
+      align: "left",
+      verticalAlign: "middle",
+      lineHeight: 1.14,
+      padding: 0,
+      uppercase: true,
+    },
+    {
+      id: `${template}-pe-studio-logo`,
+      kind: "image",
+      label: "Logo studio",
+      imageKey: "studioLogo",
+      x: 840,
+      y: footerY + 116,
+      width: 180,
+      height: 65,
+      rotation: 0,
+      visible: true,
+    },
+    {
+      id: `${template}-pe-update`,
+      kind: "text",
+      label: "Mise à jour du plan",
+      x: 800,
+      y: footerY + 184,
+      width: 244,
+      height: 12,
+      rotation: 0,
+      visible: true,
+      text: "Mise à jour n° 1 - Date et n° du plan :",
+      color: "#777777",
+      fontSize: 5.6,
+      fontStyle: "normal",
+      align: "center",
+      verticalAlign: "middle",
+      lineHeight: 1,
+      padding: 0,
+      uppercase: false,
+    }
+  );
+
+  return converted;
+}
+
 function createOfficialPortraitBlocks(
   template: string,
   title: string,
@@ -1826,18 +3700,22 @@ export function createPictoBlock(
   label: string,
   x: number,
   y: number,
-  size = 44
+  size: number | { width: number; height: number } = 44
 ): SheetBlock {
+  const width = typeof size === "number" ? size : size.width;
+  const height = typeof size === "number" ? size : size.height;
   return {
     id: `picto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     kind: "picto",
     label,
     iconType,
-    x: Math.round(x - size / 2),
-    y: Math.round(y - size / 2),
-    width: size,
-    height: size,
+    x: Math.round(x - width / 2),
+    y: Math.round(y - height / 2),
+    width,
+    height,
     rotation: 0,
+    flipX: false,
+    flipY: false,
     visible: true
   };
 }

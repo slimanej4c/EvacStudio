@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { SAFETY_ICONS, IconType, SafetyIconDefinition } from "@/utils/safetyIcons";
+import { SafetyIconArtwork } from "@/components/SafetyIconArtwork";
 import { FileCode2, Loader2, Pencil, Plus, Search, Trash2, Type, Upload, X } from "lucide-react";
 
 export interface AddSvgPictogramInput {
@@ -30,11 +31,34 @@ interface IconToolbarProps {
 }
 
 const EMPTY_SVG_TEMPLATE = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 170 170">
-  <!-- Dessinez votre pictogramme dans ce cadre carré -->
+  <!-- Dessinez votre pictogramme dans le cadre défini par le viewBox -->
   <rect x="10" y="10" width="150" height="150" rx="12" fill="#ffffff" stroke="#111111" stroke-width="6" />
 </svg>`;
 
 const MAX_SVG_BYTES = 250 * 1024;
+
+const iconLabelCollator = new Intl.Collator("fr", { sensitivity: "base", numeric: true });
+
+const normalizeIconLabel = (value: string) =>
+  value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+/** Frequently placed safety signs stay pinned above the full library. */
+const frequentIconRank = (icon: SafetyIconDefinition) => {
+  const label = normalizeIconLabel(icon.label || icon.type);
+  if (label === "extincteur" || label === "exticnteur") return 0;
+  if (label === "point de rassemblement") return 1;
+  if (label === "direction" || label.includes("fleche de direction")) return 2;
+  if (/^(symbole d )?evacuation(?: ?\d+)?$/.test(label)) return 3;
+  if (label.includes("itineraire") && label.includes("evacuation")) return 4;
+  if (label.includes("cheminement") && label.includes("evacuation")) return 5;
+  if (label.startsWith("issue finale")) return 6;
+  return 100;
+};
 
 export default function IconToolbar({
   onAddIcon,
@@ -59,9 +83,15 @@ export default function IconToolbar({
   const [libraryError, setLibraryError] = useState("");
   const svgFileInputRef = useRef<HTMLInputElement>(null);
 
-  const iconsList = Object.values(iconDefinitions).filter((icon) =>
-    icon.label.toLowerCase().includes(search.toLowerCase())
-  );
+  const iconsList = useMemo(() => {
+    const normalizedSearch = normalizeIconLabel(search);
+    return Object.values(iconDefinitions)
+      .filter((icon) => normalizeIconLabel(icon.label).includes(normalizedSearch))
+      .sort((left, right) => {
+        const rankDifference = frequentIconRank(left) - frequentIconRank(right);
+        return rankDifference || iconLabelCollator.compare(left.label, right.label);
+      });
+  }, [iconDefinitions, search]);
   const activeLibraryIcon = activeIconType ? iconDefinitions[activeIconType] : null;
 
   const closeSvgModal = () => {
@@ -347,15 +377,7 @@ export default function IconToolbar({
                       backgroundSize: "8px 8px",
                     }}
                   >
-                    {icon.imageUrl ? (
-                      <img src={icon.imageUrl} alt="" className="h-full w-full object-contain" />
-                    ) : (
-                      <span
-                        className="h-full w-full [&>svg]:h-full [&>svg]:w-full"
-                        style={{ color: icon.color }}
-                        dangerouslySetInnerHTML={{ __html: icon.svg || "" }}
-                      />
-                    )}
+                    <SafetyIconArtwork definition={icon} />
                   </span>
                   <span className="line-clamp-2 w-full text-center text-[9px] leading-tight text-neutral-400 group-hover:text-neutral-200">
                     {icon.label}
@@ -490,7 +512,7 @@ export default function IconToolbar({
               </label>
 
               <p className="mt-2 text-[10px] leading-relaxed text-neutral-500">
-                Conditions : format carré avec un <code className="text-neutral-400">viewBox</code> (par exemple 0 0 170 170), 250 Ko maximum, sans script, image ou lien externe.
+                Conditions : <code className="text-neutral-400">viewBox</code> valide (carré ou rectangulaire), 250 Ko maximum, sans script, image ou lien externe.
               </p>
 
               {svgError && (

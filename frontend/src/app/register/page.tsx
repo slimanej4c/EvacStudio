@@ -5,6 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import Link from "next/link";
 import { AlertTriangle, Lock, Mail, User as UserIcon } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
+import { PUBLIC_REGISTRATION_ENABLED } from "@/lib/publicRegistration";
 
 export default function RegisterPage() {
   const { register } = useAuth();
@@ -15,6 +16,34 @@ export default function RegisterPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  if (!PUBLIC_REGISTRATION_ENABLED) {
+    return (
+      <div className="brand-page-bg flex min-h-screen items-center justify-center px-4 py-12 sm:px-6 lg:px-8">
+        <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-brand-orange/20 bg-white p-8 text-center shadow-[0_28px_80px_rgba(145,60,15,0.16)]">
+          <div className="absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-brand-red via-brand-orange to-brand-gold" />
+          <div className="mx-auto mb-5 flex h-24 w-64 items-center justify-center rounded-xl bg-white">
+            <BrandLogo className="h-full w-full" priority />
+          </div>
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-brand-orange/10 text-brand-red">
+            <Lock className="h-6 w-6" />
+          </div>
+          <h1 className="mt-5 text-2xl font-extrabold text-brand-ink">
+            Inscription temporairement fermée
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-stone-500">
+            Les nouveaux accès sont créés par invitation ou par l’administrateur de votre entreprise.
+          </p>
+          <Link
+            href="/login"
+            className="brand-action mt-7 inline-flex w-full justify-center rounded-xl px-4 py-3 text-sm font-semibold text-white"
+          >
+            Revenir à la connexion
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

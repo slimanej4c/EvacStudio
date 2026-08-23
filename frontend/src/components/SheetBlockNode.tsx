@@ -1,9 +1,11 @@
 "use client";
 
 import React from "react";
-import { Group, Rect, Text, Line, Ellipse, Image as KonvaImage } from "react-konva";
+import { Group, Rect, Text, Line, Ellipse, Circle, Image as KonvaImage, Path } from "react-konva";
 import { SheetBlock } from "@/lib/sheetTemplates";
-import { IconType } from "@/utils/safetyIcons";
+import { IconType, normalizePictogramColorOverride } from "@/utils/safetyIcons";
+import { buildCurvePathData } from "@/lib/curvePath";
+import { hasVisibleShapeFill, shapeHitStrokeWidth } from "@/lib/shapeFill";
 
 export interface SheetLegendEntry {
   type: IconType;
@@ -22,6 +24,8 @@ interface SheetBlockNodeProps {
   pictoImages: Partial<Record<string, HTMLImageElement | null>>;
   /** Recoloured pictograms, keyed by `iconType|#rrggbb`. */
   recoloredPictoImages?: Partial<Record<string, HTMLImageElement | null>>;
+  /** Current canvas zoom, used to keep thin contour hit targets screen-sized. */
+  interactionScale?: number;
   /** Stable Konva name used to reorder this block with the other sheet layers. */
   layerName?: string;
   onSelect: (id: string) => void;
@@ -51,6 +55,7 @@ export function SheetBlockNode({
   images,
   pictoImages,
   recoloredPictoImages = {},
+  interactionScale = 1,
   layerName,
   onSelect,
   onChange,
@@ -62,6 +67,7 @@ export function SheetBlockNode({
   const height = Math.max(1, block.height);
   const titleHeight = block.title ? block.titleHeight ?? 30 : 0;
   const padding = block.padding ?? 8;
+  const showInlineSelection = isSelected && !editable;
 
   const select = () => onSelect(block.id);
 
@@ -71,8 +77,9 @@ export function SheetBlockNode({
         width={width}
         height={height}
         fill={block.fill}
-        stroke={isSelected ? "#3b82f6" : block.stroke}
-        strokeWidth={isSelected ? Math.max(2, block.strokeWidth ?? 1) : block.strokeWidth ?? 0}
+        stroke={block.stroke}
+        strokeWidth={block.strokeWidth ?? 0}
+        strokeScaleEnabled={false}
         cornerRadius={block.cornerRadius ?? 0}
       />
     ) : (
@@ -81,9 +88,10 @@ export function SheetBlockNode({
         width={width}
         height={height}
         fill="transparent"
-        stroke={isSelected ? "#3b82f6" : undefined}
-        strokeWidth={isSelected ? 1.5 : 0}
-        dash={isSelected ? undefined : [4, 4]}
+        stroke={undefined}
+        strokeWidth={0}
+        strokeScaleEnabled={false}
+        dash={[4, 4]}
       />
     );
 
@@ -121,6 +129,7 @@ export function SheetBlockNode({
           points={[0, titleHeight, width, titleHeight]}
           stroke={block.stroke ?? "#1a1a1a"}
           strokeWidth={block.strokeWidth ?? 1}
+          strokeScaleEnabled={false}
           listening={false}
         />
       )}
@@ -131,8 +140,9 @@ export function SheetBlockNode({
 
   if (block.kind === "shape") {
     const stroke = block.stroke ?? block.color ?? "#000000";
-    const fill = block.fill || undefined;
     const fillOpacity = block.fillOpacity ?? (block.shapeType === "zone" ? 0.28 : 0.35);
+    const hasFill = hasVisibleShapeFill(block.fill, fillOpacity);
+    const fill = hasFill ? block.fill! : undefined;
     const points = (block.shapePoints ?? []).flatMap((point) => [
       point.x * width,
       point.y * height
@@ -148,8 +158,11 @@ export function SheetBlockNode({
           radiusY={height / 2}
           stroke={stroke}
           strokeWidth={strokeWidth}
+          strokeScaleEnabled={false}
           fill={fill}
-          fillOpacity={fill ? fillOpacity : undefined}
+          fillEnabled={hasFill}
+          fillOpacity={hasFill ? fillOpacity : undefined}
+          hitStrokeWidth={shapeHitStrokeWidth(strokeWidth, interactionScale)}
         />
       );
     } else if (block.shapeType === "rect" || block.shapeType === "zone") {
@@ -159,25 +172,63 @@ export function SheetBlockNode({
           height={height}
           stroke={stroke}
           strokeWidth={strokeWidth}
+          strokeScaleEnabled={false}
           fill={fill}
-          fillOpacity={fill ? fillOpacity : undefined}
+          fillEnabled={hasFill}
+          fillOpacity={hasFill ? fillOpacity : undefined}
+          hitStrokeWidth={shapeHitStrokeWidth(strokeWidth, interactionScale)}
           dash={block.shapeType === "zone" ? [10, 6] : undefined}
         />
       );
+    } else if (block.shapeType === "curve_polygon_zone") {
+      const closed = block.shapeClosed ?? true;
+      const curvePoints = (block.shapePoints ?? []).map((point) => ({
+        x: point.x * width,
+        y: point.y * height,
+      }));
+      const curveControlPoints = block.shapeControlPoints
+        ? Object.fromEntries(Object.entries(block.shapeControlPoints).map(([index, point]) => [
+            Number(index),
+            { x: point.x * width, y: point.y * height }
+          ]))
+        : undefined;
+      content = (
+        <Path
+          data={buildCurvePathData(curvePoints, {
+            closed,
+            tension: 0,
+            controlPoints: curveControlPoints,
+            straightSegments: block.shapeStraightSegments,
+          })}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
+          strokeScaleEnabled={false}
+          fill={closed ? fill : undefined}
+          fillEnabled={closed && hasFill}
+          fillOpacity={closed && hasFill ? fillOpacity : undefined}
+          lineCap="round"
+          lineJoin="round"
+          hitStrokeWidth={shapeHitStrokeWidth(strokeWidth, interactionScale)}
+        />
+      );
     } else {
-      const closed = block.shapeType !== "line" && block.shapeType !== "polyline";
+      const closed = block.shapeType !== "line"
+        && block.shapeType !== "polyline"
+        && (block.shapeClosed ?? true);
       content = (
         <Line
           points={points}
           closed={closed}
-          tension={block.shapeType === "curve_polygon_zone" ? block.shapeTension ?? 0.35 : block.shapeTension ?? 0}
+          tension={block.shapeTension ?? 0}
           stroke={stroke}
           strokeWidth={strokeWidth}
+          strokeScaleEnabled={false}
           fill={closed ? fill : undefined}
-          fillOpacity={closed && fill ? fillOpacity : undefined}
+          fillEnabled={closed && hasFill}
+          fillOpacity={closed && hasFill ? fillOpacity : undefined}
           lineCap="round"
           lineJoin="round"
-          hitStrokeWidth={Math.max(16, strokeWidth + 10)}
+          hitStrokeWidth={shapeHitStrokeWidth(strokeWidth, interactionScale)}
         />
       );
     }
@@ -245,13 +296,25 @@ export function SheetBlockNode({
       </>
     );
   } else if (block.kind === "picto") {
+    const colorOverride = normalizePictogramColorOverride(block.color);
     const image = block.iconType
-      ? (block.color
-          ? recoloredPictoImages[`${block.iconType}|${block.color}`] ?? pictoImages[block.iconType]
+      ? (colorOverride
+          ? recoloredPictoImages[`${block.iconType}|${colorOverride}`] ?? pictoImages[block.iconType]
           : pictoImages[block.iconType]) ?? null
       : null;
+    const artworkWidth = Math.max(1, image?.naturalWidth || image?.width || width);
+    const artworkHeight = Math.max(1, image?.naturalHeight || image?.height || height);
     content = image ? (
-      <KonvaImage image={image} width={width} height={height} listening={false} />
+      <KonvaImage
+        image={image}
+        x={block.flipX ? width : 0}
+        y={block.flipY ? height : 0}
+        width={artworkWidth}
+        height={artworkHeight}
+        scaleX={(block.flipX ? -1 : 1) * width / artworkWidth}
+        scaleY={(block.flipY ? -1 : 1) * height / artworkHeight}
+        listening={false}
+      />
     ) : (
       <Rect width={width} height={height} fill="rgba(0,0,0,0.06)" listening={false} />
     );
@@ -311,6 +374,170 @@ export function SheetBlockNode({
     );
   }
 
+  const editableShapePoints = block.kind === "shape"
+    ? (block.shapePoints ?? []).map((point) => ({
+        x: point.x * width,
+        y: point.y * height,
+      }))
+    : [];
+  const showShapePointHandles = Boolean(
+    block.kind === "shape" &&
+    isSelected &&
+    editable &&
+    editableShapePoints.length >= 2
+  );
+  const inverseInteractionScale = 1 / Math.max(interactionScale, 0.05);
+  const vertexRadius = 5.5 * inverseInteractionScale;
+  const curveHandleRadius = 5 * inverseInteractionScale;
+  const handleHitPadding = 26 * inverseInteractionScale;
+  const handleStroke = block.stroke ?? block.color ?? "#2563eb";
+
+  const updateShapeVertex = (index: number, x: number, y: number) => {
+    if (!block.shapePoints?.[index]) return;
+    onChange(block.id, {
+      shapePoints: block.shapePoints.map((point, pointIndex) => pointIndex === index
+        ? { x: x / width, y: y / height }
+        : point)
+    });
+  };
+
+  const updateCurveHandle = (segmentIndex: number, x: number | null, y: number | null) => {
+    const nextControlPoints = { ...(block.shapeControlPoints ?? {}) };
+    if (x === null || y === null) {
+      delete nextControlPoints[segmentIndex];
+    } else {
+      nextControlPoints[segmentIndex] = { x: x / width, y: y / height };
+    }
+    onChange(block.id, {
+      shapeControlPoints: nextControlPoints,
+      shapeStraightSegments: x === null || y === null
+        ? block.shapeStraightSegments
+        : (block.shapeStraightSegments ?? []).filter((index) => index !== segmentIndex),
+    });
+  };
+
+  const shapePointHandles = showShapePointHandles ? (
+    <>
+      {block.shapeType === "curve_polygon_zone" && (() => {
+        const count = editableShapePoints.length;
+        const closed = block.shapeClosed ?? true;
+        const segmentCount = closed ? count : count - 1;
+        return editableShapePoints.slice(0, segmentCount).map((start, segmentIndex) => {
+          const end = closed
+            ? editableShapePoints[(segmentIndex + 1) % count]
+            : editableShapePoints[segmentIndex + 1];
+          const storedControl = block.shapeControlPoints?.[segmentIndex];
+          const control = storedControl
+            ? { x: storedControl.x * width, y: storedControl.y * height }
+            : { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+
+          return (
+            <Group key={`${block.id}-sheet-curve-${segmentIndex}`}>
+              {storedControl && (
+                <Line
+                  points={[start.x, start.y, control.x, control.y, end.x, end.y]}
+                  stroke="#f59e0b"
+                  strokeWidth={1}
+                  strokeScaleEnabled={false}
+                  dash={[3 * inverseInteractionScale, 3 * inverseInteractionScale]}
+                  listening={false}
+                />
+              )}
+              <Circle
+                x={control.x}
+                y={control.y}
+                radius={curveHandleRadius}
+                fill={storedControl ? "#f59e0b" : "#38bdf8"}
+                stroke="#ffffff"
+                strokeWidth={1.5}
+                strokeScaleEnabled={false}
+                hitStrokeWidth={handleHitPadding}
+                shadowColor="#000000"
+                shadowBlur={3 * inverseInteractionScale}
+                shadowOpacity={0.3}
+                draggable
+                onMouseDown={(event) => { event.cancelBubble = true; }}
+                onTouchStart={(event) => { event.cancelBubble = true; }}
+                onClick={(event) => { event.cancelBubble = true; }}
+                onDblClick={(event) => {
+                  event.cancelBubble = true;
+                  updateCurveHandle(segmentIndex, null, null);
+                }}
+                onDragStart={(event) => {
+                  event.cancelBubble = true;
+                  const stage = event.target.getStage();
+                  if (stage) stage.container().style.cursor = "grabbing";
+                }}
+                onDragMove={(event) => {
+                  event.cancelBubble = true;
+                  updateCurveHandle(segmentIndex, event.target.x(), event.target.y());
+                }}
+                onDragEnd={(event) => {
+                  event.cancelBubble = true;
+                  const stage = event.target.getStage();
+                  if (stage) stage.container().style.cursor = "pointer";
+                  updateCurveHandle(segmentIndex, event.target.x(), event.target.y());
+                }}
+                onMouseEnter={(event) => {
+                  const stage = event.target.getStage();
+                  if (stage) stage.container().style.cursor = "pointer";
+                }}
+                onMouseLeave={(event) => {
+                  const stage = event.target.getStage();
+                  if (stage) stage.container().style.cursor = "default";
+                }}
+              />
+            </Group>
+          );
+        });
+      })()}
+
+      {editableShapePoints.map((point, index) => (
+        <Circle
+          key={`${block.id}-sheet-vertex-${index}`}
+          x={point.x}
+          y={point.y}
+          radius={vertexRadius}
+          fill="#ffffff"
+          stroke={handleStroke}
+          strokeWidth={2}
+          strokeScaleEnabled={false}
+          hitStrokeWidth={handleHitPadding}
+          shadowColor="#000000"
+          shadowBlur={4 * inverseInteractionScale}
+          shadowOpacity={0.3}
+          draggable
+          onMouseDown={(event) => { event.cancelBubble = true; }}
+          onTouchStart={(event) => { event.cancelBubble = true; }}
+          onClick={(event) => { event.cancelBubble = true; }}
+          onDragStart={(event) => {
+            event.cancelBubble = true;
+            const stage = event.target.getStage();
+            if (stage) stage.container().style.cursor = "grabbing";
+          }}
+          onDragMove={(event) => {
+            event.cancelBubble = true;
+            updateShapeVertex(index, event.target.x(), event.target.y());
+          }}
+          onDragEnd={(event) => {
+            event.cancelBubble = true;
+            const stage = event.target.getStage();
+            if (stage) stage.container().style.cursor = "grab";
+            updateShapeVertex(index, event.target.x(), event.target.y());
+          }}
+          onMouseEnter={(event) => {
+            const stage = event.target.getStage();
+            if (stage) stage.container().style.cursor = "grab";
+          }}
+          onMouseLeave={(event) => {
+            const stage = event.target.getStage();
+            if (stage) stage.container().style.cursor = "default";
+          }}
+        />
+      ))}
+    </>
+  ) : null;
+
   return (
     <Group
       id={block.id}
@@ -350,6 +577,17 @@ export function SheetBlockNode({
           {titleBar}
           {content}
         </Group>
+      )}
+      {shapePointHandles}
+      {showInlineSelection && (
+        <Rect
+          width={width}
+          height={height}
+          stroke="#3b82f6"
+          strokeWidth={1}
+          strokeScaleEnabled={false}
+          listening={false}
+        />
       )}
     </Group>
   );

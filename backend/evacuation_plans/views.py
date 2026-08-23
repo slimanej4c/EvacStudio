@@ -1,6 +1,7 @@
 import os
 import base64
 import binascii
+import copy
 import io
 import re
 import xml.etree.ElementTree as ET
@@ -18,6 +19,8 @@ from django.utils import timezone
 from django.core.files.base import ContentFile
 from rest_framework import viewsets, permissions, status, generics
 from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.contrib.auth.models import User
@@ -35,7 +38,15 @@ from .models import (
     WorkspaceMembership,
     accessible_plan_owner_ids,
     hash_invitation_token,
+    restrict_plans_to,
     user_can_edit_plan,
+)
+from .media_access import build_signed_media_url
+from .throttles import AiRateThrottle, LoginRateThrottle, UploadRateThrottle
+from .upload_validation import (
+    UploadRejected,
+    safe_upload_name,
+    validate_background_upload,
 )
 from .grok_cleaning import (
     GrokCleaningError,
@@ -73,15 +84,57 @@ from .serializers import (
 PLAN_PICTOGRAM_DIRS = ('plan_picto', 'nf_x-picto')
 PLAN_PICTOGRAM_EXTENSIONS = {'.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif'}
 MAX_PICTOGRAM_SVG_BYTES = 250 * 1024
+# Rejected outright: their presence is never an accident, so a file carrying
+# one is refused rather than quietly repaired.
 SVG_DANGEROUS_TAGS = {
     'script', 'foreignobject', 'iframe', 'object', 'embed', 'image', 'audio',
     'video', 'canvas', 'a', 'animate', 'animatemotion', 'animatetransform', 'set',
+    'handler', 'listener', 'discard',
 }
+
+# Everything the pictogram library actually draws with, plus the descriptive
+# elements design tools emit. Measured over the 86 SVG files shipped with the
+# application, which between them use only the first sixteen.
+SVG_ALLOWED_TAGS = {
+    'svg', 'g', 'defs', 'style', 'title', 'desc',
+    'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon',
+    'text', 'tspan', 'textpath',
+    'lineargradient', 'radialgradient', 'stop',
+    'clippath', 'mask', 'pattern', 'symbol', 'use', 'marker',
+    'switch', 'metadata',
+}
+
+# Elements outside both lists are dropped instead of rejecting the file: an
+# Illustrator or Inkscape export carries editor-specific tags that are inert
+# but unpredictable, and refusing them would block legitimate pictograms.
+SVG_UNKNOWN_ELEMENT_LIMIT = 5000
+
+# Blocked inside a `style` attribute or element: legacy engines execute them.
+SVG_DANGEROUS_CSS = ('javascript:', 'expression(', '@import', '-moz-binding', 'behavior:')
 logger = logging.getLogger(__name__)
+# Piste d'audit : qui a fait quoi. Voir evacuation_plans/signals.py.
+audit = logging.getLogger('evacstudio.audit')
 
 MAX_OVERLAY_IMAGE_SIDE = 20_000
 MAX_OVERLAY_IMAGE_PIXELS = 80_000_000
 DEFAULT_GROK_JOB_STALE_SECONDS = 420
+
+
+def clone_stored_file(field_file):
+    """Return an independent in-memory copy suitable for another FileField."""
+    if not field_file or not field_file.name:
+        return None
+    with field_file.open('rb') as source:
+        return ContentFile(source.read(), name=os.path.basename(field_file.name))
+
+
+def clone_model_values(instance, excluded):
+    """Copy every concrete data field so future visual fields are not omitted."""
+    return {
+        field.name: copy.deepcopy(getattr(instance, field.name))
+        for field in instance._meta.concrete_fields
+        if field.name not in excluded
+    }
 
 
 def get_grok_job_stale_seconds():
@@ -137,9 +190,10 @@ def validate_overlay_image_bytes(image_bytes):
 
 
 def build_plan_pictogram_url(request, relative_path):
+    # Signée comme tout le reste de MEDIA_ROOT : la bibliothèque est partagée
+    # entre utilisateurs internes, pas publique sur Internet.
     media_path = '/'.join(relative_path.split(os.sep))
-    url = settings.MEDIA_URL + quote(media_path)
-    return request.build_absolute_uri(url)
+    return build_signed_media_url(request, media_path)
 
 
 def _svg_local_name(value):
@@ -147,7 +201,7 @@ def _svg_local_name(value):
 
 
 def validate_and_sanitize_pictogram_svg(svg_bytes):
-    """Return a safe, square SVG or a user-facing validation error."""
+    """Return a safe SVG with a valid viewBox or a user-facing validation error."""
     if not svg_bytes:
         return None, "Le fichier SVG est vide."
     if len(svg_bytes) > MAX_PICTOGRAM_SVG_BYTES:
@@ -172,15 +226,19 @@ def validate_and_sanitize_pictogram_svg(svg_bytes):
 
     view_box = root.attrib.get('viewBox') or root.attrib.get('viewbox')
     if not view_box:
-        return None, 'Le SVG doit contenir un viewBox carré, par exemple "0 0 170 170".'
+        return None, 'Le SVG doit contenir un viewBox, par exemple "0 0 170 170".'
     try:
         values = [float(part) for part in re.split(r'[\s,]+', view_box.strip()) if part]
     except ValueError:
         values = []
     if len(values) != 4 or values[2] <= 0 or values[3] <= 0:
         return None, "Le viewBox du SVG est invalide."
-    if abs(values[2] - values[3]) > max(values[2], values[3]) * 0.01:
-        return None, "Le SVG doit être carré afin de ne pas être déformé dans la bibliothèque."
+
+    # Two passes: reject anything openly hostile, then turn merely unknown
+    # containers into inert SVG groups. Removing an unknown wrapper outright
+    # would also remove every legitimate path nested inside it, which is common
+    # in exports produced by CAD and vector-design applications.
+    unknown_elements = []
 
     for element in root.iter():
         tag = _svg_local_name(element.tag)
@@ -189,8 +247,14 @@ def validate_and_sanitize_pictogram_svg(svg_bytes):
 
         if tag == 'style' and element.text:
             css = element.text.lower()
-            if 'url(' in css or '@import' in css or 'javascript:' in css or 'expression(' in css:
+            if any(pattern in css for pattern in SVG_DANGEROUS_CSS):
                 return None, "Les styles SVG ne peuvent pas charger de contenu externe."
+            # `url(#gradient)` points inside the same document and is how design
+            # tools express gradients; only outward references are refused, the
+            # same rule the attributes below already follow.
+            for url_target in re.findall(r'url\(([^)]*)\)', css):
+                if not url_target.strip(' \"\'').startswith('#'):
+                    return None, "Les styles SVG ne peuvent pas charger de contenu externe."
 
         for attribute, value in list(element.attrib.items()):
             attribute_name = _svg_local_name(attribute)
@@ -201,9 +265,23 @@ def validate_and_sanitize_pictogram_svg(svg_bytes):
                 return None, "Les liens et images externes ne sont pas autorisés dans un SVG."
             if 'javascript:' in value_lower or 'data:text/html' in value_lower:
                 return None, "Le SVG contient une valeur potentiellement dangereuse."
+            if attribute_name == 'style' and any(pattern in value_lower for pattern in SVG_DANGEROUS_CSS):
+                return None, "Le SVG contient un style potentiellement dangereux."
             for url_target in re.findall(r'url\(([^)]+)\)', value_lower):
                 if not url_target.strip(' \"\'').startswith('#'):
                     return None, "Les ressources externes ne sont pas autorisées dans un SVG."
+
+        # Unknown elements cannot keep their original semantics, but their
+        # already-validated SVG descendants and presentation attributes should
+        # survive. They are converted to the safe, allow-listed <g> container.
+        if element is not root and tag not in SVG_ALLOWED_TAGS:
+            unknown_elements.append(element)
+
+    if len(unknown_elements) > SVG_UNKNOWN_ELEMENT_LIMIT:
+        return None, "Le SVG contient trop d'éléments non pris en charge."
+
+    for element in unknown_elements:
+        element.tag = '{http://www.w3.org/2000/svg}g'
 
     ET.register_namespace('', 'http://www.w3.org/2000/svg')
     sanitized = ET.tostring(root, encoding='utf-8', xml_declaration=True)
@@ -741,6 +819,19 @@ class RegisterView(generics.CreateAPIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = UserRegistrationSerializer
 
+    def create(self, request, *args, **kwargs):
+        if not settings.PUBLIC_REGISTRATION_ENABLED:
+            return Response(
+                {
+                    "detail": (
+                        "L'inscription publique est temporairement désactivée. "
+                        "Demandez un accès à l'administrateur de votre entreprise."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().create(request, *args, **kwargs)
+
 class CurrentUserView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = UserSerializer
@@ -858,9 +949,9 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
     serializer_class = EvacuationPlanSerializer
 
     def get_queryset(self):
-        return EvacuationPlan.objects.filter(
-            user_id__in=accessible_plan_owner_ids(self.request.user)
-        )
+        # Shared company scope: every active internal account works on the
+        # same plans. `restrict_plans_to` is what decides that, in one place.
+        return restrict_plans_to(EvacuationPlan.objects.all(), self.request.user)
 
     def perform_create(self, serializer):
         # A new plan always lands in the creator's own list, never in a list
@@ -868,6 +959,100 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         # as False, so explicitly show the newly imported main plan instead of
         # relying on the model's True default.
         serializer.save(user=self.request.user, main_plan_visible=True)
+
+    @action(detail=True, methods=['post'], url_path='duplicate')
+    def duplicate(self, request, pk=None):
+        """Create a fully independent copy of a plan in the caller's workspace."""
+        source_plan = self.get_object()
+
+        def available_copy_title():
+            number = 1
+            while True:
+                suffix = " (copie)" if number == 1 else f" (copie {number})"
+                base = source_plan.title[:max(1, 255 - len(suffix))].rstrip()
+                candidate = f"{base}{suffix}"
+                if not EvacuationPlan.objects.filter(user=request.user, title=candidate).exists():
+                    return candidate
+                number += 1
+
+        created_files = []
+
+        def remember_file(field_file):
+            if field_file and field_file.name:
+                created_files.append((field_file.storage, field_file.name))
+
+        try:
+            with transaction.atomic():
+                plan_values = clone_model_values(source_plan, {
+                    'id', 'user', 'title', 'background_file', 'cleaned_background_file',
+                    'created_at', 'updated_at',
+                })
+                duplicated_plan = EvacuationPlan(
+                    user=request.user,
+                    title=available_copy_title(),
+                    **plan_values,
+                )
+                duplicated_plan.background_file = clone_stored_file(source_plan.background_file)
+                duplicated_plan.cleaned_background_file = clone_stored_file(
+                    source_plan.cleaned_background_file
+                )
+                duplicated_plan.save()
+                remember_file(duplicated_plan.background_file)
+                remember_file(duplicated_plan.cleaned_background_file)
+
+                for model, related_rows in (
+                    (PlanIcon, source_plan.icons.all()),
+                    (PlanShape, source_plan.shapes.all()),
+                    (PlanText, source_plan.texts.all()),
+                ):
+                    model.objects.bulk_create([
+                        model(
+                            plan=duplicated_plan,
+                            **clone_model_values(row, {
+                                'id', 'plan', 'created_at', 'updated_at',
+                            }),
+                        )
+                        for row in related_rows
+                    ])
+
+                for overlay in source_plan.overlays.all():
+                    duplicated_overlay = PlanOverlay(
+                        plan=duplicated_plan,
+                        **clone_model_values(overlay, {
+                            'id', 'plan', 'image_file', 'original_image_file',
+                            'created_at', 'updated_at',
+                        }),
+                    )
+                    duplicated_overlay.image_file = clone_stored_file(overlay.image_file)
+                    duplicated_overlay.original_image_file = clone_stored_file(
+                        overlay.original_image_file
+                    )
+                    duplicated_overlay.save()
+                    remember_file(duplicated_overlay.image_file)
+                    remember_file(duplicated_overlay.original_image_file)
+
+                for history in source_plan.cleaning_history.all():
+                    duplicated_history = PlanCleaningHistory(
+                        plan=duplicated_plan,
+                        user=request.user,
+                        **clone_model_values(history, {
+                            'id', 'plan', 'user', 'image_file', 'created_at',
+                        }),
+                    )
+                    duplicated_history.image_file = clone_stored_file(history.image_file)
+                    duplicated_history.save()
+                    remember_file(duplicated_history.image_file)
+        except Exception:
+            # SQL rollback does not remove files already written to storage.
+            for storage, name in reversed(created_files):
+                if name and storage.exists(name):
+                    storage.delete(name)
+            raise
+
+        return Response(
+            self.get_serializer(duplicated_plan).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(detail=False, methods=['get', 'put'], url_path='sheet-templates')
     def sheet_templates(self, request):
@@ -1038,11 +1223,20 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 os.remove(target_path)
             except OSError:
                 logger.exception("pictogram_delete.failed", extra={"user_id": request.user.id})
+                audit.warning(
+                    "pictogram.delete_failed user_id=%s file=%s",
+                    request.user.id, stored_filename,
+                )
                 return Response(
                     {"error": "Le pictogramme n'a pas pu être supprimé."},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
+            # Bibliothèque partagée : une suppression affecte toute l'entreprise,
+            # elle est donc tracée avec son auteur.
+            audit.warning(
+                "pictogram.deleted user_id=%s file=%s", request.user.id, stored_filename
+            )
             return Response(status=status.HTTP_204_NO_CONTENT)
 
         upload = request.FILES.get('file')
@@ -1123,7 +1317,7 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
-    @action(detail=True, methods=['post'], url_path='clean')
+    @action(detail=True, methods=['post'], url_path='clean', throttle_classes=[AiRateThrottle])
     def clean_plan(self, request, pk=None):
         plan = self.get_object()
         img, error = load_plan_image(plan, use_active_background=False)
@@ -1144,7 +1338,7 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(plan)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['post'], url_path='clean-walls')
+    @action(detail=True, methods=['post'], url_path='clean-walls', throttle_classes=[AiRateThrottle])
     def clean_walls(self, request, pk=None):
         plan = self.get_object()
         img, error = load_plan_image(plan, dpi=250, use_active_background=False)
@@ -1165,7 +1359,7 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(plan)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['post'], url_path='clean-image-data')
+    @action(detail=True, methods=['post'], url_path='clean-image-data', throttle_classes=[AiRateThrottle])
     def clean_image_data(self, request, pk=None):
         """Cleans any raw base64 plan image using OpenCV (full plan clean or walls extraction).
 
@@ -1255,15 +1449,20 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
             ),
         }, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['post'], url_path='change-background')
+    @action(detail=True, methods=['post'], url_path='change-background', throttle_classes=[UploadRateThrottle])
     def change_background(self, request, pk=None):
         plan = self.get_object()
         file_obj = request.FILES.get('background_file')
         if not file_obj:
             return Response({"error": "Aucun fichier fourni."}, status=status.HTTP_400_BAD_REQUEST)
 
-        extension = os.path.splitext(file_obj.name)[1].lower()
-        background_type = 'pdf' if extension == '.pdf' else 'image'
+        # Same gate as plan creation: this endpoint writes to the very same
+        # place, so it cannot be the loose way in.
+        try:
+            background_type = validate_background_upload(file_obj)
+        except UploadRejected as rejected:
+            return Response({"error": str(rejected)}, status=status.HTTP_400_BAD_REQUEST)
+        file_obj.name = safe_upload_name(file_obj.name)
 
         plan.background_file = file_obj
         plan.background_type = background_type
@@ -1333,7 +1532,7 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(plan)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['post'], url_path='grok-clean')
+    @action(detail=True, methods=['post'], url_path='grok-clean', throttle_classes=[AiRateThrottle])
     def grok_clean(self, request, pk=None):
         """Launch an asynchronous Grok cleaning job (analyse + image generation)."""
         plan = self.get_object()
@@ -1549,7 +1748,7 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
-    @action(detail=True, methods=['post'], url_path='apply-manual-edit')
+    @action(detail=True, methods=['post'], url_path='apply-manual-edit', throttle_classes=[UploadRateThrottle])
     def apply_manual_edit(self, request, pk=None):
         """Stores the background as retouched with the editor's eraser."""
         plan = self.get_object()
@@ -1923,9 +2122,9 @@ class PlanIconViewSet(viewsets.ModelViewSet):
     serializer_class = PlanIconSerializer
 
     def get_queryset(self):
-        return PlanIcon.objects.filter(
-            plan__user_id__in=accessible_plan_owner_ids(self.request.user)
-        )
+        owner_ids = accessible_plan_owner_ids(self.request.user)
+        icons = PlanIcon.objects.all()
+        return icons if owner_ids is None else icons.filter(plan__user_id__in=owner_ids)
 
 
 class WorkspaceCollaboratorsView(APIView):
@@ -2054,3 +2253,48 @@ class AcceptWorkspaceInvitationView(APIView):
             'owner_username': invitation.owner.username,
             'role': membership.role,
         }, status=status.HTTP_200_OK)
+
+
+class LogoutView(APIView):
+    """Déconnexion réelle : révoque le jeton de rafraîchissement côté serveur.
+
+    Effacer le jeton dans le navigateur ne prouve rien — une copie prise avant
+    la déconnexion resterait échangeable pendant sept jours. Le porter sur la
+    liste noire est ce qui met fin à la session.
+
+    Le jeton d'accès, lui, n'est pas révocable : sa durée de vie courte (30 min)
+    est la seule limite. C'est le compromis assumé des jetons sans état.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [LoginRateThrottle]
+
+    def post(self, request):
+        refresh_token = request.data.get('refresh')
+        if not refresh_token:
+            return Response(
+                {"error": "Le jeton de rafraîchissement est requis pour se déconnecter."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            token = RefreshToken(refresh_token)
+            # Un utilisateur ne révoque que ses propres sessions : sans ce
+            # contrôle, un jeton volé permettrait de déconnecter autrui.
+            if str(token.payload.get(settings.SIMPLE_JWT['USER_ID_CLAIM'])) != str(request.user.id):
+                logger.warning(
+                    "auth.logout.foreign_token user_id=%s", request.user.id
+                )
+                return Response(
+                    {"error": "Ce jeton n'appartient pas à ce compte."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            token.blacklist()
+        except TokenError:
+            # Déjà révoqué ou expiré : la session est close, c'est le résultat
+            # demandé. Répondre 400 pousserait le client à réessayer en boucle.
+            logger.info("auth.logout.already_invalid user_id=%s", request.user.id)
+            return Response(status=status.HTTP_205_RESET_CONTENT)
+
+        logger.info("auth.logout user_id=%s", request.user.id)
+        return Response(status=status.HTTP_205_RESET_CONTENT)

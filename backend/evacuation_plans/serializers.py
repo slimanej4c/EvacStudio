@@ -3,9 +3,16 @@ import binascii
 import io
 import json
 
+from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from PIL import Image, UnidentifiedImageError
+from .media_access import signed_url_for_field
+from .upload_validation import (
+    UploadRejected,
+    safe_upload_name,
+    validate_background_upload,
+)
 from .models import (
     EvacuationPlan,
     PlanCleaningHistory,
@@ -66,7 +73,10 @@ def validate_logo_data_url(value):
     return value
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True)
+    # AUTH_PASSWORD_VALIDATORS are enforced by Django's own forms, never by a
+    # DRF serializer: without this the API accepted "1234" while the admin
+    # refused it.
+    password = serializers.CharField(write_only=True, validators=[validate_password])
     first_name = serializers.CharField(required=False, allow_blank=True)
     last_name = serializers.CharField(required=False, allow_blank=True)
 
@@ -121,7 +131,7 @@ class PlanShapeSerializer(serializers.ModelSerializer):
         model = PlanShape
         fields = ['id', 'plan', 'shape_type', 'x', 'y', 'width', 'height', 'rotation',
                   'stroke_width', 'color', 'fill_color', 'fill_opacity', 'tension',
-                  'control_points', 'points', 'locked', 'visible', 'z_index', 'group_id', 'object_group_id', 'created_at', 'updated_at']
+                  'control_points', 'points', 'closed', 'straight_segments', 'locked', 'visible', 'z_index', 'group_id', 'object_group_id', 'created_at', 'updated_at']
         read_only_fields = ['id', 'plan', 'created_at', 'updated_at']
 
     def validate(self, attrs):
@@ -133,6 +143,7 @@ class PlanShapeSerializer(serializers.ModelSerializer):
             PlanShape.SHAPE_FREE_POLYGON_ZONE,
             PlanShape.SHAPE_CURVE_POLYGON_ZONE,
         )
+        is_curve_polygon = shape_type == PlanShape.SHAPE_CURVE_POLYGON_ZONE
         if is_polyline:
             if not points or not isinstance(points, list) or len(points) < 2:
                 raise serializers.ValidationError(
@@ -143,11 +154,35 @@ class PlanShapeSerializer(serializers.ModelSerializer):
             attrs['fill_color'] = None
             attrs['fill_opacity'] = 0
             attrs['tension'] = 0
+            attrs['closed'] = False
+            attrs['straight_segments'] = []
         elif is_polygon:
             if not points or not isinstance(points, list) or len(points) < 3:
                 raise serializers.ValidationError(
                     {'points': 'Un polygone nécessite au moins 3 points.'}
                 )
+            if attrs.get('closed', True) is False:
+                # An open path cannot have an enclosed fill area.
+                attrs['fill_color'] = None
+                attrs['fill_opacity'] = 0
+            straight_segments = attrs.get('straight_segments', [])
+            if is_curve_polygon:
+                # Curve handles control bending segment by segment. There is no
+                # automatic global smoothing when the drawing is completed.
+                attrs['tension'] = 0
+                segment_count = len(points) if attrs.get('closed', True) else len(points) - 1
+                if (
+                    not isinstance(straight_segments, list)
+                    or any(type(index) is not int or index < 0 or index >= segment_count for index in straight_segments)
+                ):
+                    raise serializers.ValidationError(
+                        {'straight_segments': 'Les segments droits de la zone courbe sont invalides.'}
+                    )
+                attrs['straight_segments'] = sorted(set(straight_segments))
+            else:
+                attrs['straight_segments'] = []
+        else:
+            attrs['straight_segments'] = []
         if is_polyline or is_polygon:
             for index, point in enumerate(points):
                 if not isinstance(point, dict) or 'x' not in point or 'y' not in point:
@@ -165,7 +200,7 @@ class PlanTextSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanText
         fields = ['id', 'plan', 'text', 'x', 'y', 'font_size', 'font_family', 'color',
-                  'bold', 'italic', 'background_color', 'rotation', 'locked', 'visible', 'z_index', 'group_id', 'object_group_id', 'created_at', 'updated_at']
+                  'align', 'bold', 'italic', 'background_color', 'rotation', 'locked', 'visible', 'z_index', 'group_id', 'object_group_id', 'created_at', 'updated_at']
         read_only_fields = ['id', 'plan', 'created_at', 'updated_at']
 
 
@@ -184,11 +219,7 @@ class PlanOverlaySerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_image_url(self, obj):
-        if not obj.image_file:
-            return ""
-        request = self.context.get('request')
-        url = obj.image_file.url
-        return request.build_absolute_uri(url) if request else url
+        return signed_url_for_field(self.context.get('request'), obj.image_file)
 
     def get_can_revert_original(self, obj):
         return bool(obj.original_image_file)
@@ -304,7 +335,27 @@ class SyncEditorSerializer(serializers.Serializer):
     plan_settings = EditorPlanSettingsSerializer()
 
 
+class SignedFileField(serializers.FileField):
+    """FileField qui *rend* une URL signée sans rien changer à l'écriture.
+
+    Le FileField de DRF renvoie l'URL brute de MEDIA_URL, qui n'est plus servie.
+    Seule `to_representation` est redéfinie : la validation et l'upload passent
+    par le comportement d'origine, donc le nom du champ et le format attendu
+    par le frontend restent identiques.
+    """
+
+    def to_representation(self, value):
+        if not value:
+            return None
+        return signed_url_for_field(self.context.get('request'), value) or None
+
+
 class EvacuationPlanSerializer(serializers.ModelSerializer):
+    # Déclarés explicitement : c'est ainsi qu'on impose une classe de champ.
+    # Le nom et le comportement en écriture ne changent pas, seule la sortie
+    # devient une URL signée — le frontend continue d'envoyer `background_file`.
+    background_file = SignedFileField()
+    cleaned_background_file = SignedFileField(read_only=True)
     icons = PlanIconSerializer(many=True, read_only=True)
     shapes = PlanShapeSerializer(many=True, read_only=True)
     texts = PlanTextSerializer(many=True, read_only=True)
@@ -323,6 +374,27 @@ class EvacuationPlanSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'user', 'cleaned_background_file', 'created_at', 'updated_at']
 
 
+    def validate_background_file(self, upload):
+        """Uploads are served back from MEDIA_ROOT, so what lands there has to
+        be a plan — not an HTML page or a script wearing an image extension."""
+        try:
+            background_type = validate_background_upload(upload)
+        except UploadRejected as rejected:
+            raise serializers.ValidationError(str(rejected))
+        upload.name = safe_upload_name(upload.name)
+        # Remembered so validate() can align background_type with the content.
+        self._validated_background_type = background_type
+        return upload
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        detected = getattr(self, '_validated_background_type', None)
+        if detected is not None:
+            # The client sends this field too; the file itself is the authority.
+            attrs['background_type'] = detected
+        return attrs
+
+
 class PlanCleaningHistorySerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
 
@@ -332,11 +404,7 @@ class PlanCleaningHistorySerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'plan', 'cleaning_method', 'title', 'image_url', 'options', 'created_at']
 
     def get_image_url(self, obj):
-        request = self.context.get('request')
-        if not obj.image_file:
-            return ""
-        url = obj.image_file.url
-        return request.build_absolute_uri(url) if request else url
+        return signed_url_for_field(self.context.get('request'), obj.image_file)
 
 
 class UserXaiSettingsSerializer(serializers.ModelSerializer):
