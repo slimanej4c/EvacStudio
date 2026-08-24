@@ -80,6 +80,16 @@ interface StoredSheetTemplateVersion {
 }
 const cloneSheetBlocks = (blocks: SheetBlock[]) =>
   JSON.parse(JSON.stringify(blocks)) as SheetBlock[];
+const DEFAULT_SHEET_PLAN_PLACEMENT = { scale: 100, offsetX: 0, offsetY: 0 };
+const hasSameSheetTemplateState = (
+  left: Pick<StoredSheetTemplateVersion, "blocks" | "planPlacement">,
+  right: Pick<StoredSheetTemplateVersion, "blocks" | "planPlacement">
+) => (
+  JSON.stringify(left.blocks) === JSON.stringify(right.blocks)
+  && left.planPlacement.scale === right.planPlacement.scale
+  && left.planPlacement.offsetX === right.planPlacement.offsetX
+  && left.planPlacement.offsetY === right.planPlacement.offsetY
+);
 interface SheetTemplateTransferFile {
   format: "prev-inc-cie-sheet-templates";
   version: 1;
@@ -2983,7 +2993,6 @@ const MAX_HISTORY_STEPS = 50;
   const sheetTemplateLibraryItems = useMemo<SheetTemplateLibraryItem[]>(() => {
     const builtins = (Object.keys(SHEET_TEMPLATES) as SheetTemplateKey[]).map((template) => {
       const config = SHEET_TEMPLATES[template];
-      const draft = storedSheetTemplateVersions.find((version) => version.id === `draft:${template}`);
       return {
         id: `builtin:${template}`,
         template,
@@ -2991,7 +3000,9 @@ const MAX_HISTORY_STEPS = 50;
         description: config.description,
         width: config.width,
         height: config.height,
-        blocks: cloneSheetBlocks(draft?.blocks || createSheetBlocks(template)),
+        // Always preview the design shipped by the current build. A stale
+        // account draft must not make an official template look out of date.
+        blocks: cloneSheetBlocks(createSheetBlocks(template)),
         kind: "builtin" as const,
       };
     });
@@ -4511,28 +4522,52 @@ const MAX_HISTORY_STEPS = 50;
     if (!sheetTemplateLibraryReady) return;
     const versions = readStoredSheetTemplateVersions();
     const now = new Date().toISOString();
-    const missingBaselines = (Object.keys(SHEET_TEMPLATES) as SheetTemplateKey[])
-      .filter((template) => !versions.some(
-        (version) => version.id === `baseline-builtin:${template}`
-      ));
-    if (!missingBaselines.length) return;
+    let changed = false;
+    let nextVersions = [...versions];
 
-    const baselines = missingBaselines.map((template): StoredSheetTemplateVersion => {
-      // The first installation of this feature freezes exactly what the studio
-      // currently uses — including an existing corrected draft — as the
-      // immutable return point requested by the user.
-      const currentDraft = versions.find((version) => version.id === `draft:${template}`);
-      return {
-        id: `baseline-builtin:${template}`,
+    (Object.keys(SHEET_TEMPLATES) as SheetTemplateKey[]).forEach((template) => {
+      const baselineId = `baseline-builtin:${template}`;
+      const existingBaseline = nextVersions.find((version) => version.id === baselineId);
+      const latestBaseline: StoredSheetTemplateVersion = {
+        id: baselineId,
         template,
         name: `${SHEET_TEMPLATES[template].label} — design par défaut`,
-        blocks: cloneSheetBlocks(currentDraft?.blocks || createSheetBlocks(template)),
-        planPlacement: { ...(currentDraft?.planPlacement || { scale: 100, offsetX: 0, offsetY: 0 }) },
-        createdAt: now,
+        blocks: cloneSheetBlocks(createSheetBlocks(template)),
+        planPlacement: { ...DEFAULT_SHEET_PLAN_PLACEMENT },
+        createdAt: existingBaseline?.createdAt || now,
         updatedAt: now,
       };
+
+      if (!existingBaseline) {
+        nextVersions.push(latestBaseline);
+        changed = true;
+        return;
+      }
+      if (hasSameSheetTemplateState(existingBaseline, latestBaseline)) return;
+
+      // Refresh the official return point after a deployment. An untouched
+      // draft can follow it safely; a genuinely edited draft is preserved.
+      const draftId = `draft:${template}`;
+      const existingDraft = nextVersions.find((version) => version.id === draftId);
+      const draftWasUntouched = Boolean(
+        existingDraft && hasSameSheetTemplateState(existingDraft, existingBaseline)
+      );
+      nextVersions = nextVersions.map((version) => {
+        if (version.id === baselineId) return latestBaseline;
+        if (version.id === draftId && draftWasUntouched) {
+          return {
+            ...version,
+            blocks: cloneSheetBlocks(latestBaseline.blocks),
+            planPlacement: { ...latestBaseline.planPlacement },
+            updatedAt: now,
+          };
+        }
+        return version;
+      });
+      changed = true;
     });
-    writeStoredSheetTemplateVersions([...versions, ...baselines]);
+
+    if (changed) writeStoredSheetTemplateVersions(nextVersions);
   }, [sheetTemplateLibraryReady, storedSheetTemplateVersions]);
 
   useEffect(() => {
@@ -4601,7 +4636,7 @@ const MAX_HISTORY_STEPS = 50;
 
   const applySheetTemplate = (
     template: SheetTemplateKey | "none",
-    options: { reset?: boolean; skipSave?: boolean } = {}
+    options: { reset?: boolean; skipSave?: boolean; latestBuiltin?: boolean } = {}
   ) => {
     if (!options.skipSave) saveTemplateDraft();
     setSheetTemplate(template);
@@ -4624,7 +4659,7 @@ const MAX_HISTORY_STEPS = 50;
       planTitle: isUntouchedExportTitle(exportPlanTitle) ? undefined : exportPlanTitle,
       siteName: exportSiteName || plan?.building_name || ""
     });
-    if (template === "official_a3_pe_pay") {
+    if (template === "official_a3_pe_pay" && !options.latestBuiltin) {
       // A3 PE PAY is the landscape arrangement of PE A3 PORT. Reuse the
       // studio's latest corrected portrait draft so its selected pictograms,
       // colours and wording are carried into the new sheet automatically.
@@ -4642,7 +4677,7 @@ const MAX_HISTORY_STEPS = 50;
         );
       }
     }
-    if (template === "official_a3_pe_ph_por") {
+    if (template === "official_a3_pe_ph_por" && !options.latestBuiltin) {
       // The supplied PE portrait plate shares the PSI portrait geometry. Start
       // from the user's latest corrected PSI draft so their precise typography,
       // pictograms and spacing carry over, then apply only the PE differences.
@@ -4663,7 +4698,7 @@ const MAX_HISTORY_STEPS = 50;
       }
     }
     let defaultPlacement = { scale: 100, offsetX: 0, offsetY: 0 };
-    if (options.reset) {
+    if (options.reset && !options.latestBuiltin) {
       const baseline = readStoredSheetTemplateVersions().find(
         (version) => version.id === `baseline-builtin:${template}`
       );
@@ -4859,7 +4894,7 @@ const MAX_HISTORY_STEPS = 50;
 
   const handleUseSheetTemplateLibraryItem = (item: SheetTemplateLibraryItem) => {
     if (item.kind === "custom") applyStoredSheetTemplateVersion(item.id);
-    else applySheetTemplate(item.template);
+    else applySheetTemplate(item.template, { reset: true, latestBuiltin: true });
     setTemplateLibraryOpen(false);
   };
 
@@ -4908,7 +4943,7 @@ const MAX_HISTORY_STEPS = 50;
       return;
     }
     if (!window.confirm("Revenir au design par défaut de ce template ?")) return;
-    applySheetTemplate(sheetTemplate, { reset: true });
+    applySheetTemplate(sheetTemplate, { reset: true, latestBuiltin: true });
     setSaveStatus("Design par défaut restauré");
     window.setTimeout(() => setSaveStatus(""), 3000);
   };
