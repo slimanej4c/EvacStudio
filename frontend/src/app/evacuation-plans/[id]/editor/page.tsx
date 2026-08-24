@@ -34,6 +34,7 @@ import type { SheetLegendEntry } from "@/components/SheetBlockNode";
 import { createDefaultWatermarkConfig, normalizeWatermarkConfig, WatermarkConfig } from "@/lib/watermark";
 import { DEFAULT_STUDIO_LOGO, getStoredStudioLogo, prepareLogoFile, storeStudioLogo } from "@/lib/brandLogos";
 import { buildCurvePathData } from "@/lib/curvePath";
+import { MAX_CANVAS_ICON_DIMENSION, MIN_CANVAS_ICON_DIMENSION, normalizeCanvasIconDimension } from "@/lib/canvasIconDimensions";
 import jsPDF from "jspdf";
 
 // Dynamically load PlanCanvas with SSR disabled since Konva depends on the DOM
@@ -1520,8 +1521,8 @@ const MAX_HISTORY_STEPS = 50;
             icon_type: icon.icon_type,
             x: icon.x,
             y: icon.y,
-            width: icon.width,
-            height: icon.height,
+            width: normalizeCanvasIconDimension(icon.width),
+            height: normalizeCanvasIconDimension(icon.height),
             rotation: icon.rotation,
             label: icon.label || "",
             anchor_x: icon.anchor_x ?? null,
@@ -1880,8 +1881,8 @@ const MAX_HISTORY_STEPS = 50;
       icon_type: type,
       x,
       y,
-      width: size.width,
-      height: size.height,
+      width: normalizeCanvasIconDimension(size.width),
+      height: normalizeCanvasIconDimension(size.height),
       rotation: 0,
       label: "",
       visible: true,
@@ -1893,15 +1894,20 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const handleIconsChange = (updatedIcons: CanvasIcon[]) => {
-    setIcons(updatedIcons);
+    const normalizedIcons = updatedIcons.map((icon) => ({
+      ...icon,
+      width: normalizeCanvasIconDimension(icon.width),
+      height: normalizeCanvasIconDimension(icon.height),
+    }));
+    setIcons(normalizedIcons);
     if (!selectedIconId) return;
 
-    const selected = updatedIcons.find((icon) => icon.tempId === selectedIconId);
+    const selected = normalizedIcons.find((icon) => icon.tempId === selectedIconId);
     if (!selected) return;
 
     setDefaultIconSize({
-      width: Math.max(15, selected.width),
-      height: Math.max(15, selected.height),
+      width: selected.width,
+      height: selected.height,
     });
   };
 
@@ -2100,8 +2106,8 @@ const MAX_HISTORY_STEPS = 50;
       icon_type: icon.icon_type,
       x: icon.x,
       y: icon.y,
-      width: icon.width,
-      height: icon.height,
+      width: normalizeCanvasIconDimension(icon.width),
+      height: normalizeCanvasIconDimension(icon.height),
       rotation: icon.rotation,
       label: icon.label || "",
       anchor_x: icon.anchor_x ?? null,
@@ -5274,14 +5280,21 @@ const MAX_HISTORY_STEPS = 50;
 
   const handleUpdateSelectedIcon = (field: keyof CanvasIcon, value: any) => {
     if (!selectedIconId) return;
-    if ((field === "width" || field === "height") && Number.isFinite(value)) {
+    if (field === "width" || field === "height") {
+      if (!Number.isFinite(Number(value))) return;
+      const currentDimension = selectedIcon?.[field] ?? defaultIconSize[field];
+      const dimension = normalizeCanvasIconDimension(value, currentDimension);
       setDefaultIconSize((currentSize) => ({
         ...currentSize,
-        [field]: Math.max(15, Number(value)),
+        [field]: dimension,
       }));
+      setIcons((currentIcons) => currentIcons.map((icon) => (
+        icon.tempId === selectedIconId ? { ...icon, [field]: dimension } : icon
+      )));
+      return;
     }
     setIcons(
-      icons.map((icon) => {
+      (currentIcons) => currentIcons.map((icon) => {
         if (icon.tempId === selectedIconId) {
           return { ...icon, [field]: value };
         }
@@ -9934,10 +9947,10 @@ const MAX_HISTORY_STEPS = 50;
                         <span className="text-[10px] font-medium text-neutral-500">L</span>
                         <input
                           type="number"
-                          min="15"
-                          max="1000"
+                          min={MIN_CANVAS_ICON_DIMENSION}
+                          max={MAX_CANVAS_ICON_DIMENSION}
                           value={Math.round(selectedIcon.width)}
-                          onChange={(e) => handleUpdateSelectedIcon("width", Number(e.target.value))}
+                          onChange={(e) => handleUpdateSelectedIcon("width", e.currentTarget.valueAsNumber)}
                           className="w-full bg-transparent text-xs tabular-nums text-neutral-200 focus:outline-none"
                         />
                       </label>
@@ -9945,10 +9958,10 @@ const MAX_HISTORY_STEPS = 50;
                         <span className="text-[10px] font-medium text-neutral-500">H</span>
                         <input
                           type="number"
-                          min="15"
-                          max="1000"
+                          min={MIN_CANVAS_ICON_DIMENSION}
+                          max={MAX_CANVAS_ICON_DIMENSION}
                           value={Math.round(selectedIcon.height)}
-                          onChange={(e) => handleUpdateSelectedIcon("height", Number(e.target.value))}
+                          onChange={(e) => handleUpdateSelectedIcon("height", e.currentTarget.valueAsNumber)}
                           className="w-full bg-transparent text-xs tabular-nums text-neutral-200 focus:outline-none"
                         />
                       </label>
@@ -9963,10 +9976,10 @@ const MAX_HISTORY_STEPS = 50;
                       </div>
                       <input
                         type="range"
-                        min="15"
-                        max="1000"
+                        min={MIN_CANVAS_ICON_DIMENSION}
+                        max={MAX_CANVAS_ICON_DIMENSION}
                         value={Math.round(selectedIcon.width)}
-                        onChange={(e) => handleUpdateSelectedIcon("width", Number(e.target.value))}
+                        onChange={(e) => handleUpdateSelectedIcon("width", e.currentTarget.valueAsNumber)}
                         className="h-1 w-full cursor-pointer accent-emerald-500"
                       />
 
@@ -9978,10 +9991,10 @@ const MAX_HISTORY_STEPS = 50;
                       </div>
                       <input
                         type="range"
-                        min="15"
-                        max="1000"
+                        min={MIN_CANVAS_ICON_DIMENSION}
+                        max={MAX_CANVAS_ICON_DIMENSION}
                         value={Math.round(selectedIcon.height)}
-                        onChange={(e) => handleUpdateSelectedIcon("height", Number(e.target.value))}
+                        onChange={(e) => handleUpdateSelectedIcon("height", e.currentTarget.valueAsNumber)}
                         className="h-1 w-full cursor-pointer accent-emerald-500"
                       />
 

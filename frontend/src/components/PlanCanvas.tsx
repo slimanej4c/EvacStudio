@@ -9,6 +9,7 @@ import { IconType, SAFETY_ICONS, SafetyIconDefinition, buildStretchableIconSourc
 import { WatermarkConfig } from "@/lib/watermark";
 import { buildCurvePathData } from "@/lib/curvePath";
 import { hasVisibleShapeFill, shapeHitStrokeWidth } from "@/lib/shapeFill";
+import { normalizeCanvasIconDimension, normalizeTransformedCanvasIconDimension } from "@/lib/canvasIconDimensions";
 
 export interface CanvasIcon {
   id?: number;
@@ -3089,8 +3090,8 @@ function PlanCanvas({
       const pointer = stage?.getPointerPosition();
       if (!stage || !pointer) return;
 
-      const requestedWidth = Math.max(15, placementIconSize.width);
-      const requestedHeight = Math.max(15, placementIconSize.height);
+      const requestedWidth = normalizeCanvasIconDimension(placementIconSize.width);
+      const requestedHeight = normalizeCanvasIconDimension(placementIconSize.height);
       const placementImage = iconImages[placementIconType];
       const naturalWidth = placementImage?.naturalWidth || placementImage?.width || 0;
       const naturalHeight = placementImage?.naturalHeight || placementImage?.height || 0;
@@ -4065,8 +4066,10 @@ function PlanCanvas({
                 onTransformEnd={(e) => {
                   // transformer changes scale properties. We update width, height and rotation.
                   const node = e.target;
-                  const scaleX = Math.abs(node.scaleX());
-                  const scaleY = Math.abs(node.scaleY());
+                  const nodeScaleX = Math.abs(node.scaleX());
+                  const nodeScaleY = Math.abs(node.scaleY());
+                  const scaleX = Number.isFinite(nodeScaleX) ? nodeScaleX : 1;
+                  const scaleY = Number.isFinite(nodeScaleY) ? nodeScaleY : 1;
 
                   // Reset scale to avoid accumulating multiplier issues
                   node.scaleX(1);
@@ -4078,8 +4081,8 @@ function PlanCanvas({
                         ...item,
                         x: node.x(),
                         y: node.y(),
-                        width: Math.max(15, Math.round(node.width() * scaleX)),
-                        height: Math.max(15, Math.round(node.height() * scaleY)),
+                        width: normalizeTransformedCanvasIconDimension(icon.width * scaleX, icon.width),
+                        height: normalizeTransformedCanvasIconDimension(icon.height * scaleY, icon.height),
                         rotation: node.rotation()
                       };
                     }
