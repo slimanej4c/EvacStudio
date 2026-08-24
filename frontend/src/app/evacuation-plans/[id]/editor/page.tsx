@@ -12,7 +12,7 @@ import { WatermarkModal } from "@/components/WatermarkModal";
 import { BrandLogo } from "@/components/BrandLogo";
 import SheetTemplateLibraryModal, { SheetTemplateLibraryItem } from "@/components/SheetTemplateLibraryModal";
 import LayerPanel, { EditorLayerItem, LayerMoveDirection } from "@/components/LayerPanel";
-import { IconType, SAFETY_ICONS, SafetyIconDefinition, buildStretchableIconSource, getIconImageSource, isYouAreHereIcon, inferPictogramColor, normalizePictogramColorOverride } from "@/utils/safetyIcons";
+import { IconType, SAFETY_ICONS, SafetyIconDefinition, buildIconPreviewSource, buildStretchableIconSource, getIconImageSource, isYouAreHereIcon, inferPictogramColor, normalizePictogramColorOverride } from "@/utils/safetyIcons";
 import { SafetyIconArtwork } from "@/components/SafetyIconArtwork";
 import { CanvasIcon, CanvasShape, CanvasText, CanvasPlanOverlay, CanvasPlanTransform, CanvasMultiSelection, ShapeKind, EraserShape, EraserTarget, PlanCanvasHandle, FONT_OPTIONS, MAIN_PLAN_ID, isPolygonTool, isPolygonShape, pointLabel, shapeWithoutPoint, boundsFromPoints } from "@/components/PlanCanvas";
 import { buildApiUrl } from "@/lib/api";
@@ -5108,7 +5108,7 @@ const MAX_HISTORY_STEPS = 50;
 
     void Promise.all(
       usedIconTypesKey.split("|").filter(Boolean).map(async (type) => {
-        const src = getIconImageSource(type as IconType, iconDefinitions);
+        const src = await buildIconPreviewSource(iconDefinitions[type]);
         if (!src) return null;
         try {
           return { type, image: await loadImage(src) };
@@ -6158,7 +6158,7 @@ const MAX_HISTORY_STEPS = 50;
     if (!trimmedPlan) return null;
     const legendImages = await Promise.all(
       usedIconTypes.map(async (type) => {
-        const src = getIconImageSource(type, iconDefinitions);
+        const src = await buildIconPreviewSource(iconDefinitions[type]);
         if (!src) return null;
 
         try {
@@ -7069,7 +7069,7 @@ const MAX_HISTORY_STEPS = 50;
       // and the assembly point in its box.
       const [exitPictogram, assemblyPictogram] = await Promise.all(
         (["issue_de_secours", "point_rassemblement"] as IconType[]).map(async (type) => {
-          const src = getIconImageSource(type, iconDefinitions);
+          const src = await buildIconPreviewSource(iconDefinitions[type]);
           if (!src) return null;
           try {
             return await loadImage(src);
