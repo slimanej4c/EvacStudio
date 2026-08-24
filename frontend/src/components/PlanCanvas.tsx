@@ -9,7 +9,11 @@ import { IconType, SAFETY_ICONS, SafetyIconDefinition, buildStretchableIconSourc
 import { WatermarkConfig } from "@/lib/watermark";
 import { buildCurvePathData } from "@/lib/curvePath";
 import { hasVisibleShapeFill, shapeHitStrokeWidth } from "@/lib/shapeFill";
-import { normalizeCanvasIconDimension, normalizeTransformedCanvasIconDimension } from "@/lib/canvasIconDimensions";
+import {
+  normalizeCanvasIconDimension,
+  normalizeCanvasLeaderWidth,
+  normalizeTransformedCanvasIconDimension,
+} from "@/lib/canvasIconDimensions";
 
 export interface CanvasIcon {
   id?: number;
@@ -686,7 +690,7 @@ function leaderEndpoint(
   const boundaryScale = Math.min(scaleAtVerticalEdge, scaleAtHorizontalEdge);
   const boundaryDistance = distance * boundaryScale;
   const smallestSide = Math.min(icon.width, icon.height);
-  const desiredOverlap = Math.max(4, smallestSide * 0.18, (icon.leader_width ?? 2) * 1.5);
+  const desiredOverlap = Math.max(4, smallestSide * 0.18, normalizeCanvasLeaderWidth(icon.leader_width) * 1.5);
   const overlap = Math.min(boundaryDistance, desiredOverlap, smallestSide * 0.3);
   const endpointScale = Math.max(0, boundaryDistance - overlap) / distance;
   const localEndpointX = localAnchorX * endpointScale;
@@ -3991,7 +3995,7 @@ function PlanCanvas({
                 <Line
                   points={[icon.anchor_x, icon.anchor_y, end.x, end.y]}
                   stroke={leaderColor}
-                  strokeWidth={icon.leader_width ?? 2}
+                  strokeWidth={normalizeCanvasLeaderWidth(icon.leader_width)}
                   strokeScaleEnabled={false}
                   lineCap="round"
                   listening={false}

@@ -34,7 +34,14 @@ import type { SheetLegendEntry } from "@/components/SheetBlockNode";
 import { createDefaultWatermarkConfig, normalizeWatermarkConfig, WatermarkConfig } from "@/lib/watermark";
 import { DEFAULT_STUDIO_LOGO, getStoredStudioLogo, prepareLogoFile, storeStudioLogo } from "@/lib/brandLogos";
 import { buildCurvePathData } from "@/lib/curvePath";
-import { MAX_CANVAS_ICON_DIMENSION, MIN_CANVAS_ICON_DIMENSION, normalizeCanvasIconDimension } from "@/lib/canvasIconDimensions";
+import {
+  MAX_CANVAS_ICON_DIMENSION,
+  MAX_CANVAS_LEADER_WIDTH,
+  MIN_CANVAS_ICON_DIMENSION,
+  MIN_CANVAS_LEADER_WIDTH,
+  normalizeCanvasIconDimension,
+  normalizeCanvasLeaderWidth,
+} from "@/lib/canvasIconDimensions";
 import jsPDF from "jspdf";
 
 // Dynamically load PlanCanvas with SSR disabled since Konva depends on the DOM
@@ -1527,7 +1534,7 @@ const MAX_HISTORY_STEPS = 50;
             label: icon.label || "",
             anchor_x: icon.anchor_x ?? null,
             anchor_y: icon.anchor_y ?? null,
-            leader_width: icon.leader_width ?? 2,
+            leader_width: normalizeCanvasLeaderWidth(icon.leader_width),
             framed: icon.framed ?? false,
             flip_x: icon.flip_x ?? false,
             color: icon.color ?? "",
@@ -2112,7 +2119,7 @@ const MAX_HISTORY_STEPS = 50;
       label: icon.label || "",
       anchor_x: icon.anchor_x ?? null,
       anchor_y: icon.anchor_y ?? null,
-      leader_width: icon.leader_width ?? 2,
+      leader_width: normalizeCanvasLeaderWidth(icon.leader_width),
       framed: icon.framed ?? false,
       flip_x: icon.flip_x ?? false,
       flip_y: icon.flip_y ?? false,
@@ -3515,7 +3522,7 @@ const MAX_HISTORY_STEPS = 50;
     if (icon.anchor_x != null && icon.anchor_y != null) {
       const centerX = icon.x + icon.width / 2;
       const centerY = icon.y + icon.height / 2;
-      parts.push(`<line x1="${svgNumber(icon.anchor_x)}" y1="${svgNumber(icon.anchor_y)}" x2="${svgNumber(centerX)}" y2="${svgNumber(centerY)}" stroke="${escapeSvgAttribute(leaderColor)}" stroke-width="${svgNumber(icon.leader_width ?? 2)}" stroke-linecap="round"/>`);
+      parts.push(`<line x1="${svgNumber(icon.anchor_x)}" y1="${svgNumber(icon.anchor_y)}" x2="${svgNumber(centerX)}" y2="${svgNumber(centerY)}" stroke="${escapeSvgAttribute(leaderColor)}" stroke-width="${svgNumber(normalizeCanvasLeaderWidth(icon.leader_width))}" stroke-linecap="round"/>`);
       parts.push(`<circle cx="${svgNumber(icon.anchor_x)}" cy="${svgNumber(icon.anchor_y)}" r="4" fill="${escapeSvgAttribute(leaderColor)}"/>`);
     }
 
@@ -5293,6 +5300,14 @@ const MAX_HISTORY_STEPS = 50;
       )));
       return;
     }
+    if (field === "leader_width") {
+      if (!Number.isFinite(Number(value))) return;
+      const leaderWidth = normalizeCanvasLeaderWidth(value, selectedIcon?.leader_width);
+      setIcons((currentIcons) => currentIcons.map((icon) => (
+        icon.tempId === selectedIconId ? { ...icon, leader_width: leaderWidth } : icon
+      )));
+      return;
+    }
     setIcons(
       (currentIcons) => currentIcons.map((icon) => {
         if (icon.tempId === selectedIconId) {
@@ -5481,7 +5496,7 @@ const MAX_HISTORY_STEPS = 50;
           label: selectedIcon.label,
           anchor_x: selectedIcon.anchor_x ?? null,
           anchor_y: selectedIcon.anchor_y ?? null,
-          leader_width: selectedIcon.leader_width ?? 2,
+          leader_width: normalizeCanvasLeaderWidth(selectedIcon.leader_width),
           framed: selectedIcon.framed ?? false,
           flip_x: selectedIcon.flip_x ?? false,
           flip_y: selectedIcon.flip_y ?? false,
@@ -5513,7 +5528,7 @@ const MAX_HISTORY_STEPS = 50;
       label: source.label ?? "",
       anchor_x: source.anchor_x ?? null,
       anchor_y: source.anchor_y ?? null,
-      leader_width: source.leader_width ?? 2,
+      leader_width: normalizeCanvasLeaderWidth(source.leader_width),
       framed: source.framed ?? false,
       flip_x: source.flip_x ?? false,
       flip_y: source.flip_y ?? false,
@@ -10177,6 +10192,39 @@ const MAX_HISTORY_STEPS = 50;
                           {Math.round(selectedIcon.anchor_y ?? 0)}. Faites glisser le point sur
                           le plan pour corriger l&apos;emplacement réel.
                         </p>
+                        <div className="mb-2 rounded border border-white/10 bg-white/[0.03] p-2">
+                          <div className="mb-1.5 flex items-center justify-between">
+                            <label
+                              htmlFor="selected-icon-leader-width"
+                              className="text-[10px] font-medium text-neutral-400"
+                            >
+                              Épaisseur de la ligne
+                            </label>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min={MIN_CANVAS_LEADER_WIDTH}
+                                max={MAX_CANVAS_LEADER_WIDTH}
+                                step="0.5"
+                                value={normalizeCanvasLeaderWidth(selectedIcon.leader_width)}
+                                onChange={(event) => handleUpdateSelectedIcon("leader_width", event.currentTarget.valueAsNumber)}
+                                className="w-12 rounded border border-white/10 bg-black/20 px-1 py-0.5 text-right text-[10px] tabular-nums text-neutral-200 focus:border-emerald-500 focus:outline-none"
+                                aria-label="Épaisseur de la ligne de déport"
+                              />
+                              <span className="text-[10px] text-neutral-500">px</span>
+                            </div>
+                          </div>
+                          <input
+                            id="selected-icon-leader-width"
+                            type="range"
+                            min={MIN_CANVAS_LEADER_WIDTH}
+                            max={MAX_CANVAS_LEADER_WIDTH}
+                            step="0.5"
+                            value={normalizeCanvasLeaderWidth(selectedIcon.leader_width)}
+                            onChange={(event) => handleUpdateSelectedIcon("leader_width", event.currentTarget.valueAsNumber)}
+                            className="h-1 w-full cursor-pointer accent-emerald-500"
+                          />
+                        </div>
                         <button
                           onClick={handleClearIconOffset}
                           title="Ramener le pictogramme sur son point"
