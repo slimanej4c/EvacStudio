@@ -23,6 +23,7 @@ import {
   SheetBlock,
   SheetTemplateKey,
   createSheetBlocks,
+  createSheetPlanPlacement,
   createOfficialEvacuationModernLandscapeFromPortraitBlocks,
   createOfficialEvacuationPortraitFromPsiBlocks,
   createFreeTextBlock,
@@ -80,7 +81,6 @@ interface StoredSheetTemplateVersion {
 }
 const cloneSheetBlocks = (blocks: SheetBlock[]) =>
   JSON.parse(JSON.stringify(blocks)) as SheetBlock[];
-const DEFAULT_SHEET_PLAN_PLACEMENT = { scale: 100, offsetX: 0, offsetY: 0 };
 const hasSameSheetTemplateState = (
   left: Pick<StoredSheetTemplateVersion, "blocks" | "planPlacement">,
   right: Pick<StoredSheetTemplateVersion, "blocks" | "planPlacement">
@@ -4533,7 +4533,7 @@ const MAX_HISTORY_STEPS = 50;
         template,
         name: `${SHEET_TEMPLATES[template].label} — design par défaut`,
         blocks: cloneSheetBlocks(createSheetBlocks(template)),
-        planPlacement: { ...DEFAULT_SHEET_PLAN_PLACEMENT },
+        planPlacement: createSheetPlanPlacement(template),
         createdAt: existingBaseline?.createdAt || now,
         updatedAt: now,
       };
@@ -4697,7 +4697,7 @@ const MAX_HISTORY_STEPS = 50;
         );
       }
     }
-    let defaultPlacement = { scale: 100, offsetX: 0, offsetY: 0 };
+    let defaultPlacement = createSheetPlanPlacement(template);
     if (options.reset && !options.latestBuiltin) {
       const baseline = readStoredSheetTemplateVersions().find(
         (version) => version.id === `baseline-builtin:${template}`

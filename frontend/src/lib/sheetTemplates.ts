@@ -1,3 +1,5 @@
+import finalSheetTemplateStatesData from "./finalSheetTemplateStates.json";
+
 /**
  * Sheet templates — the printed sheet described as data instead of as canvas
  * drawing code.
@@ -281,6 +283,91 @@ export interface SheetTemplateContext {
   planTitle?: string;
   /** Site address, one line per row. */
   siteName?: string;
+}
+
+export interface SheetPlanPlacement {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+interface FinalSheetTemplateState {
+  blocks: SheetBlock[];
+  planPlacement: SheetPlanPlacement;
+}
+
+const FINAL_SHEET_TEMPLATE_STATES = (
+  finalSheetTemplateStatesData as unknown as {
+    templates: Record<SheetTemplateKey, FinalSheetTemplateState>;
+  }
+).templates;
+
+const FINAL_TEMPLATE_TITLE_BLOCK_IDS: Record<SheetTemplateKey, string> = {
+  nfx08070: "nf-banner",
+  intervention_multiniveaux: "intervention-banner",
+  evacuation_consigne_gauche: "evac-green-banner",
+  consignes_chambre: "room-title",
+  official_a2_pay_pi: "official_a2_pay_pi-title",
+  official_a3_pe_pay: "official_a3_pe_pay-modern-landscape-header-title",
+  official_a3_pi_pay: "official_a3_pi_pay-header",
+  official_a3_pi_port: "official_a3_pi_port-header",
+  official_a3_pe_ph_por: "official_a3_pe_ph_por-pe-02-bandeau-plan-de-securite-incendie",
+  official_ph_pe_a3_pay: "official_ph_pe_a3_pay-pe-landscape-header-title",
+  official_ph_pi_a3_pay: "official_ph_pi_a3_pay-header",
+  official_pi_a3_ph_por: "official_pi_a3_ph_por-pi-portrait-title",
+  official_psi_ph_a3_por: "official_psi_ph_a3_por-psi-header",
+  official_psi_a3_ph_pay: "official_psi_a3_ph_pay-header",
+  official_pe_a3_port: "official_pe_a3_port-modern-header-title",
+  official_pi_a2_port: "official_pi_a2_port-header",
+};
+
+const FINAL_TEMPLATE_SITE_BLOCKS: Partial<Record<
+  SheetTemplateKey,
+  { id: string; fallback: string }
+>> = {
+  nfx08070: { id: "nf-site", fallback: "" },
+  intervention_multiniveaux: {
+    id: "intervention-site",
+    fallback: "NOM ET ADRESSE DU SITE",
+  },
+  evacuation_consigne_gauche: {
+    id: "evac-green-site",
+    fallback: "NOM ET ADRESSE DU SITE",
+  },
+};
+
+/**
+ * Immutable studio-approved templates exported on 23 August 2026. Their
+ * geometry and pictogram choices are versioned with Git, while the few fields
+ * that belong to the current plan remain dynamic.
+ */
+function createFinalSheetBlocks(
+  template: SheetTemplateKey,
+  context: SheetTemplateContext
+): SheetBlock[] | null {
+  const finalState = FINAL_SHEET_TEMPLATE_STATES[template];
+  if (!finalState) return null;
+
+  const blocks = JSON.parse(JSON.stringify(finalState.blocks)) as SheetBlock[];
+  const titleBlockId = FINAL_TEMPLATE_TITLE_BLOCK_IDS[template];
+  const siteBlock = FINAL_TEMPLATE_SITE_BLOCKS[template];
+
+  return blocks.map((block) => {
+    if (context.planTitle && block.id === titleBlockId) {
+      return { ...block, text: context.planTitle };
+    }
+    if (siteBlock && block.id === siteBlock.id) {
+      return { ...block, text: context.siteName || siteBlock.fallback };
+    }
+    return block;
+  });
+}
+
+export function createSheetPlanPlacement(template: SheetTemplateKey): SheetPlanPlacement {
+  const placement = FINAL_SHEET_TEMPLATE_STATES[template]?.planPlacement;
+  return placement
+    ? { ...placement }
+    : { scale: 100, offsetX: 0, offsetY: 0 };
 }
 
 /**
@@ -1605,6 +1692,9 @@ export function createSheetBlocks(
   template: SheetTemplateKey,
   context: SheetTemplateContext = {}
 ): SheetBlock[] {
+  const finalBlocks = createFinalSheetBlocks(template, context);
+  if (finalBlocks) return finalBlocks;
+
   if (template.startsWith("official_")) {
     return createOfficialEditableBlocks(template, context);
   }
