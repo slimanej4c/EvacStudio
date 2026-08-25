@@ -12,7 +12,7 @@ from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import Client, TestCase, override_settings
+from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from PIL import Image
 from rest_framework.test import APIClient
@@ -1026,7 +1026,7 @@ class SecondaryPlanCleaningHistoryTests(_PlanFactoryMixin, TestCase):
         self.assertTrue(self.overlay.is_original)
 
 
-class GrokCleaningTests(_PlanFactoryMixin, TestCase):
+class GrokCleaningTests(_PlanFactoryMixin, TransactionTestCase):
     def test_xai_request_timeout_is_configurable_and_bounded(self):
         from .grok_cleaning import _get_request_timeout
 

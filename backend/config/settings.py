@@ -103,8 +103,17 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Fallback to SQLite if DATABASE_URL is not set
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if DATABASE_URL:
+    database_config = dj_database_url.config(default=DATABASE_URL, conn_max_age=600)
+    if database_config['ENGINE'] == 'django.db.backends.mysql':
+        # Keep MySQL aligned with Django's documented production defaults:
+        # full Unicode, truncation errors instead of silent data loss, and the
+        # isolation level expected by get_or_create() and concurrent requests.
+        mysql_options = database_config.setdefault('OPTIONS', {})
+        mysql_options.setdefault('charset', 'utf8mb4')
+        mysql_options.setdefault('init_command', "SET sql_mode='STRICT_TRANS_TABLES'")
+        mysql_options.setdefault('isolation_level', 'read committed')
     DATABASES = {
-        'default': dj_database_url.config(default=DATABASE_URL, conn_max_age=600)
+        'default': database_config
     }
 else:
     DATABASES = {

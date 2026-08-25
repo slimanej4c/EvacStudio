@@ -13,6 +13,7 @@ numpy
 opencv-python
 python-dotenv
 dj-database-url
+mysqlclient>=2.2.1          # Pilote MySQL recommandé par Django
 psycopg2-binary
 gunicorn
 PyMuPDF
