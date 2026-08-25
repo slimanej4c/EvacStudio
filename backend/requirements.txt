@@ -2,7 +2,8 @@
 # audit; they are floors, not pins, so patch releases still install. A full
 # freeze (pip freeze > requirements.lock) is recommended before deployment so a
 # server can be rebuilt identically.
-django>=6.0.8,<6.1          # PYSEC-2026-199/197/200/198/201/2090/2091/2092/3717
+django>=5.2.17,<5.3; python_version < "3.12"   # LTS sécurisée, compatible Python 3.10/3.11
+django>=6.0.8,<6.1; python_version >= "3.12"  # Série validée localement sur Python 3.12+
 djangorestframework
 djangorestframework-simplejwt
 django-cors-headers
