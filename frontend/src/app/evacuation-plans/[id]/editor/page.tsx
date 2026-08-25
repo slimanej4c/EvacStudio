@@ -734,7 +734,9 @@ export default function PlanEditorPage() {
   const planCanvasRef = useRef<PlanCanvasHandle>(null);
   const [eraserSize, setEraserSize] = useState(24);
   const [eraserShape, setEraserShape] = useState<EraserShape>("square");
-  const [eraserTarget, setEraserTarget] = useState<EraserTarget>("lines");
+  // "Gomme" historically erased the raster plan. Keep that behaviour as the
+  // default; cutting editor-drawn lines remains available through Ouvertures.
+  const [eraserTarget, setEraserTarget] = useState<EraserTarget>("background");
   const [eraseStrokeCount, setEraseStrokeCount] = useState(0);
   const [undoEraseSignal, setUndoEraseSignal] = useState(0);
   const [resetEraseSignal, setResetEraseSignal] = useState(0);
@@ -1811,6 +1813,7 @@ const MAX_HISTORY_STEPS = 50;
       else if (key === "h") setMode("pan");
       else if (key === "e") {
         setShapeTool(null);
+        setAreaSelectionMode(false);
         setMode("erase");
       }
     };
@@ -10879,7 +10882,10 @@ const MAX_HISTORY_STEPS = 50;
               onZoomChange={setZoom}
               mode={mode}
               onModeChange={(nextMode) => {
-                if (nextMode === "erase") setShapeTool(null);
+                if (nextMode === "erase") {
+                  setShapeTool(null);
+                  setAreaSelectionMode(false);
+                }
                 setMode(nextMode);
               }}
               onFitToView={() => setFitSignal((signal) => signal + 1)}

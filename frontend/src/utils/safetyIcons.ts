@@ -24,11 +24,24 @@ export const DIRECTIONAL_ICON_KEYWORDS = [
   "cheminement",
   "itineraire",
   "fleche",
+  "direction",
+  "sens de circulation",
   "acces pompiers",
   "vous etes ici",
   "issue finale",
   "issue de secours",
   "issue",
+  "sortie",
+  "porte de secours",
+  "porte de sortie",
+  "escalier",
+  "stair",
+  "home",
+  "maison",
+  "personne",
+  "person",
+  "running man",
+  "bonhomme",
   "evacuation",
 ];
 
@@ -41,7 +54,13 @@ export function isDirectionalIcon(
   definitions: Record<IconType, SafetyIconDefinition> = SAFETY_ICONS
 ): boolean {
   const definition = definitions[type];
-  const haystack = stripAccents(`${type} ${definition?.label ?? ""}`);
+  // Include the stored filename too: imported SVGs can keep an internal type
+  // such as "icon_12" while their actual filename still says "home",
+  // "personne" or "sortie". The whole SVG artwork is then classified as one
+  // directional sign, so its door/house, arrow and person rotate together.
+  const haystack = stripAccents(
+    `${type} ${definition?.label ?? ""} ${definition?.fileName ?? ""}`
+  );
   return DIRECTIONAL_ICON_KEYWORDS.some((keyword) => haystack.includes(keyword));
 }
 

@@ -3072,12 +3072,15 @@ function PlanCanvas({
   }, [selectedIconId, selectedShapeId, selectedTextId, selectedBlockIds, multiSelection, icons, shapes, texts, sheet, onSheetBlocksChange, onSelectBlock, onSelectBlocks, onIconsChange, onSelectIcon, onShapesChange, onSelectShape, onTextsChange, onSelectText, onMultiSelectionChange, shapeTool, draftPolygonPoints, removeLastPolygonPoint]);
 
   const handleStageMouseDown = (e: any) => {
-    if (beginAreaSelection(e.target.getStage())) return;
-
+    // Erasing must win over a stale area-selection flag. The toolbar normally
+    // clears that flag, but a keyboard/tool change can land in the same React
+    // render and would otherwise start a marquee instead of an eraser stroke.
     if (mode === "erase") {
       beginEraseStroke(e.target.getStage());
       return;
     }
+
+    if (beginAreaSelection(e.target.getStage())) return;
 
     if (isPolygonTool(shapeTool)) {
       addPolygonPoint(e.target.getStage(), Boolean(e.evt?.shiftKey));
@@ -3401,19 +3404,19 @@ function PlanCanvas({
           if (isPolygonTool(shapeTool)) finishPolygonDraft();
         }}
         onMouseMove={(e: any) => {
-          if (marqueeOriginRef.current) extendAreaSelection(e.target.getStage());
-          else if (mode === "erase") {
+          if (mode === "erase") {
             if (eraserTarget === "lines") {
               setVectorEraserCursor(pointerInSceneCoords(e.target.getStage()));
             }
             extendEraseStroke(e.target.getStage());
           }
+          else if (marqueeOriginRef.current) extendAreaSelection(e.target.getStage());
           else if (isPolygonTool(shapeTool)) updatePolygonCursor(e.target.getStage(), Boolean(e.evt?.shiftKey));
           else if (shapeTool) extendShape(e.target.getStage());
         }}
         onTouchMove={(e: any) => {
-          if (marqueeOriginRef.current) extendAreaSelection(e.target.getStage());
-          else if (mode === "erase") extendEraseStroke(e.target.getStage());
+          if (mode === "erase") extendEraseStroke(e.target.getStage());
+          else if (marqueeOriginRef.current) extendAreaSelection(e.target.getStage());
           else if (isPolygonTool(shapeTool)) updatePolygonCursor(e.target.getStage());
           else if (shapeTool) extendShape(e.target.getStage());
         }}
