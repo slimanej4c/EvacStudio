@@ -15,6 +15,7 @@ from PIL import Image, UnidentifiedImageError
 from urllib.parse import quote
 from django.conf import settings
 from django.db import close_old_connections, transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.core.files.base import ContentFile
 from rest_framework import viewsets, permissions, status, generics
@@ -32,6 +33,7 @@ from .models import (
     PlanOverlay,
     PlanShape,
     PlanText,
+    SheetTemplateAsset,
     SheetTemplateVersion,
     UserXaiSettings,
     WorkspaceInvitation,
@@ -40,8 +42,13 @@ from .models import (
     hash_invitation_token,
     restrict_plans_to,
     user_can_edit_plan,
+    user_can_edit_default_templates,
 )
-from .media_access import build_signed_media_url
+from .media_access import (
+    build_protected_media_url,
+    clear_media_session_cookie,
+    set_media_session_cookie,
+)
 from .throttles import AiRateThrottle, LoginRateThrottle, UploadRateThrottle
 from .upload_validation import (
     UploadRejected,
@@ -70,6 +77,7 @@ from .serializers import (
     SyncPlanOverlaySerializer,
     MAX_IMAGE_DATA_LENGTH,
     SaveUserXaiSettingsSerializer,
+    SheetTemplateAssetSerializer,
     SheetTemplateSyncSerializer,
     SheetTemplateVersionSerializer,
     TestXaiKeySerializer,
@@ -190,10 +198,10 @@ def validate_overlay_image_bytes(image_bytes):
 
 
 def build_plan_pictogram_url(request, relative_path):
-    # Signée comme tout le reste de MEDIA_ROOT : la bibliothèque est partagée
-    # entre utilisateurs internes, pas publique sur Internet.
+    # Protégée comme tout le reste de MEDIA_ROOT : la bibliothèque est partagée
+    # entre comptes connectés, pas publique sur Internet.
     media_path = '/'.join(relative_path.split(os.sep))
-    return build_signed_media_url(request, media_path)
+    return build_protected_media_url(request, media_path)
 
 
 def _svg_local_name(value):
@@ -839,6 +847,10 @@ class CurrentUserView(generics.RetrieveAPIView):
     def get_object(self):
         return self.request.user
 
+    def retrieve(self, request, *args, **kwargs):
+        response = super().retrieve(request, *args, **kwargs)
+        return set_media_session_cookie(response, request.user)
+
 
 # ── xAI API key management ──────────────────────────────────────────────────
 
@@ -949,8 +961,8 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
     serializer_class = EvacuationPlanSerializer
 
     def get_queryset(self):
-        # Shared company scope: every active internal account works on the
-        # same plans. `restrict_plans_to` is what decides that, in one place.
+        # Only the owner and explicitly invited workspace members may reach a
+        # plan. `restrict_plans_to` keeps that decision in one place.
         return restrict_plans_to(EvacuationPlan.objects.all(), self.request.user)
 
     def perform_create(self, serializer):
@@ -1057,13 +1069,34 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get', 'put'], url_path='sheet-templates')
     def sheet_templates(self, request):
         """Read or replace the authenticated user's reusable sheet layouts."""
+        can_edit_defaults = user_can_edit_default_templates(request.user)
+        visible_versions = SheetTemplateVersion.objects.filter(user=request.user)
+        if not can_edit_defaults:
+            visible_versions = visible_versions.filter(
+                Q(version_id__startswith='custom:')
+                | Q(version_id__startswith='baseline:')
+            )
+
         if request.method == 'GET':
-            versions = SheetTemplateVersion.objects.filter(user=request.user)
-            return Response(SheetTemplateVersionSerializer(versions, many=True).data)
+            return Response(SheetTemplateVersionSerializer(visible_versions, many=True).data)
 
         serializer = SheetTemplateSyncSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         submitted = serializer.validated_data['versions']
+        protected_versions = [
+            version for version in submitted
+            if not version['version_id'].startswith(('custom:', 'baseline:'))
+        ]
+        if protected_versions and not can_edit_defaults:
+            return Response(
+                {
+                    'detail': (
+                        "La modification des templates par défaut doit être autorisée "
+                        "par un administrateur. Clonez le template pour créer une copie personnelle."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
         version_ids = [version['version_id'] for version in submitted]
 
         with transaction.atomic():
@@ -1074,12 +1107,110 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                     version_id=version_id,
                     defaults=version,
                 )
-            SheetTemplateVersion.objects.filter(user=request.user).exclude(
-                version_id__in=version_ids
-            ).delete()
+            versions_to_replace = SheetTemplateVersion.objects.filter(user=request.user)
+            if not can_edit_defaults:
+                versions_to_replace = versions_to_replace.filter(
+                    Q(version_id__startswith='custom:')
+                    | Q(version_id__startswith='baseline:')
+                )
+            versions_to_replace.exclude(version_id__in=version_ids).delete()
 
         versions = SheetTemplateVersion.objects.filter(user=request.user)
+        if not can_edit_defaults:
+            versions = versions.filter(
+                Q(version_id__startswith='custom:')
+                | Q(version_id__startswith='baseline:')
+            )
         return Response(SheetTemplateVersionSerializer(versions, many=True).data)
+
+    @action(detail=False, methods=['get'], url_path='sheet-template-permissions')
+    def sheet_template_permissions(self, request):
+        """Tell the editor whether Django admin unlocked built-in templates."""
+
+        return Response({
+            'can_edit_default_templates': user_can_edit_default_templates(request.user),
+        })
+
+    @action(
+        detail=False,
+        methods=['get', 'post', 'delete'],
+        url_path='sheet-template-assets',
+        throttle_classes=[UploadRateThrottle],
+    )
+    def sheet_template_assets(self, request):
+        """Store rasterized PDF pages used by personal sheet templates."""
+
+        assets = SheetTemplateAsset.objects.filter(user=request.user)
+        if request.method == 'GET':
+            return Response(
+                SheetTemplateAssetSerializer(
+                    assets,
+                    many=True,
+                    context={'request': request},
+                ).data
+            )
+
+        if request.method == 'DELETE':
+            asset_id = request.query_params.get('id', '')
+            try:
+                asset = assets.get(asset_id=asset_id)
+            except (SheetTemplateAsset.DoesNotExist, ValueError):
+                return Response(
+                    {'detail': "Le fond de template est introuvable."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            asset.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        upload = request.FILES.get('file')
+        if upload is None:
+            return Response(
+                {'detail': "Aucune page de template n’a été fournie."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if getattr(upload, 'size', 0) > 8 * 1024 * 1024:
+            return Response(
+                {'detail': "La page de template dépasse la taille maximale de 8 Mo."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        extension = os.path.splitext(upload.name or '')[1].lower()
+        if extension not in {'.png', '.jpg', '.jpeg', '.webp'}:
+            return Response(
+                {'detail': "La page doit être une image PNG, JPEG ou WebP."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            detected_type = validate_background_upload(upload)
+            upload.seek(0)
+            with Image.open(upload) as image:
+                width, height = image.size
+            upload.seek(0)
+        except UploadRejected as rejected:
+            return Response({'detail': str(rejected)}, status=status.HTTP_400_BAD_REQUEST)
+        except (UnidentifiedImageError, OSError, ValueError):
+            return Response(
+                {'detail': "La page de template est illisible."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if detected_type != 'image':
+            return Response(
+                {'detail': "La page de template doit être une image."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        name = str(request.data.get('name') or upload.name or 'Template PDF').strip()[:255]
+        upload.name = safe_upload_name(upload.name, fallback='template-pdf')
+        asset = SheetTemplateAsset.objects.create(
+            user=request.user,
+            name=name or 'Template PDF',
+            image_file=upload,
+            width=width,
+            height=height,
+        )
+        return Response(
+            SheetTemplateAssetSerializer(asset, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(detail=False, methods=['get', 'post', 'patch', 'delete'], url_path='pictograms')
     def pictograms(self, request):
@@ -2051,11 +2182,25 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 plan.main_plan_group_id = settings_data.get('main_plan_group_id', '')
                 plan.main_plan_grouping_enabled = settings_data.get('main_plan_grouping_enabled', False)
                 plan.watermark_config = dict(settings_data.get('watermark', {}))
+                plan.active_sheet_template_key = settings_data.get(
+                    'active_sheet_template_key',
+                    plan.active_sheet_template_key,
+                )
+                plan.active_sheet_template_version_id = settings_data.get(
+                    'active_sheet_template_version_id',
+                    plan.active_sheet_template_version_id,
+                )
+                plan.active_sheet_template_name = settings_data.get(
+                    'active_sheet_template_name',
+                    plan.active_sheet_template_name,
+                )
                 plan.save(update_fields=[
                     'main_plan_x', 'main_plan_y', 'main_plan_width', 'main_plan_height',
                     'main_plan_locked', 'main_plan_visible', 'main_plan_z_index',
                     'main_plan_group_id', 'main_plan_grouping_enabled',
-                    'watermark_config', 'updated_at',
+                    'watermark_config', 'active_sheet_template_key',
+                    'active_sheet_template_version_id', 'active_sheet_template_name',
+                    'updated_at',
                 ])
 
                 live_file_names = set(
@@ -2123,8 +2268,7 @@ class PlanIconViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         owner_ids = accessible_plan_owner_ids(self.request.user)
-        icons = PlanIcon.objects.all()
-        return icons if owner_ids is None else icons.filter(plan__user_id__in=owner_ids)
+        return PlanIcon.objects.filter(plan__user_id__in=owner_ids)
 
 
 class WorkspaceCollaboratorsView(APIView):
@@ -2272,9 +2416,11 @@ class LogoutView(APIView):
     def post(self, request):
         refresh_token = request.data.get('refresh')
         if not refresh_token:
-            return Response(
-                {"error": "Le jeton de rafraîchissement est requis pour se déconnecter."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return clear_media_session_cookie(
+                Response(
+                    {"error": "Le jeton de rafraîchissement est requis pour se déconnecter."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             )
 
         try:
@@ -2285,16 +2431,22 @@ class LogoutView(APIView):
                 logger.warning(
                     "auth.logout.foreign_token user_id=%s", request.user.id
                 )
-                return Response(
-                    {"error": "Ce jeton n'appartient pas à ce compte."},
-                    status=status.HTTP_403_FORBIDDEN,
+                return clear_media_session_cookie(
+                    Response(
+                        {"error": "Ce jeton n'appartient pas à ce compte."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
                 )
             token.blacklist()
         except TokenError:
             # Déjà révoqué ou expiré : la session est close, c'est le résultat
             # demandé. Répondre 400 pousserait le client à réessayer en boucle.
             logger.info("auth.logout.already_invalid user_id=%s", request.user.id)
-            return Response(status=status.HTTP_205_RESET_CONTENT)
+            return clear_media_session_cookie(
+                Response(status=status.HTTP_205_RESET_CONTENT)
+            )
 
         logger.info("auth.logout user_id=%s", request.user.id)
-        return Response(status=status.HTTP_205_RESET_CONTENT)
+        return clear_media_session_cookie(
+            Response(status=status.HTTP_205_RESET_CONTENT)
+        )

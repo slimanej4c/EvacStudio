@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { X, Crop, PenTool, RotateCcw, Check, Scissors, Layers } from "lucide-react";
 import { CanvasPlanOverlay } from "@/components/PlanCanvas";
+import { imageCrossOrigin } from "@/lib/api";
 
 export interface PolygonCropModalProps {
   isOpen: boolean;
@@ -70,7 +71,7 @@ export function PolygonCropModal({
 
     let cancelled = false;
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    img.crossOrigin = imageCrossOrigin(url);
     img.onload = () => {
       if (cancelled) return;
       setImageObj(img);

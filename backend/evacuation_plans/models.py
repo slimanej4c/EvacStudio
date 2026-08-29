@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import secrets
+import uuid
 from datetime import timedelta
 
 from django.conf import settings
@@ -82,6 +83,25 @@ class EvacuationPlan(models.Model):
     # Flexible, versioned presentation settings for the approval watermark/BAT.
     # Keeping the visual options together lets the canvas remain the only renderer.
     watermark_config = models.JSONField(default=dict, blank=True)
+    # The sheet selected for this specific plan. Template definitions remain
+    # reusable account data, while these three fields remember which one the
+    # project must reopen with and what name to show in the plans list.
+    active_sheet_template_key = models.CharField(
+        max_length=64,
+        default='none',
+        verbose_name="Template actif",
+    )
+    active_sheet_template_version_id = models.CharField(
+        max_length=160,
+        blank=True,
+        default='',
+        verbose_name="Version du template actif",
+    )
+    active_sheet_template_name = models.CharField(
+        max_length=255,
+        default='Plan seul',
+        verbose_name="Nom du template actif",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -336,6 +356,69 @@ class SheetTemplateVersion(models.Model):
         return f"{self.name} ({self.template_key}) for {self.user}"
 
 
+class SheetTemplateAsset(models.Model):
+    """Raster page used as the locked background of a personal template."""
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='sheet_template_assets',
+    )
+    asset_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    name = models.CharField(max_length=255)
+    image_file = models.FileField(upload_to='sheet_template_assets/')
+    width = models.PositiveIntegerField()
+    height = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.name} for {self.user}"
+
+
+class DefaultTemplateEditPermission(models.Model):
+    """Explicit admin grant for changing the studio's built-in sheet layouts.
+
+    Personal templates never need this grant.  Keeping the exception in its
+    own row makes the secure default unambiguous: no row means no permission.
+    """
+
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name='default_template_edit_permission',
+        verbose_name="Utilisateur",
+    )
+    can_edit_default_templates = models.BooleanField(
+        default=False,
+        verbose_name="Peut modifier les templates par défaut",
+    )
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Dernière modification")
+
+    class Meta:
+        verbose_name = "autorisation de modification des templates par défaut"
+        verbose_name_plural = "autorisations de modification des templates par défaut"
+
+    def __str__(self):
+        state = "autorisée" if self.can_edit_default_templates else "bloquée"
+        return f"Modification des templates par défaut {state} pour {self.user}"
+
+
+def user_can_edit_default_templates(user):
+    """Return the server-authoritative built-in-template editing permission."""
+
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    try:
+        return bool(user.default_template_edit_permission.can_edit_default_templates)
+    except DefaultTemplateEditPermission.DoesNotExist:
+        return False
+
+
 class GrokCleaningJob(models.Model):
     """Asynchronous Grok cleaning job (analyse + image generation).
 
@@ -485,30 +568,16 @@ class WorkspaceInvitation(models.Model):
         return f"Invitation to {self.email} for {self.owner}'s workspace"
 
 
-def is_internal_user(user):
-    """An account allowed to work on the company's shared resources.
-
-    EvacStudio is an internal tool: plans, templates and the pictogram library
-    belong to the company, not to whoever happened to create them. Being an
-    active, authenticated account is therefore the whole test — deactivating a
-    user in the admin is what removes access.
-    """
-    return bool(user and user.is_authenticated and user.is_active)
-
-
 def accessible_plan_owner_ids(user, editable_only=False):
-    """Whose plan lists `user` may reach.
+    """Return the plan owners that ``user`` is allowed to reach.
 
-    Kept as a single choke point even though internal users now share
-    everything: read and write access are still decided here and nowhere else,
-    so narrowing it later means editing one function.
-
-    A workspace membership additionally grants access to an account that is not
-    internal — the invitation flow — which is why the memberships are still
-    consulted rather than dropped.
+    A user always owns their own workspace. Access to somebody else's workspace
+    exists only through an accepted invitation, represented by a
+    :class:`WorkspaceMembership`. Pending and revoked invitations therefore
+    grant nothing, and deleting a membership removes access immediately.
     """
-    if is_internal_user(user):
-        return None  # None means "no restriction": the shared company scope.
+    if not user or not user.is_authenticated or not user.is_active:
+        return set()
 
     memberships = WorkspaceMembership.objects.filter(member=user)
     if editable_only:
@@ -519,11 +588,53 @@ def accessible_plan_owner_ids(user, editable_only=False):
 def restrict_plans_to(queryset, user, editable_only=False):
     """Applies :func:`accessible_plan_owner_ids` to a plan queryset."""
     owner_ids = accessible_plan_owner_ids(user, editable_only=editable_only)
-    if owner_ids is None:
-        return queryset
     return queryset.filter(user_id__in=owner_ids)
 
 
 def user_can_edit_plan(user, plan):
     owner_ids = accessible_plan_owner_ids(user, editable_only=True)
-    return owner_ids is None or plan.user_id in owner_ids
+    return plan.user_id in owner_ids
+
+
+def user_can_access_media_path(user, relative_path):
+    """Check ownership of an unsigned file request from ``MEDIA_ROOT``.
+
+    The database is the authority: merely knowing or guessing a stored filename
+    never grants access. Files attached to a plan follow that plan's owner and
+    personal template assets follow their own owner. Browser image elements
+    are authenticated separately by the HttpOnly media-session cookie.
+    """
+    owner_ids = accessible_plan_owner_ids(user)
+    if not owner_ids or not relative_path:
+        return False
+
+    # The pictogram library is an application-wide resource, not a file owned
+    # by the user who uploaded a plan. It still requires an active account.
+    top_level_directory = relative_path.split('/', 1)[0]
+    if top_level_directory in {'plan_picto', 'nf_x-picto'}:
+        return True
+
+    plan_file = EvacuationPlan.objects.filter(user_id__in=owner_ids).filter(
+        models.Q(background_file=relative_path)
+        | models.Q(cleaned_background_file=relative_path)
+    ).exists()
+    if plan_file:
+        return True
+
+    overlay_file = PlanOverlay.objects.filter(plan__user_id__in=owner_ids).filter(
+        models.Q(image_file=relative_path)
+        | models.Q(original_image_file=relative_path)
+    ).exists()
+    if overlay_file:
+        return True
+
+    if PlanCleaningHistory.objects.filter(
+        plan__user_id__in=owner_ids,
+        image_file=relative_path,
+    ).exists():
+        return True
+
+    return SheetTemplateAsset.objects.filter(
+        user_id__in=owner_ids,
+        image_file=relative_path,
+    ).exists()

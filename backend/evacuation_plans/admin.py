@@ -4,7 +4,9 @@ from django.utils import timezone
 
 from .models import (
     EvacuationPlan,
+    DefaultTemplateEditPermission,
     PlanIcon,
+    SheetTemplateAsset,
     SheetTemplateVersion,
     WorkspaceInvitation,
     WorkspaceMembership,
@@ -97,9 +99,9 @@ class PlanIconInline(admin.TabularInline):
 class EvacuationPlanAdmin(admin.ModelAdmin):
     """Every plan, with its owner — the field that decides who can reach it."""
 
-    list_display = ('title', 'user', 'building_name', 'floor_name', 'created_at')
-    list_filter = ('background_type', 'created_at')
-    search_fields = ('title', 'building_name', 'floor_name', 'user__username')
+    list_display = ('title', 'user', 'building_name', 'floor_name', 'active_sheet_template_name', 'created_at')
+    list_filter = ('background_type', 'active_sheet_template_key', 'created_at')
+    search_fields = ('title', 'building_name', 'floor_name', 'active_sheet_template_name', 'user__username')
     autocomplete_fields = ('user',)
     ordering = ('-created_at',)
     inlines = [PlanIconInline]
@@ -112,3 +114,23 @@ class SheetTemplateVersionAdmin(admin.ModelAdmin):
     search_fields = ('name', 'version_id', 'user__username', 'user__email')
     autocomplete_fields = ('user',)
     ordering = ('-source_updated_at',)
+
+
+@admin.register(SheetTemplateAsset)
+class SheetTemplateAssetAdmin(admin.ModelAdmin):
+    list_display = ('name', 'user', 'width', 'height', 'created_at')
+    search_fields = ('name', 'user__username', 'user__email')
+    autocomplete_fields = ('user',)
+    ordering = ('-created_at',)
+
+
+@admin.register(DefaultTemplateEditPermission)
+class DefaultTemplateEditPermissionAdmin(admin.ModelAdmin):
+    """Lets an administrator grant the exceptional built-in edit capability."""
+
+    list_display = ('user', 'can_edit_default_templates', 'updated_at')
+    list_editable = ('can_edit_default_templates',)
+    list_filter = ('can_edit_default_templates', 'updated_at')
+    search_fields = ('user__username', 'user__email')
+    autocomplete_fields = ('user',)
+    ordering = ('user__username',)

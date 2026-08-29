@@ -18,6 +18,7 @@ from PIL import Image
 from rest_framework.test import APIClient
 
 from .models import (
+    DefaultTemplateEditPermission,
     EvacuationPlan,
     GrokCleaningJob,
     PlanCleaningHistory,
@@ -25,6 +26,7 @@ from .models import (
     PlanOverlay,
     PlanShape,
     PlanText,
+    SheetTemplateAsset,
     SheetTemplateVersion,
     UserXaiSettings,
     WorkspaceInvitation,
@@ -142,6 +144,44 @@ class PlansCrudTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()), 1)
 
+    def test_plan_remembers_and_exposes_its_active_sheet_template(self):
+        user = User.objects.create_user(username="template-plan", password="longsecret-1")
+        client = self.authed_client(user)
+        plan = self.make_plan(user)
+
+        response = client.patch(
+            f"/api/plans/{plan.id}/",
+            {
+                "active_sheet_template_key": "nfx08070",
+                "active_sheet_template_version_id": "custom:client-final",
+                "active_sheet_template_name": "Template final client",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        plan.refresh_from_db()
+        self.assertEqual(plan.active_sheet_template_key, "nfx08070")
+        self.assertEqual(plan.active_sheet_template_version_id, "custom:client-final")
+        self.assertEqual(plan.active_sheet_template_name, "Template final client")
+        listed = client.get("/api/plans/").json()[0]
+        self.assertEqual(listed["active_sheet_template_name"], "Template final client")
+
+    def test_plan_rejects_an_invalid_active_sheet_template_key(self):
+        user = User.objects.create_user(username="invalid-template-plan", password="longsecret-1")
+        client = self.authed_client(user)
+        plan = self.make_plan(user)
+
+        response = client.patch(
+            f"/api/plans/{plan.id}/",
+            {"active_sheet_template_key": "../../template"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400, response.content)
+        plan.refresh_from_db()
+        self.assertEqual(plan.active_sheet_template_key, "none")
+
     def test_imported_plan_is_visible_by_default(self):
         user = User.objects.create_user(username="visible-import", password="longsecret-1")
         client = self.authed_client(user)
@@ -195,6 +235,9 @@ class PlansCrudTests(_PlanFactoryMixin, TestCase):
         source.main_plan_group_id = "main-group"
         source.main_plan_grouping_enabled = True
         source.watermark_config = {"client": "Client test", "reference": "ABC-42"}
+        source.active_sheet_template_key = "nfx08070"
+        source.active_sheet_template_version_id = "custom:client-final"
+        source.active_sheet_template_name = "Template final client"
         source.cleaned_background_file.save(
             "cleaned.png", ContentFile(_png_bytes(color=(240, 240, 240))), save=False
         )
@@ -255,6 +298,9 @@ class PlansCrudTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(duplicated.title, "Étage 1 (copie)")
         self.assertEqual(duplicated.main_plan_x, 34)
         self.assertEqual(duplicated.watermark_config["reference"], "ABC-42")
+        self.assertEqual(duplicated.active_sheet_template_key, "nfx08070")
+        self.assertEqual(duplicated.active_sheet_template_version_id, "custom:client-final")
+        self.assertEqual(duplicated.active_sheet_template_name, "Template final client")
         self.assertTrue(duplicated.use_cleaned_background)
         self.assertNotEqual(duplicated.background_file.name, source.background_file.name)
         self.assertNotEqual(
@@ -712,6 +758,9 @@ class EditorSyncTests(_PlanFactoryMixin, TestCase):
                 "main_plan_z_index": 50,
                 "main_plan_group_id": "plan-group-main",
                 "main_plan_grouping_enabled": True,
+                "active_sheet_template_key": "nfx08070",
+                "active_sheet_template_version_id": "custom:client-final",
+                "active_sheet_template_name": "Template final client",
                 "watermark": {
                     "enabled": True,
                     "text": "BON À TIRER",
@@ -751,6 +800,10 @@ class EditorSyncTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(plan.main_plan_z_index, 50)
         self.assertEqual(plan.main_plan_group_id, "plan-group-main")
         self.assertTrue(plan.main_plan_grouping_enabled)
+        self.assertEqual(plan.active_sheet_template_key, "nfx08070")
+        self.assertEqual(plan.active_sheet_template_version_id, "custom:client-final")
+        self.assertEqual(plan.active_sheet_template_name, "Template final client")
+        self.assertEqual(response.data["active_sheet_template_name"], "Template final client")
         self.assertTrue(plan.watermark_config["enabled"])
         self.assertEqual(plan.watermark_config["reference"], "BAT-42")
         self.assertTrue(plan.watermark_config["client_logo"].startswith("data:image/png;base64,"))
@@ -816,10 +869,15 @@ class EditorSyncTests(_PlanFactoryMixin, TestCase):
                 self.assertFalse(PlanOverlay.objects.filter(plan=plan).exists())
 
 
-class SheetTemplatePersistenceTests(TestCase):
+class SheetTemplatePersistenceTests(_PlanFactoryMixin, TestCase):
     def setUp(self):
+        super().setUp()
         self.user = User.objects.create_user(username="template-owner", password="longsecret-1")
         self.other_user = User.objects.create_user(username="template-other", password="longsecret-1")
+        DefaultTemplateEditPermission.objects.create(
+            user=self.user,
+            can_edit_default_templates=True,
+        )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
         self.payload = {
@@ -917,6 +975,105 @@ class SheetTemplatePersistenceTests(TestCase):
             {version["id"] for version in loaded.data},
             {"custom:hotel-a3", "baseline:hotel-a3"},
         )
+
+    def test_default_template_changes_require_an_admin_grant(self):
+        self.client.force_authenticate(user=self.other_user)
+
+        response = self.client.put("/api/plans/sheet-templates/", self.payload, format="json")
+
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertFalse(SheetTemplateVersion.objects.filter(user=self.other_user).exists())
+
+    def test_personal_template_does_not_require_an_admin_grant(self):
+        self.client.force_authenticate(user=self.other_user)
+        personal = {
+            **self.payload["versions"][0],
+            "id": "custom:personal-copy",
+            "name": "Copie personnelle",
+        }
+
+        response = self.client.put(
+            "/api/plans/sheet-templates/",
+            {"versions": [personal]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.data[0]["id"], "custom:personal-copy")
+
+    def test_permission_endpoint_reflects_the_django_admin_setting(self):
+        granted = self.client.get("/api/plans/sheet-template-permissions/")
+        self.assertEqual(granted.status_code, 200)
+        self.assertTrue(granted.data["can_edit_default_templates"])
+
+        self.client.force_authenticate(user=self.other_user)
+        denied = self.client.get("/api/plans/sheet-template-permissions/")
+        self.assertEqual(denied.status_code, 200)
+        self.assertFalse(denied.data["can_edit_default_templates"])
+
+    def test_revoked_user_only_reads_personal_templates(self):
+        self.client.put("/api/plans/sheet-templates/", self.payload, format="json")
+        permission = self.user.default_template_edit_permission
+        permission.can_edit_default_templates = False
+        permission.save()
+
+        response = self.client.get("/api/plans/sheet-templates/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+
+    def test_pdf_template_page_asset_is_private_and_deletable(self):
+        uploaded = self.client.post(
+            "/api/plans/sheet-template-assets/",
+            {
+                "name": "Template client — page 1",
+                "file": SimpleUploadedFile(
+                    "template-page.png",
+                    _png_bytes(size=(320, 240)),
+                    content_type="image/png",
+                ),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(uploaded.status_code, 201, uploaded.content)
+        self.assertEqual(uploaded.data["width"], 320)
+        self.assertEqual(uploaded.data["height"], 240)
+        self.assertTrue(uploaded.data["url"])
+        asset = SheetTemplateAsset.objects.get(user=self.user)
+
+        self.client.force_authenticate(user=self.other_user)
+        self.assertEqual(self.client.get("/api/plans/sheet-template-assets/").data, [])
+        foreign_delete = self.client.delete(
+            f"/api/plans/sheet-template-assets/?id={asset.asset_id}"
+        )
+        self.assertEqual(foreign_delete.status_code, 404)
+
+        self.client.force_authenticate(user=self.user)
+        with self.captureOnCommitCallbacks(execute=True):
+            deleted = self.client.delete(
+                f"/api/plans/sheet-template-assets/?id={asset.asset_id}"
+            )
+        self.assertEqual(deleted.status_code, 204)
+        self.assertFalse(SheetTemplateAsset.objects.filter(pk=asset.pk).exists())
+        self.assertFalse(asset.image_file.storage.exists(asset.image_file.name))
+
+    def test_pdf_template_asset_rejects_non_image_content(self):
+        response = self.client.post(
+            "/api/plans/sheet-template-assets/",
+            {
+                "name": "Faux template",
+                "file": SimpleUploadedFile(
+                    "template-page.jpg",
+                    b"<html><script>alert(1)</script></html>",
+                    content_type="image/jpeg",
+                ),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(SheetTemplateAsset.objects.exists())
 
 
 class XaiSettingsTests(_PlanFactoryMixin, TestCase):
@@ -1406,12 +1563,7 @@ class GrokCleaningTests(_PlanFactoryMixin, TransactionTestCase):
 
 
 class SharedWorkspaceAccessTests(_PlanFactoryMixin, TestCase):
-    """EvacStudio is an internal tool: plans belong to the company.
-
-    Two internal colleagues working on the same plan is the intended
-    behaviour, not a finding. What must hold is the boundary around that
-    shared scope — anonymous callers and deactivated accounts stay outside.
-    """
+    """Every account is isolated until the owner explicitly shares access."""
 
     def setUp(self):
         super().setUp()
@@ -1420,25 +1572,29 @@ class SharedWorkspaceAccessTests(_PlanFactoryMixin, TestCase):
         self.plan = self.make_plan(self.alice, name="commun")
         self.client = APIClient()
 
-    def test_a_colleague_sees_and_edits_a_plan_created_by_someone_else(self):
+    def test_a_colleague_without_an_invitation_cannot_see_or_edit_a_plan(self):
         self.client.force_authenticate(user=self.bob)
 
         listing = self.client.get("/api/plans/")
         self.assertEqual(listing.status_code, 200)
-        self.assertIn(self.plan.id, [item["id"] for item in listing.data])
+        self.assertNotIn(self.plan.id, [item["id"] for item in listing.data])
+
+        detail = self.client.get(f"/api/plans/{self.plan.id}/")
+        self.assertEqual(detail.status_code, 404)
 
         icon = self.client.post("/api/icons/", {
             "plan": self.plan.id, "icon_type": "extincteur",
             "x": 10, "y": 10, "width": 30, "height": 30,
         }, format="json")
-        self.assertEqual(icon.status_code, 201, icon.data)
+        self.assertIn(icon.status_code, (400, 403, 404), icon.data)
 
         sync = self.client.post(
             f"/api/plans/{self.plan.id}/sync-icons/",
             [{"icon_type": "issue", "x": 1, "y": 1, "width": 10, "height": 10}],
             format="json",
         )
-        self.assertEqual(sync.status_code, 200, sync.data)
+        self.assertEqual(sync.status_code, 404)
+        self.assertEqual(self.plan.icons.count(), 0)
 
     def test_an_anonymous_caller_reaches_nothing(self):
         for method, url in (
@@ -1468,8 +1624,7 @@ class SharedWorkspaceAccessTests(_PlanFactoryMixin, TestCase):
         self.assertTrue(EvacuationPlan.objects.filter(pk=self.plan.pk).exists())
 
     def test_a_deactivated_account_loses_access(self):
-        """Deactivating in the admin is what removes someone from the company
-        scope, so it has to actually close the door."""
+        """A deactivated account cannot even reach its own workspace."""
         self.bob.is_active = False
         self.bob.save(update_fields=["is_active"])
 
@@ -1552,17 +1707,15 @@ class WorkspaceCollaborationTests(_PlanFactoryMixin, TestCase):
         self.client.force_authenticate(user=user)
         return self.client.post("/api/workspace/accept/", {"token": token}, format="json")
 
-    def test_any_internal_account_already_sees_the_shared_plans(self):
-        """Documents what the invitation flow does and does not add.
-
-        Inside the company scope an invitation grants nothing extra — every
-        active account already reaches the shared plans. The flow is kept for
-        accounts outside that scope; see the audit report.
-        """
+    def test_a_stranger_does_not_see_the_owners_plans(self):
         self.client.force_authenticate(user=self.stranger)
         response = self.client.get("/api/plans/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(self.plan.id, [item["id"] for item in response.data])
+        self.assertNotIn(self.plan.id, [item["id"] for item in response.data])
+        self.assertEqual(
+            self.client.get(f"/api/plans/{self.plan.id}/").status_code,
+            404,
+        )
 
     def test_the_raw_token_is_never_stored_or_readable_afterwards(self):
         token = self._invite()
@@ -1582,18 +1735,19 @@ class WorkspaceCollaborationTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item["id"] for item in response.data], [self.plan.id])
 
-    def test_a_viewer_membership_does_not_narrow_an_internal_account(self):
-        """A read-only membership cannot take away access the account already
-        has as an internal user. Restricting an internal account is done by
-        deactivating it, not by giving it a viewer role."""
+    def test_a_viewer_can_read_but_cannot_write(self):
         self._accept(self._invite(role="viewer"), self.guest)
+
+        detail = self.client.get(f"/api/plans/{self.plan.id}/")
+        self.assertEqual(detail.status_code, 200, detail.data)
 
         sync = self.client.post(
             f"/api/plans/{self.plan.id}/sync-icons/",
             [{"icon_type": "issue", "x": 1, "y": 1, "width": 10, "height": 10}],
             format="json",
         )
-        self.assertEqual(sync.status_code, 200, sync.data)
+        self.assertEqual(sync.status_code, 403, sync.data)
+        self.assertEqual(self.plan.icons.count(), 0)
 
     def test_an_editor_can_write(self):
         self._accept(self._invite(role="editor"), self.guest)
@@ -1632,10 +1786,13 @@ class WorkspaceCollaborationTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(self._accept(token, self.guest).status_code, 400)
 
     def test_revoking_removes_the_membership_row(self):
-        """Revocation still works; in the company scope it simply does not
-        change what an active internal account can reach."""
         self._accept(self._invite(role="editor"), self.guest)
         membership = WorkspaceMembership.objects.get()
+
+        self.assertEqual(
+            self.client.get(f"/api/plans/{self.plan.id}/").status_code,
+            200,
+        )
 
         self.client.force_authenticate(user=self.owner)
         self.assertEqual(
@@ -1643,6 +1800,12 @@ class WorkspaceCollaborationTests(_PlanFactoryMixin, TestCase):
             204,
         )
         self.assertFalse(WorkspaceMembership.objects.filter(pk=membership.pk).exists())
+
+        self.client.force_authenticate(user=self.guest)
+        self.assertEqual(
+            self.client.get(f"/api/plans/{self.plan.id}/").status_code,
+            404,
+        )
 
     def test_only_the_owner_may_revoke(self):
         self._accept(self._invite(), self.guest)
@@ -1719,20 +1882,25 @@ class AdminWorkspaceGrantTests(_PlanFactoryMixin, TestCase):
         )
         self.assertEqual(sync.status_code, 200, sync.data)
 
-    def test_the_admin_can_record_a_membership_without_breaking_access(self):
+    def test_a_viewer_membership_created_by_admin_is_read_only(self):
         WorkspaceMembership.objects.create(
             owner=self.owner, member=self.colleague, role="viewer"
         )
         self.api.force_authenticate(user=self.colleague)
+        self.assertEqual(
+            self.api.get(f"/api/plans/{self.plan.id}/").status_code,
+            200,
+        )
         sync = self.api.post(
             f"/api/plans/{self.plan.id}/sync-icons/",
             [{"icon_type": "issue", "x": 1, "y": 1, "width": 10, "height": 10}],
             format="json",
         )
-        self.assertEqual(sync.status_code, 200, sync.data)
+        self.assertEqual(sync.status_code, 403, sync.data)
+        self.assertEqual(self.plan.icons.count(), 0)
 
-    def test_deactivating_the_account_is_what_takes_access_back(self):
-        """The lever an administrator actually has over an internal user."""
+    def test_deactivating_an_account_takes_all_access_back(self):
+        """Disabling the account overrides every workspace membership."""
         self.colleague.is_active = False
         self.colleague.save(update_fields=["is_active"])
 
@@ -1976,74 +2144,241 @@ class SecurityAuditTests(_PlanFactoryMixin, TestCase):
 
 
 class ProtectedMediaTests(_PlanFactoryMixin, TestCase):
-    """MEDIA_ROOT n'est plus servi directement : une signature ou une
-    authentification est exigée, et rien ne peut sortir du répertoire."""
+    """Une URL seule ne suffit jamais : compte + propriété/invitation requis."""
 
     def setUp(self):
         super().setUp()
         self.user = User.objects.create_user(username="media", password="pw-media-99")
+        self.other = User.objects.create_user(username="media-other", password="pw-media-other-99")
         self.plan = self.make_plan(self.user, name="prive")
         self.client = APIClient()
+        from django.core.cache import cache
 
-    def _signed_url_from_api(self):
+        cache.clear()
+
+    def tearDown(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        super().tearDown()
+
+    def _protected_url_from_api(self):
         self.client.force_authenticate(user=self.user)
         response = self.client.get(f"/api/plans/{self.plan.id}/")
         self.assertEqual(response.status_code, 200)
         self.client.force_authenticate(user=None)
         return response.data["background_file"]
 
-    def test_the_api_hands_out_a_signed_url_not_a_raw_media_path(self):
-        url = self._signed_url_from_api()
-        self.assertIn("/api/media/", url)
-        self.assertIn("sig=", url)
-        self.assertIn("exp=", url)
+    def _use_media_cookie(self, user, client=None):
+        from django.conf import settings as django_settings
+        from .media_access import media_session_value
 
-    def test_signed_media_does_not_use_the_generic_anonymous_quota(self):
+        target = client or self.client
+        target.cookies[django_settings.MEDIA_SESSION_COOKIE_NAME] = media_session_value(user)
+        return target
+
+    def test_the_api_hands_out_a_protected_url_without_a_bearer_signature(self):
+        url = self._protected_url_from_api()
+        self.assertIn("/api/media/", url)
+        self.assertNotIn("sig=", url)
+        self.assertNotIn("exp=", url)
+
+    def test_protected_media_does_not_use_the_generic_anonymous_quota(self):
         from .media_views import ProtectedMediaView
-        from .throttles import SignedMediaRateThrottle
+        from .throttles import ProtectedMediaRateThrottle
 
         throttles = ProtectedMediaView().get_throttles()
         self.assertEqual(len(throttles), 1)
-        self.assertIsInstance(throttles[0], SignedMediaRateThrottle)
+        self.assertIsInstance(throttles[0], ProtectedMediaRateThrottle)
         self.assertEqual(throttles[0].scope, "media")
 
-    def test_an_anonymous_caller_cannot_read_a_media_file_without_a_signature(self):
+    def test_an_anonymous_caller_cannot_read_a_media_file(self):
         response = self.client.get(f"/api/media/{self.plan.background_file.name}")
         self.assertEqual(response.status_code, 403)
 
-    def test_a_signed_url_works_without_any_credential(self):
-        """Indispensable : une balise <img> ne peut pas envoyer d'en-tête."""
-        signed = self._signed_url_from_api()
-        response = self.client.get(signed)
+    def test_the_owners_media_cookie_works_for_an_image_request(self):
+        """A balise image envoie le cookie HttpOnly, pas le JWT localStorage."""
+        url = self._protected_url_from_api()
+        self._use_media_cookie(self.user)
+        response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
 
-    def test_an_authenticated_caller_may_read_without_a_signature(self):
+    def test_the_owner_may_also_read_with_a_jwt_header(self):
         self.client.force_authenticate(user=self.user)
         response = self.client.get(f"/api/media/{self.plan.background_file.name}")
         self.assertEqual(response.status_code, 200)
 
-    def test_a_tampered_signature_is_refused(self):
-        signed = self._signed_url_from_api()
-        tampered = signed[:-4] + "0000" if signed[-4:] != "0000" else signed[:-4] + "1111"
-        self.assertEqual(self.client.get(tampered).status_code, 403)
+    def test_an_authenticated_stranger_cannot_read_the_file(self):
+        self.client.force_authenticate(user=self.other)
+        response = self.client.get(f"/api/media/{self.plan.background_file.name}")
+        self.assertEqual(response.status_code, 403)
 
-    def test_an_expired_signature_is_refused(self):
-        from .media_access import sign_media_path
+    def test_an_invited_viewer_can_read_and_revocation_removes_access(self):
+        membership = WorkspaceMembership.objects.create(
+            owner=self.user,
+            member=self.other,
+            role=WorkspaceMembership.ROLE_VIEWER,
+        )
+        self._use_media_cookie(self.other)
+        url = f"/api/media/{self.plan.background_file.name}"
+        self.assertEqual(self.client.get(url).status_code, 200)
 
-        expired = sign_media_path(self.plan.background_file.name, ttl=-10)
-        self.assertEqual(self.client.get(expired).status_code, 403)
+        membership.delete()
+        self.assertEqual(self.client.get(url).status_code, 403)
 
-    def test_a_signature_cannot_be_reused_for_another_file(self):
-        """La signature couvre le chemin : elle ne se déplace pas."""
-        from urllib.parse import urlparse
+    def test_every_private_media_model_obeys_the_same_workspace_boundary(self):
+        self.plan.cleaned_background_file.save(
+            "cleaned.png",
+            ContentFile(_png_bytes(color=(240, 240, 240))),
+            save=True,
+        )
+        overlay = self.make_overlay(self.plan)
+        overlay.original_image_file.save(
+            "overlay-original.png",
+            ContentFile(_png_bytes(color=(230, 230, 230))),
+            save=True,
+        )
+        history = PlanCleaningHistory(
+            plan=self.plan,
+            user=self.user,
+            cleaning_method=PlanCleaningHistory.METHOD_LOCAL,
+            title="Historique privé",
+        )
+        history.image_file.save(
+            "history.png",
+            ContentFile(_png_bytes(color=(220, 220, 220))),
+            save=True,
+        )
+        asset = SheetTemplateAsset(
+            user=self.user,
+            name="Template privé",
+            width=24,
+            height=24,
+        )
+        asset.image_file.save(
+            "template.png",
+            ContentFile(_png_bytes(color=(210, 210, 210))),
+            save=True,
+        )
+        paths = (
+            self.plan.background_file.name,
+            self.plan.cleaned_background_file.name,
+            overlay.image_file.name,
+            overlay.original_image_file.name,
+            history.image_file.name,
+            asset.image_file.name,
+        )
 
-        signed = self._signed_url_from_api()
-        query = urlparse(signed).query
+        self._use_media_cookie(self.other)
+        for path in paths:
+            with self.subTest(path=path, access="stranger"):
+                self.assertEqual(self.client.get(f"/api/media/{path}").status_code, 403)
+
+        WorkspaceMembership.objects.create(
+            owner=self.user,
+            member=self.other,
+            role=WorkspaceMembership.ROLE_VIEWER,
+        )
+        for path in paths:
+            with self.subTest(path=path, access="invited"):
+                self.assertEqual(self.client.get(f"/api/media/{path}").status_code, 200)
+
+    def test_copying_the_url_and_its_old_signature_to_another_browser_is_refused(self):
+        url = self._protected_url_from_api()
+        copied = APIClient()
+        response = copied.get(f"{url}?exp=9999999999&sig={'a' * 64}")
+        self.assertEqual(response.status_code, 403)
+
+    def test_a_browser_logged_in_as_a_stranger_cannot_use_a_copied_url(self):
+        url = self._protected_url_from_api()
+        stranger_browser = self._use_media_cookie(self.other, APIClient())
+        self.assertEqual(stranger_browser.get(url).status_code, 403)
+
+    def test_login_sets_the_httponly_media_cookie(self):
+        from django.conf import settings as django_settings
+
+        response = self.client.post(
+            "/api/auth/token/",
+            {"username": "media", "password": "pw-media-99"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        cookie = response.cookies[django_settings.MEDIA_SESSION_COOKIE_NAME]
+        self.assertTrue(cookie["httponly"])
+        self.assertEqual(cookie["samesite"], "Lax")
         self.assertEqual(
-            self.client.get(f"/api/media/backgrounds/autre-plan.png?{query}").status_code,
+            self.client.get(f"/api/media/{self.plan.background_file.name}").status_code,
+            200,
+        )
+
+    def test_logout_deletes_the_media_cookie_and_closes_the_file(self):
+        from django.conf import settings as django_settings
+
+        login = self.client.post(
+            "/api/auth/token/",
+            {"username": "media", "password": "pw-media-99"},
+            format="json",
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+        logout = self.client.post(
+            "/api/auth/logout/",
+            {"refresh": login.data["refresh"]},
+            format="json",
+        )
+        self.assertEqual(logout.status_code, 205)
+        self.assertEqual(
+            logout.cookies[django_settings.MEDIA_SESSION_COOKIE_NAME]["max-age"],
+            0,
+        )
+        self.client.credentials()
+        self.assertEqual(
+            self.client.get(f"/api/media/{self.plan.background_file.name}").status_code,
             403,
         )
+
+    def test_a_tampered_media_cookie_is_refused(self):
+        from django.conf import settings as django_settings
+
+        self._use_media_cookie(self.user)
+        value = self.client.cookies[django_settings.MEDIA_SESSION_COOKIE_NAME].value
+        self.client.cookies[django_settings.MEDIA_SESSION_COOKIE_NAME] = value[:-1] + (
+            "0" if value[-1] != "0" else "1"
+        )
+        self.assertEqual(
+            self.client.get(f"/api/media/{self.plan.background_file.name}").status_code,
+            403,
+        )
+
+    @override_settings(MEDIA_SESSION_COOKIE_AGE_SECONDS=-1)
+    def test_an_expired_media_cookie_is_refused(self):
+        self._use_media_cookie(self.user)
+        self.assertEqual(
+            self.client.get(f"/api/media/{self.plan.background_file.name}").status_code,
+            403,
+        )
+
+    def test_a_password_change_invalidates_the_media_cookie(self):
+        self._use_media_cookie(self.user)
+        self.user.set_password("pw-media-changed-99")
+        self.user.save(update_fields=["password"])
+        self.assertEqual(
+            self.client.get(f"/api/media/{self.plan.background_file.name}").status_code,
+            403,
+        )
+
+    def test_the_shared_pictogram_library_still_requires_a_logged_in_browser(self):
+        name = default_storage.save(
+            "plan_picto/shared.svg",
+            ContentFile(b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"/>'),
+        )
+        try:
+            url = f"/api/media/{name}"
+            self.assertEqual(APIClient().get(url).status_code, 403)
+            self._use_media_cookie(self.other)
+            self.assertEqual(self.client.get(url).status_code, 200)
+        finally:
+            default_storage.delete(name)
 
     def test_path_traversal_is_refused(self):
         self.client.force_authenticate(user=self.user)
@@ -2058,8 +2393,9 @@ class ProtectedMediaTests(_PlanFactoryMixin, TestCase):
                 self.assertIn(response.status_code, (403, 404), attempt)
 
     def test_a_missing_file_is_a_plain_404(self):
-        self.client.force_authenticate(user=self.user)
-        response = self.client.get("/api/media/backgrounds/inexistant-xyz.png")
+        self._use_media_cookie(self.user)
+        default_storage.delete(self.plan.background_file.name)
+        response = self.client.get(f"/api/media/{self.plan.background_file.name}")
         self.assertEqual(response.status_code, 404)
 
     def test_no_server_path_is_ever_disclosed(self):
@@ -2086,26 +2422,21 @@ class ProtectedMediaTests(_PlanFactoryMixin, TestCase):
 
     def test_a_svg_is_served_as_an_attachment_not_inline(self):
         """Servi en ligne, un SVG s'exécuterait sur l'origine de l'application."""
-        from django.core.files.base import ContentFile
-        from .media_access import sign_media_path
-
-        name = default_storage.save(
-            "backgrounds/essai-media.svg",
+        self.plan.background_file.save(
+            "essai-media.svg",
             ContentFile(b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"/>'),
+            save=True,
         )
-        try:
-            response = self.client.get(sign_media_path(name))
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response["Content-Type"], "application/octet-stream")
-            self.assertIn("attachment", response["Content-Disposition"])
-        finally:
-            default_storage.delete(name)
+        self._use_media_cookie(self.user)
+        response = self.client.get(f"/api/media/{self.plan.background_file.name}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/octet-stream")
+        self.assertIn("attachment", response["Content-Disposition"])
 
     @override_settings(MEDIA_USE_X_ACCEL_REDIRECT=True, MEDIA_X_ACCEL_LOCATION='/protected-media/')
     def test_production_delegates_the_transfer_to_nginx(self):
-        from .media_access import sign_media_path
-
-        response = self.client.get(sign_media_path(self.plan.background_file.name))
+        self._use_media_cookie(self.user)
+        response = self.client.get(f"/api/media/{self.plan.background_file.name}")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response["X-Accel-Redirect"].startswith("/protected-media/"))
         # Le contenu n'est pas lu par Django : c'est Nginx qui l'envoie.

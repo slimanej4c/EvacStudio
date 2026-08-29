@@ -69,6 +69,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const response = await fetch(buildApiUrl(`/api/auth/token/refresh/`), {
           method: "POST",
+          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ refresh: storedRefreshToken }),
         });
@@ -99,7 +100,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const headers = new Headers(init.headers);
     if (currentToken) headers.set("Authorization", `Bearer ${currentToken}`);
 
-    const response = await fetch(input, { ...init, headers });
+    const response = await fetch(input, { ...init, credentials: "include", headers });
     if (response.status !== 401) return response;
 
     const renewedToken = await refreshAccessToken();
@@ -111,7 +112,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const retryHeaders = new Headers(init.headers);
     retryHeaders.set("Authorization", `Bearer ${renewedToken}`);
-    return fetch(input, { ...init, headers: retryHeaders });
+    return fetch(input, { ...init, credentials: "include", headers: retryHeaders });
   };
 
   useEffect(() => {
@@ -141,6 +142,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const fetchUser = async (authToken: string) => {
     try {
       let res = await fetch(buildApiUrl(`/api/auth/me/`), {
+        credentials: "include",
         headers: {
           Authorization: `Bearer ${authToken}`,
         },
@@ -149,6 +151,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const renewedToken = await refreshAccessToken();
         if (renewedToken) {
           res = await fetch(buildApiUrl(`/api/auth/me/`), {
+            credentials: "include",
             headers: { Authorization: `Bearer ${renewedToken}` },
           });
         }
@@ -173,6 +176,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const res = await fetch(buildApiUrl(`/api/auth/token/`), {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
@@ -199,6 +203,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const res = await fetch(buildApiUrl(`/api/auth/register/`), {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           username,
@@ -230,8 +235,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const accessToken = localStorage.getItem("token") || token;
     if (refreshToken && accessToken) {
       try {
-        await fetch(`${API_BASE_URL}/api/auth/logout/`, {
+        await fetch(buildApiUrl(`/api/auth/logout/`), {
           method: "POST",
+          credentials: "include",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${accessToken}`,

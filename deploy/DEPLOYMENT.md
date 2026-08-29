@@ -38,7 +38,7 @@ Optionnel :
 LOG_DIR=/var/log/evacstudio        # active les fichiers de log tournants
 ACCESS_TOKEN_MINUTES=30            # défaut
 REFRESH_TOKEN_DAYS=7               # défaut
-MEDIA_URL_TTL_SECONDS=43200        # validité des URL de médias signées (12 h)
+MEDIA_SESSION_COOKIE_AGE_SECONDS=1800  # session HttpOnly des médias (30 min)
 THROTTLE_LOGIN=10/min
 ADMIN_LOGIN_MAX_ATTEMPTS=10
 ```

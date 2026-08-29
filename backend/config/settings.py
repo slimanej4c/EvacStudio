@@ -153,10 +153,17 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 # ── Accès aux médias ────────────────────────────────────────────────────────
 # MEDIA_URL n'est plus servi directement : les fichiers passent par
-# PROTECTED_MEDIA_URL, qui vérifie une signature ou une authentification.
+# PROTECTED_MEDIA_URL, qui vérifie une session média liée au compte.
 # Voir evacuation_plans/media_access.py pour le raisonnement.
 PROTECTED_MEDIA_URL = '/api/media/'
-MEDIA_URL_TTL_SECONDS = int(os.environ.get('MEDIA_URL_TTL_SECONDS', 12 * 3600))
+MEDIA_SESSION_COOKIE_NAME = os.environ.get(
+    'MEDIA_SESSION_COOKIE_NAME',
+    'evacstudio_media_session',
+)
+MEDIA_SESSION_COOKIE_AGE_SECONDS = int(os.environ.get(
+    'MEDIA_SESSION_COOKIE_AGE_SECONDS',
+    30 * 60,
+))
 
 # En production Nginx sert le fichier depuis une `location internal`, Django ne
 # fait que décider. En développement Django sert le fichier lui-même.
@@ -303,19 +310,23 @@ LOGGING = {
 }
 
 # ── CORS ────────────────────────────────────────────────────────────────────
-# Authentication travels in the Authorization header, not in a cookie, so the
-# application does not need cross-origin credentials at all. Sending them with
-# an open origin list would let any site call the API with the browser's
-# ambient credentials, which is why the two are never combined here.
+# API writes still require the JWT Authorization header. The only ambient
+# credential is an HttpOnly cookie accepted exclusively by the read-only media
+# route, so credentialed CORS is limited to the exact frontend origins.
 _cors_origins = [origin.strip() for origin in os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',') if origin.strip()]
-CORS_ALLOW_CREDENTIALS = False
+CORS_ALLOW_CREDENTIALS = True
 
 if _cors_origins:
     CORS_ALLOWED_ORIGINS = _cors_origins
     CORS_ALLOW_ALL_ORIGINS = False
 elif DEBUG:
-    # Local work: the Next.js dev server runs on another port.
-    CORS_ALLOW_ALL_ORIGINS = True
+    # Credentialed responses cannot use a wildcard. Keep local development on
+    # the two documented Next.js origins.
+    CORS_ALLOWED_ORIGINS = [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+    ]
+    CORS_ALLOW_ALL_ORIGINS = False
 else:
     raise ImproperlyConfigured(
         "CORS_ALLOWED_ORIGINS doit lister les origines du frontend hors développement."

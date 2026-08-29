@@ -1,55 +1,23 @@
-"""Accès contrôlé aux fichiers de ``MEDIA_ROOT``.
+"""Chemins protégés et session de navigateur pour les fichiers de MEDIA_ROOT.
 
-Pourquoi une URL signée plutôt qu'un simple contrôle d'authentification
-----------------------------------------------------------------------
+Une URL de média ne contient aucun secret : la copier ne donne jamais accès au
+fichier. Les balises ``<img>`` et le canvas s'authentifient avec un cookie dédié,
+HttpOnly et signé, que Django émet uniquement après une authentification JWT.
+La vue média contrôle ensuite le propriétaire ou l'invitation dans la base.
 
-Les plans sont affichés par des balises ``<img>`` et par ``new Image()`` dans
-l'éditeur Konva. **Aucune de ces deux API ne permet d'ajouter un en-tête
-HTTP**, et le jeton JWT d'EvacStudio vit dans ``localStorage``, pas dans un
-cookie envoyé automatiquement. Exiger ``Authorization`` sur ``/media/`` aurait
-donc cassé l'affichage de tous les plans, de tous les pictogrammes et tous les
-exports — exactement ce qu'il fallait éviter.
-
-La solution retenue place la preuve d'autorisation *dans l'URL* : le serveur
-signe le chemin et une date d'expiration, le navigateur n'a rien à ajouter.
-C'est le mécanisme des URL pré-signées (S3, GCS). La signature n'est pas une
-donnée personnelle et ne révèle rien : elle ne prouve que « ce serveur a
-autorisé ce chemin jusqu'à cette date ».
-
-Deux voies d'accès sont acceptées :
-
-1. une signature valide et non expirée — le cas des ``<img>`` ;
-2. une requête authentifiée — le cas d'un client d'API qui possède un jeton.
-
-En production le fichier n'est pas lu par Python : Django répond
-``X-Accel-Redirect`` et Nginx sert le fichier depuis une ``location internal``,
-donc inaccessible directement. Django reste le seul point de décision, sans en
-payer le coût en bande passante.
+En production Django conserve la décision d'autorisation puis délègue seulement
+le transfert à la location Nginx ``internal`` via ``X-Accel-Redirect``.
 """
 
-import hashlib
-import hmac
 import os
-import time
 from urllib.parse import quote
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.core import signing
+from django.utils.crypto import constant_time_compare
 
-# Étiquette de dérivation propre à cet usage : la clé de signature des médias
-# n'est ainsi jamais la même que celle qui chiffre les clés API.
-_DERIVATION_LABEL = b':evacstudio-media-url:v1'
-
-# Durée de validité par défaut. Doit couvrir une session d'édition complète :
-# l'URL est signée au chargement du plan et réutilisée tant que l'onglet reste
-# ouvert.
-DEFAULT_MEDIA_URL_TTL = 12 * 3600
-
-MEDIA_SIGNATURE_PARAM = 'sig'
-MEDIA_EXPIRY_PARAM = 'exp'
-
-
-def _signing_key():
-    return hashlib.sha256(settings.SECRET_KEY.encode('utf-8') + _DERIVATION_LABEL).digest()
+MEDIA_SESSION_SALT = 'evacstudio.media-session.v1'
 
 
 def normalize_media_path(raw_path):
@@ -77,52 +45,83 @@ def normalize_media_path(raw_path):
     return relative.replace(os.sep, '/')
 
 
-def _signature_for(relative_path, expires_at):
-    message = f'{relative_path}:{expires_at}'.encode('utf-8')
-    return hmac.new(_signing_key(), message, hashlib.sha256).hexdigest()
-
-
-def sign_media_path(relative_path, ttl=None):
-    """URL relative signée pour un chemin de MEDIA_ROOT, ou '' s'il est invalide."""
+def protected_media_path(relative_path):
+    """Return the protected relative URL, without any bearer credential."""
     normalized = normalize_media_path(relative_path)
     if normalized is None:
         return ''
+    return f'{settings.PROTECTED_MEDIA_URL}{quote(normalized)}'
 
-    ttl = ttl or getattr(settings, 'MEDIA_URL_TTL_SECONDS', DEFAULT_MEDIA_URL_TTL)
-    expires_at = int(time.time()) + int(ttl)
-    signature = _signature_for(normalized, expires_at)
-    quoted = quote(normalized)
-    return (
-        f'{settings.PROTECTED_MEDIA_URL}{quoted}'
-        f'?{MEDIA_EXPIRY_PARAM}={expires_at}&{MEDIA_SIGNATURE_PARAM}={signature}'
+
+def build_protected_media_url(request, relative_path):
+    """Absolute protected URL used by API serializers."""
+    protected = protected_media_path(relative_path)
+    if not protected:
+        return ''
+    return request.build_absolute_uri(protected) if request is not None else protected
+
+
+def protected_url_for_field(request, field_file):
+    """Protected URL for a ``FileField``, or an empty string."""
+    if not field_file or not getattr(field_file, 'name', ''):
+        return ''
+    return build_protected_media_url(request, field_file.name)
+
+
+def media_session_value(user):
+    """Create a short-lived credential bound to a user and password state."""
+    return signing.dumps(
+        {
+            'user_id': user.pk,
+            'auth_hash': user.get_session_auth_hash(),
+        },
+        key=settings.SECRET_KEY,
+        salt=MEDIA_SESSION_SALT,
+        compress=True,
     )
 
 
-def build_signed_media_url(request, relative_path, ttl=None):
-    """Version absolue de :func:`sign_media_path`, pour les réponses d'API."""
-    signed = sign_media_path(relative_path, ttl=ttl)
-    if not signed:
-        return ''
-    return request.build_absolute_uri(signed) if request is not None else signed
+def set_media_session_cookie(response, user):
+    """Attach the HttpOnly media session after successful JWT authentication."""
+    response.set_cookie(
+        settings.MEDIA_SESSION_COOKIE_NAME,
+        media_session_value(user),
+        max_age=settings.MEDIA_SESSION_COOKIE_AGE_SECONDS,
+        httponly=True,
+        secure=not settings.DEBUG,
+        samesite='Lax',
+        path='/',
+    )
+    return response
 
 
-def signed_url_for_field(request, field_file, ttl=None):
-    """URL signée d'un ``FileField``, ou '' si le champ est vide."""
-    if not field_file or not getattr(field_file, 'name', ''):
-        return ''
-    return build_signed_media_url(request, field_file.name, ttl=ttl)
+def clear_media_session_cookie(response):
+    response.delete_cookie(
+        settings.MEDIA_SESSION_COOKIE_NAME,
+        path='/',
+        samesite='Lax',
+    )
+    return response
 
 
-def verify_media_signature(relative_path, expires_at, signature):
-    """Vrai si la signature couvre ce chemin et n'est pas expirée."""
-    if not signature or not expires_at:
-        return False
+def media_session_user(request):
+    """Return the active user authenticated by the dedicated media cookie."""
+    value = request.COOKIES.get(settings.MEDIA_SESSION_COOKIE_NAME)
+    if not value:
+        return None
     try:
-        expiry = int(expires_at)
-    except (TypeError, ValueError):
-        return False
-    if expiry < time.time():
-        return False
-    # Comparaison à temps constant : une comparaison naïve laisse fuir la
-    # signature attendue, octet par octet.
-    return hmac.compare_digest(_signature_for(relative_path, expiry), str(signature))
+        payload = signing.loads(
+            value,
+            key=settings.SECRET_KEY,
+            salt=MEDIA_SESSION_SALT,
+            max_age=settings.MEDIA_SESSION_COOKIE_AGE_SECONDS,
+        )
+        user_id = payload['user_id']
+        auth_hash = payload['auth_hash']
+    except (KeyError, TypeError, signing.BadSignature):
+        return None
+
+    user = get_user_model()._default_manager.filter(pk=user_id, is_active=True).first()
+    if user is None or not constant_time_compare(auth_hash, user.get_session_auth_hash()):
+        return None
+    return user

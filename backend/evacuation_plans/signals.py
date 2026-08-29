@@ -9,6 +9,7 @@ from django.dispatch import receiver
 from .models import (
     EvacuationPlan,
     PlanOverlay,
+    SheetTemplateAsset,
     UserXaiSettings,
     WorkspaceMembership,
 )
@@ -29,6 +30,23 @@ def delete_unused_overlay_file_after_commit(sender, instance, **kwargs):
 
     def cleanup():
         if PlanOverlay.objects.filter(image_file=name).exists():
+            return
+        if storage.exists(name):
+            storage.delete(name)
+
+    transaction.on_commit(cleanup)
+
+
+@receiver(post_delete, sender=SheetTemplateAsset)
+def delete_sheet_template_asset_file_after_commit(sender, instance, **kwargs):
+    if not instance.image_file or not instance.image_file.name:
+        return
+
+    name = instance.image_file.name
+    storage = instance.image_file.storage
+
+    def cleanup():
+        if SheetTemplateAsset.objects.filter(image_file=name).exists():
             return
         if storage.exists(name):
             storage.delete(name)

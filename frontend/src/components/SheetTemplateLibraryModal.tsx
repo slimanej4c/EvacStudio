@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import { CopyPlus, FilePlus2, Library, Trash2, X } from "lucide-react";
+import React, { useMemo, useRef, useState } from "react";
+import { CopyPlus, FilePlus2, FileUp, Library, Loader2, Lock, Trash2, X } from "lucide-react";
 import type { SheetBlock, SheetTemplateKey } from "@/lib/sheetTemplates";
 
 export interface SheetTemplateLibraryItem {
@@ -24,7 +24,9 @@ interface SheetTemplateLibraryModalProps {
   onUse: (item: SheetTemplateLibraryItem) => void;
   onClone: (item: SheetTemplateLibraryItem, name: string) => void;
   onCreate: (formatSource: SheetTemplateLibraryItem, name: string) => void;
+  onImportPdf: (file: File, name: string) => Promise<void>;
   onDelete: (item: SheetTemplateLibraryItem) => void;
+  images?: Partial<Record<string, HTMLImageElement | null>>;
 }
 
 const visibleFill = (value?: string) => {
@@ -40,7 +42,15 @@ const pictogramColor = (block: SheetBlock) => {
   return "#2563eb";
 };
 
-function SheetTemplatePreview({ item, large = false }: { item: SheetTemplateLibraryItem; large?: boolean }) {
+function SheetTemplatePreview({
+  item,
+  large = false,
+  images = {},
+}: {
+  item: SheetTemplateLibraryItem;
+  large?: boolean;
+  images?: Partial<Record<string, HTMLImageElement | null>>;
+}) {
   const blocks = item.blocks.filter((block) => block.visible);
   return (
     <div className={`flex h-full w-full items-center justify-center overflow-hidden ${large ? "p-5" : "p-2"}`}>
@@ -58,7 +68,12 @@ function SheetTemplatePreview({ item, large = false }: { item: SheetTemplateLibr
             : undefined;
           const key = `${block.id}-${index}`;
           if (block.kind === "background") {
-            return <rect key={key} x={block.x} y={block.y} width={block.width} height={block.height} fill="#f5f0e8" />;
+            const image = block.imageKey ? images[block.imageKey] : null;
+            return image ? (
+              <image key={key} href={image.src} x={block.x} y={block.y} width={block.width} height={block.height} preserveAspectRatio="none" />
+            ) : (
+              <rect key={key} x={block.x} y={block.y} width={block.width} height={block.height} fill="#f5f0e8" />
+            );
           }
           if (block.kind === "plan") {
             return (
@@ -127,26 +142,24 @@ export function SheetTemplateLibraryModal({
   onUse,
   onClone,
   onCreate,
+  onImportPdf,
   onDelete,
+  images = {},
 }: SheetTemplateLibraryModalProps) {
   const [selectedId, setSelectedId] = useState("");
-  const [nameAction, setNameAction] = useState<"create" | "clone" | null>(null);
+  const [nameAction, setNameAction] = useState<"create" | "clone" | "pdf" | null>(null);
   const [templateName, setTemplateName] = useState("");
-
-  useEffect(() => {
-    if (!open) return;
-    setSelectedId((current) =>
-      activeItemId && items.some((item) => item.id === activeItemId)
-        ? activeItemId
-        : items.some((item) => item.id === current)
-          ? current
-          : items[0]?.id || ""
-    );
-  }, [open, activeItemId, items]);
+  const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null);
+  const [importingPdf, setImportingPdf] = useState(false);
+  const [pdfImportError, setPdfImportError] = useState("");
+  const pdfInputRef = useRef<HTMLInputElement>(null);
 
   const selected = useMemo(
-    () => items.find((item) => item.id === selectedId) || items[0] || null,
-    [items, selectedId]
+    () => items.find((item) => item.id === selectedId)
+      || items.find((item) => item.id === activeItemId)
+      || items[0]
+      || null,
+    [items, selectedId, activeItemId]
   );
 
   const askForName = (action: "create" | "clone") => {
@@ -154,13 +167,41 @@ export function SheetTemplateLibraryModal({
     setTemplateName(action === "clone" ? `Copie de ${selected?.name || "template"}` : "Nouveau template");
   };
 
-  const submitName = (event: React.FormEvent<HTMLFormElement>) => {
+  const submitName = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const name = templateName.trim();
-    if (!selected || !name || !nameAction) return;
+    if (!name || !nameAction) return;
+    if (nameAction === "pdf" && pendingPdfFile) {
+      setImportingPdf(true);
+      setPdfImportError("");
+      try {
+        await onImportPdf(pendingPdfFile, name);
+        setNameAction(null);
+        setPendingPdfFile(null);
+      } catch (error) {
+        setPdfImportError(error instanceof Error ? error.message : "Impossible d’importer le PDF.");
+      } finally {
+        setImportingPdf(false);
+      }
+      return;
+    }
+    if (!selected) return;
     if (nameAction === "clone") onClone(selected, name);
     else onCreate(selected, name);
     setNameAction(null);
+  };
+
+  const selectPdf = (file?: File) => {
+    if (!file) return;
+    const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+    if (!isPdf) {
+      setPdfImportError("Sélectionnez un fichier PDF.");
+      return;
+    }
+    setPendingPdfFile(file);
+    setTemplateName(file.name.replace(/\.pdf$/i, "").trim() || "Template PDF");
+    setPdfImportError("");
+    setNameAction("pdf");
   };
 
   if (!open || !selected) return null;
@@ -186,6 +227,20 @@ export function SheetTemplateLibraryModal({
         <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(380px,0.9fr)_minmax(480px,1.3fr)]">
           <div className="min-h-0 overflow-y-auto border-r border-white/10 p-4">
             <div className="mb-3 flex flex-wrap items-center gap-2">
+              <input
+                ref={pdfInputRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                className="hidden"
+                onChange={(event) => {
+                  selectPdf(event.target.files?.[0]);
+                  event.target.value = "";
+                }}
+              />
+              <button type="button" onClick={() => pdfInputRef.current?.click()} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-500">
+                <FileUp className="h-4 w-4" />
+                Importer un PDF
+              </button>
               <button type="button" onClick={() => askForName("create")} className="inline-flex items-center gap-2 rounded-lg bg-brand-orange px-3 py-2 text-xs font-bold text-white transition hover:bg-brand-red">
                 <FilePlus2 className="h-4 w-4" />
                 Nouveau template
@@ -207,13 +262,13 @@ export function SheetTemplateLibraryModal({
                     className={`overflow-hidden rounded-xl border text-left transition ${active ? "border-brand-orange bg-brand-orange/10 ring-2 ring-brand-orange/20" : "border-white/10 bg-black/20 hover:border-white/25 hover:bg-white/5"}`}
                   >
                     <div className="h-36 bg-[#d8d8dc]">
-                      <SheetTemplatePreview item={item} />
+                      <SheetTemplatePreview item={item} images={images} />
                     </div>
                     <div className="p-3">
                       <div className="flex items-start justify-between gap-2">
                         <span className="line-clamp-2 text-xs font-bold text-neutral-100">{item.name}</span>
                         <span className={`shrink-0 rounded-full px-2 py-0.5 text-[8px] font-bold uppercase tracking-wide ${item.kind === "builtin" ? "bg-emerald-500/15 text-emerald-300" : "bg-violet-500/15 text-violet-300"}`}>
-                          {item.kind === "builtin" ? "Par défaut" : "Personnel"}
+                          {item.kind === "builtin" ? "Par défaut verrouillé" : "Personnel"}
                         </span>
                       </div>
                     </div>
@@ -237,7 +292,7 @@ export function SheetTemplateLibraryModal({
               </div>
             </div>
             <div className="min-h-0 flex-1 bg-[#bfc0c4]">
-              <SheetTemplatePreview item={selected} large />
+              <SheetTemplatePreview item={selected} large images={images} />
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-white/10 bg-[#242426] px-5 py-3.5">
               <button type="button" onClick={() => onUse(selected)} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-emerald-500">
@@ -247,6 +302,12 @@ export function SheetTemplateLibraryModal({
                 <CopyPlus className="h-4 w-4" />
                 Cloner et modifier
               </button>
+              {selected.kind === "builtin" && (
+                <span className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-2.5 py-2 text-[10px] font-semibold text-amber-300">
+                  <Lock className="h-3.5 w-3.5" />
+                  Original protégé
+                </span>
+              )}
               <button type="button" onClick={onUsePlanOnly} className="rounded-lg px-3 py-2 text-xs font-semibold text-neutral-400 transition hover:bg-white/10 hover:text-white">
                 Afficher le plan seul
               </button>
@@ -265,15 +326,17 @@ export function SheetTemplateLibraryModal({
             <form onSubmit={submitName} className="w-full max-w-md rounded-2xl border border-white/10 bg-[#2d2d30] p-5 shadow-2xl">
               <div className="flex items-start gap-3">
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-orange/15 text-brand-orange">
-                  {nameAction === "clone" ? <CopyPlus className="h-5 w-5" /> : <FilePlus2 className="h-5 w-5" />}
+                  {nameAction === "clone" ? <CopyPlus className="h-5 w-5" /> : nameAction === "pdf" ? <FileUp className="h-5 w-5" /> : <FilePlus2 className="h-5 w-5" />}
                 </span>
                 <div>
                   <h3 className="text-base font-bold text-white">
-                    {nameAction === "clone" ? "Nommer le template cloné" : "Créer un nouveau template"}
+                    {nameAction === "clone" ? "Nommer le template cloné" : nameAction === "pdf" ? "Importer le template PDF" : "Créer un nouveau template"}
                   </h3>
                   <p className="mt-1 text-xs leading-relaxed text-neutral-400">
                     {nameAction === "clone"
                       ? `Une copie indépendante de « ${selected.name} » sera créée.`
+                      : nameAction === "pdf"
+                        ? `Chaque page de « ${pendingPdfFile?.name || "ce PDF"} » deviendra un template personnel avec un fond verrouillé.`
                       : `Le nouveau template utilisera le format de « ${selected.name} ».`}
                   </p>
                 </div>
@@ -290,12 +353,16 @@ export function SheetTemplateLibraryModal({
                 className="mt-2 w-full rounded-xl border border-white/15 bg-black/25 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-neutral-600 focus:border-brand-orange focus:ring-2 focus:ring-brand-orange/20"
                 placeholder="Ex. Plan d’évacuation hôtel"
               />
+              {pdfImportError && nameAction === "pdf" && (
+                <p className="mt-2 text-xs font-medium text-red-400">{pdfImportError}</p>
+              )}
               <div className="mt-5 flex justify-end gap-2">
-                <button type="button" onClick={() => setNameAction(null)} className="rounded-lg px-4 py-2 text-xs font-semibold text-neutral-400 transition hover:bg-white/10 hover:text-white">
+                <button type="button" disabled={importingPdf} onClick={() => { setNameAction(null); setPendingPdfFile(null); }} className="rounded-lg px-4 py-2 text-xs font-semibold text-neutral-400 transition hover:bg-white/10 hover:text-white disabled:opacity-40">
                   Annuler
                 </button>
-                <button type="submit" disabled={!templateName.trim()} className="rounded-lg bg-brand-orange px-4 py-2 text-xs font-bold text-white transition hover:bg-brand-red disabled:cursor-not-allowed disabled:opacity-40">
-                  {nameAction === "clone" ? "Cloner et ouvrir" : "Créer et ouvrir"}
+                <button type="submit" disabled={!templateName.trim() || importingPdf} className="inline-flex items-center gap-2 rounded-lg bg-brand-orange px-4 py-2 text-xs font-bold text-white transition hover:bg-brand-red disabled:cursor-not-allowed disabled:opacity-40">
+                  {importingPdf && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  {nameAction === "clone" ? "Cloner et ouvrir" : nameAction === "pdf" ? "Importer et ouvrir" : "Créer et ouvrir"}
                 </button>
               </div>
             </form>

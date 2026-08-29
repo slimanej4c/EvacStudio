@@ -29,11 +29,12 @@ class UploadRateThrottle(UserRateThrottle):
     scope = 'upload'
 
 
-class SignedMediaRateThrottle(AnonRateThrottle):
-    """Downloads made through a signed media URL.
+class ProtectedMediaRateThrottle(AnonRateThrottle):
+    """Downloads authenticated by the dedicated media cookie.
 
     Images loaded by ``<img>`` do not carry the JWT header, so they are
-    anonymous from DRF's point of view even though their URL is signed. Giving
+    anonymous from DRF's point of view even though their cookie is verified by
+    the media view. Giving
     this traffic its own bucket prevents the generic 60/hour anonymous limit
     from blanking the complete pictogram library after its first page load.
     """

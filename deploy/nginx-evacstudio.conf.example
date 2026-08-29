@@ -82,7 +82,7 @@ server {
 
     # ── Médias téléversés ───────────────────────────────────────────────────
     # /media/ n'est PLUS servi publiquement. Les fichiers passent par
-    # /api/media/, qui vérifie une signature ou une authentification, puis
+    # /api/media/, qui vérifie le compte propriétaire/invité, puis
     # délègue le transfert ici via X-Accel-Redirect.
     #
     # `internal` est le point essentiel : cette location est inatteignable

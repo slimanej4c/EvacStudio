@@ -5,8 +5,8 @@ import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { useAuth } from "@/context/AuthContext";
-import { buildApiUrl } from "@/lib/api";
-import { CalendarDays, CopyPlus, Edit2, Eye, FileText, Loader2, Plus, Search, SearchX, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { buildApiUrl, imageCrossOrigin } from "@/lib/api";
+import { CalendarDays, CopyPlus, Edit2, Eye, FileText, LayoutTemplate, Loader2, Plus, Search, SearchX, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 type PlanDateFilter = "all" | "today" | "7days" | "30days" | "custom";
 type PlanSort = "updated_desc" | "updated_asc" | "name_asc" | "name_desc";
@@ -24,6 +24,9 @@ interface EvacuationPlan {
     reference?: string;
     client?: string;
   };
+  active_sheet_template_key?: string;
+  active_sheet_template_version_id?: string;
+  active_sheet_template_name?: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -182,6 +185,7 @@ export default function EvacuationPlansPage() {
             plan.floor_name,
             plan.watermark_config?.reference || "",
             plan.watermark_config?.client || "",
+            plan.active_sheet_template_name || "Plan seul",
           ].join(" "));
           if (!searchable.includes(normalizedSearch)) return false;
         }
@@ -396,6 +400,7 @@ export default function EvacuationPlansPage() {
                           {previewUrl ? (
                             <img
                               src={previewUrl}
+                              crossOrigin={imageCrossOrigin(previewUrl)}
                               alt={plan.title}
                               className="h-full w-full object-contain p-2 transition-transform duration-300 group-hover:scale-[1.03]"
                               loading="lazy"
@@ -412,8 +417,14 @@ export default function EvacuationPlansPage() {
                           <p className="mt-0.5 truncate text-sm text-stone-500">
                             {plan.building_name}{plan.floor_name ? ` · ${plan.floor_name}` : ""}
                           </p>
+                          <p className="mt-2 flex min-w-0 items-center gap-1.5 text-[11px] font-semibold text-brand-orange">
+                            <LayoutTemplate className="h-3.5 w-3.5 shrink-0" />
+                            <span className="truncate">
+                              Template : {plan.active_sheet_template_name || "Plan seul"}
+                            </span>
+                          </p>
                           {updatedTimestamp > 0 && (
-                            <p className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-stone-400">
+                            <p className="mt-1.5 flex items-center gap-1.5 text-[11px] font-medium text-stone-400">
                               <CalendarDays className="h-3.5 w-3.5" />
                               Modifié le {planDateFormatter.format(new Date(updatedTimestamp))}
                             </p>

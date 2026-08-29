@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { buildIconPreviewSource, SafetyIconDefinition } from "@/utils/safetyIcons";
+import { imageCrossOrigin } from "@/lib/api";
 
 interface SafetyIconArtworkProps {
   definition?: SafetyIconDefinition;
@@ -37,8 +38,15 @@ export function SafetyIconArtwork({
     return <span aria-hidden="true" className={`${className} animate-pulse rounded bg-black/10`} />;
   }
 
-  // These sources are signed media URLs or local data-images; Next/Image would
+  // These sources are protected media URLs or local data-images; Next/Image would
   // add an unnecessary optimization request for every toolbar pictogram.
   // eslint-disable-next-line @next/next/no-img-element
-  return <img src={source} alt={alt} className={`${className} object-contain`} />;
+  return (
+    <img
+      src={source}
+      crossOrigin={imageCrossOrigin(source)}
+      alt={alt}
+      className={`${className} object-contain`}
+    />
+  );
 }

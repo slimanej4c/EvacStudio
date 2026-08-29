@@ -453,7 +453,7 @@ const definitionUsesSvgFile = (definition: SafetyIconDefinition) =>
 async function fetchSvgMarkup(imageUrl: string): Promise<string> {
   let pending = svgMarkupRequests.get(imageUrl);
   if (!pending) {
-    pending = fetch(imageUrl).then(async (response) => {
+    pending = fetch(imageUrl, { credentials: "include" }).then(async (response) => {
       if (!response.ok) throw new Error(`SVG unavailable (${response.status})`);
       const markup = await response.text();
       if (!/<svg[\s>]/i.test(markup)) throw new Error("Invalid SVG response");
@@ -465,8 +465,8 @@ async function fetchSvgMarkup(imageUrl: string): Promise<string> {
   try {
     return await pending;
   } catch (error) {
-    // A signed URL may have expired. Do not permanently cache the failure so a
-    // refreshed URL can be tried on the next render.
+    // A media session may have expired. Do not permanently cache the failure
+    // so a refreshed session can be tried on the next render.
     svgMarkupRequests.delete(imageUrl);
     throw error;
   }

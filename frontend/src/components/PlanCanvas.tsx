@@ -14,6 +14,7 @@ import {
   normalizeCanvasLeaderWidth,
   normalizeTransformedCanvasIconDimension,
 } from "@/lib/canvasIconDimensions";
+import { imageCrossOrigin } from "@/lib/api";
 
 export interface CanvasIcon {
   id?: number;
@@ -70,6 +71,27 @@ export function boundsFromPoints(points: ShapePoint[]) {
   const maxX = Math.max(...xs);
   const maxY = Math.max(...ys);
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+function measureCanvasText(text: string, fontSize: number, fontFamily = "Arial", fontStyle = "normal") {
+  const lines = (text || "Texte").split("\n");
+  const fallbackWidth = Math.max(20, ...lines.map((line) => line.length * fontSize * 0.68));
+  const fallbackHeight = Math.max(fontSize * 1.35, lines.length * fontSize * 1.35);
+
+  if (typeof document === "undefined") {
+    return { width: fallbackWidth, height: fallbackHeight };
+  }
+
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) return { width: fallbackWidth, height: fallbackHeight };
+
+  context.font = `${fontStyle} ${fontSize}px ${fontFamily || "Arial"}`;
+  const measuredWidth = Math.max(20, ...lines.map((line) => context.measureText(line || " ").width));
+  return {
+    width: Math.ceil(measuredWidth + fontSize * 0.45),
+    height: Math.ceil(Math.max(fontSize * 1.35, lines.length * fontSize * 1.35))
+  };
 }
 
 
@@ -524,6 +546,8 @@ interface PlanCanvasProps {
     height: number;
     blocks: SheetBlock[];
   } | null;
+  /** False makes the template itself read-only while plan annotations stay editable. */
+  sheetEditingEnabled?: boolean;
   onSheetBlocksChange?: (blocks: SheetBlock[]) => void;
   selectedBlockId?: string | null;
   /** All template blocks selected by a mouse marquee or an object group. */
@@ -776,6 +800,7 @@ function PlanCanvas({
   placementText = false,
   onPlaceText,
   sheet = null,
+  sheetEditingEnabled = true,
   onSheetBlocksChange,
   selectedBlockId = null,
   selectedBlockIds = [],
@@ -866,7 +891,7 @@ function PlanCanvas({
       if (!overlay.url || overlaySourcesRef.current[overlay.tempId] === overlay.url) return;
       overlaySourcesRef.current[overlay.tempId] = overlay.url;
       const img = new Image();
-      img.crossOrigin = "anonymous";
+      img.crossOrigin = imageCrossOrigin(overlay.url);
       // A cleaned or cropped plan is a multi-megabyte data URL and takes a
       // moment to decode. The load is deliberately not cancelled when the list
       // changes meanwhile — dropping it would leave the plan showing its old
@@ -1161,10 +1186,12 @@ function PlanCanvas({
    * without jumping between plan and sheet coordinates.
    */
   const pointerForNewDrawing = (stage: any): { point: ShapePoint; space: "plan" | "sheet" } | null => {
-    if (sheet && onPlaceSheetShape) {
+    if (sheet) {
       const sheetPoint = pointerInSheetCoords(stage);
       if (sheetPoint && !isInsidePlanWindow(sheetPoint)) {
-        return { point: sheetPoint, space: "sheet" };
+        return sheetEditingEnabled && onPlaceSheetShape
+          ? { point: sheetPoint, space: "sheet" }
+          : null;
       }
     }
     const planPoint = pointerInPlanCoords(stage);
@@ -2071,10 +2098,8 @@ function PlanCanvas({
     });
 
     texts.filter((text) => text.visible !== false).forEach((t) => {
-      // Approximate the text box so the sheet grows to contain it.
-      const lines = (t.text || "").split("\n");
-      const w = Math.max(20, ...lines.map((line) => line.length * t.font_size * 0.55));
-      const h = Math.max(t.font_size * 1.3, lines.length * t.font_size * 1.3);
+      const fontStyle = `${t.italic ? "italic" : ""} ${t.bold ? "bold" : "normal"}`.trim() || "normal";
+      const { width: w, height: h } = measureCanvasText(t.text, t.font_size, t.font_family, fontStyle);
       minX = Math.min(minX, t.x - SHEET_MARGIN);
       minY = Math.min(minY, t.y - SHEET_MARGIN);
       maxX = Math.max(maxX, t.x + w + SHEET_MARGIN);
@@ -2118,9 +2143,8 @@ function PlanCanvas({
       });
     });
     texts.filter((text) => textIds.has(text.tempId)).forEach((text) => {
-      const lines = text.text.split("\n");
-      const width = Math.max(20, ...lines.map((line) => line.length * text.font_size * 0.55));
-      const height = Math.max(text.font_size * 1.3, lines.length * text.font_size * 1.3);
+      const fontStyle = `${text.italic ? "italic" : ""} ${text.bold ? "bold" : "normal"}`.trim() || "normal";
+      const { width, height } = measureCanvasText(text.text, text.font_size, text.font_family, fontStyle);
       boxes.push({ left: text.x, top: text.y, right: text.x + width, bottom: text.y + height });
     });
 
@@ -2763,7 +2787,10 @@ function PlanCanvas({
     if (backgroundType === "pdf" && pdfjsLib) {
       const renderPdf = async () => {
         try {
-          const loadingTask = pdfjsLib.getDocument(backgroundUrl);
+          const loadingTask = pdfjsLib.getDocument({
+            url: backgroundUrl,
+            withCredentials: true,
+          });
           const pdf = await loadingTask.promise;
           const page = await pdf.getPage(1);
           
@@ -2792,7 +2819,7 @@ function PlanCanvas({
       renderPdf();
     } else {
       const img = new window.Image();
-      img.crossOrigin = "anonymous";
+      img.crossOrigin = imageCrossOrigin(backgroundUrl);
       img.onload = () => {
         setBgImage(img);
         setImageSize({ width: img.width, height: img.height });
@@ -2829,7 +2856,7 @@ function PlanCanvas({
         if (!source) return [key, null] as const;
         return await new Promise<readonly [string, HTMLImageElement | null]>((resolve) => {
           const image = new window.Image();
-          image.crossOrigin = "anonymous";
+          image.crossOrigin = imageCrossOrigin(source);
           image.onload = () => resolve([key, image] as const);
           image.onerror = () => resolve([key, null] as const);
           image.src = source;
@@ -2864,7 +2891,7 @@ function PlanCanvas({
         if (!source) return null;
         return await new Promise<readonly [IconType, HTMLImageElement] | null>((resolve) => {
           const image = new window.Image();
-          image.crossOrigin = "anonymous";
+          image.crossOrigin = imageCrossOrigin(source);
           image.onload = () => resolve([type, image] as const);
           image.onerror = () => resolve(null);
           image.src = source;
@@ -3124,10 +3151,12 @@ function PlanCanvas({
 
       // On the sheet, dropping a pictogram outside the plan's window puts it on
       // the page itself — in a heading, beside a notice, inside the legend.
-      if (sheet && onPlaceSheetIcon) {
+      if (sheet) {
         const sheetPoint = pointerInSheetCoords(stage);
         if (sheetPoint && !isInsidePlanWindow(sheetPoint)) {
-          onPlaceSheetIcon(placementIconType, sheetPoint.x, sheetPoint.y, resolvedIconSize);
+          if (sheetEditingEnabled && onPlaceSheetIcon) {
+            onPlaceSheetIcon(placementIconType, sheetPoint.x, sheetPoint.y, resolvedIconSize);
+          }
           return;
         }
       }
@@ -3154,10 +3183,10 @@ function PlanCanvas({
       // A click in the template margin creates a real sheet block, editable
       // with all the other template properties. A click inside the plan window
       // intentionally remains a plan annotation.
-      if (sheet && onPlaceSheetText) {
+      if (sheet) {
         const sheetPoint = pointerInSheetCoords(stage);
         if (sheetPoint && !isInsidePlanWindow(sheetPoint)) {
-          onPlaceSheetText(sheetPoint.x, sheetPoint.y);
+          if (sheetEditingEnabled && onPlaceSheetText) onPlaceSheetText(sheetPoint.x, sheetPoint.y);
           return;
         }
       }
@@ -3525,7 +3554,7 @@ function PlanCanvas({
                   }
                 : undefined
             }
-            draggable={Boolean(sheet) && mode === "select" && planBlockSelected && !planBlock?.locked}
+            draggable={Boolean(sheet) && sheetEditingEnabled && mode === "select" && planBlockSelected && !planBlock?.locked}
             onDragEnd={(event: any) => {
               if (!sheet || !planBlock) return;
               const node = event.target;
@@ -3546,7 +3575,7 @@ function PlanCanvas({
               y={sheet ? planTransform.y : 0}
               scaleX={sheet ? planTransform.scale : 1}
               scaleY={sheet ? planTransform.scale : 1}
-              draggable={Boolean(sheet) && mode === "select" && planBlockSelected && !planBlock?.locked}
+              draggable={Boolean(sheet) && sheetEditingEnabled && mode === "select" && planBlockSelected && !planBlock?.locked}
               onDragStart={(event: any) => {
                 // Both the window and the plan inside it are draggable, and Konva
                 // always picks the innermost one. Alt is the switch: without it,
@@ -4155,12 +4184,12 @@ function PlanCanvas({
           {/* Render free text annotations */}
           {texts.filter((text) => text.visible !== false).map((t) => {
             const fontStyle = `${t.italic ? "italic" : ""} ${t.bold ? "bold" : "normal"}`.trim() || "normal";
-            // Measure width/height indirectly via Konva: we render a transparent
-            // measure node and rely on the visible Text for layout. To keep the
-            // background rect and selection tight, approximate from font metrics.
-            const textLines = (t.text || "Texte").split("\n");
-            const approxWidth = Math.max(20, ...textLines.map((line) => line.length * t.font_size * 0.55));
-            const approxHeight = Math.max(t.font_size * 1.3, textLines.length * t.font_size * 1.3);
+            const { width: approxWidth, height: approxHeight } = measureCanvasText(
+              t.text,
+              t.font_size,
+              t.font_family,
+              fontStyle
+            );
             const padX = 6;
             const padY = 4;
             return (
@@ -4312,7 +4341,7 @@ function PlanCanvas({
                   key={block.id}
                   block={block}
                   isSelected={selectedBlockIds.length <= 1 && selectedBlockId === block.id}
-                  editable={mode === "select" && !areaSelectionMode && !block.locked}
+                  editable={sheetEditingEnabled && mode === "select" && !areaSelectionMode && !block.locked}
                   legendEntries={sheetLegendEntries}
                   images={sheetImages}
                   pictoImages={resolvedSheetPictoImages}
@@ -4347,8 +4376,8 @@ function PlanCanvas({
               strokeWidth={1}
               strokeScaleEnabled={false}
               dash={[8 / Math.max(zoom, 0.1), 5 / Math.max(zoom, 0.1)]}
-              draggable={mode === "select"}
-              listening={mode === "select"}
+              draggable={sheetEditingEnabled && mode === "select"}
+              listening={sheetEditingEnabled && mode === "select"}
               onDragEnd={(event: any) => {
                 const originX = selectedSheetBounds.x - 7 / Math.max(zoom, 0.05);
                 const originY = selectedSheetBounds.y - 7 / Math.max(zoom, 0.05);

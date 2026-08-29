@@ -4,17 +4,27 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Download, FileDown, Loader2 } from "lucide-react";
 
+export type ExportQuality = "very-light" | "light" | "medium" | "high" | "very-high";
+
 interface ExportButtonsProps {
   /** Exports what the studio currently shows, in the chosen file type. */
-  onExport: (format: "png" | "jpeg" | "pdf") => void;
+  onExport: (format: "png" | "jpeg" | "pdf", quality: ExportQuality) => void;
   exporting?: boolean;
   /** Paper size of the PDF, chosen from the same menu. */
   paperFormat: string;
   paperOptions: ReadonlyArray<{ key: string; label: string }>;
   onPaperFormatChange: (key: string) => void;
+  /** Resolution/compression profile used by every final export format. */
+  quality: ExportQuality;
+  qualityOptions: ReadonlyArray<{
+    key: ExportQuality;
+    label: string;
+    description: string;
+  }>;
+  onQualityChange: (quality: ExportQuality) => void;
 }
 
-const MENU_WIDTH = 224;
+const MENU_WIDTH = 280;
 
 /**
  * A single way out of the studio: one button, then PDF or PNG. Whatever is on
@@ -29,7 +39,10 @@ export default function ExportButtons({
   exporting = false,
   paperFormat,
   paperOptions,
-  onPaperFormatChange
+  onPaperFormatChange,
+  quality,
+  qualityOptions,
+  onQualityChange
 }: ExportButtonsProps) {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
@@ -81,8 +94,10 @@ export default function ExportButtons({
 
   const choose = (format: "png" | "jpeg" | "pdf") => {
     setOpen(false);
-    onExport(format);
+    onExport(format, quality);
   };
+
+  const selectedQuality = qualityOptions.find((option) => option.key === quality);
 
   const menu =
     open && !exporting && anchor && typeof document !== "undefined"
@@ -111,6 +126,32 @@ export default function ExportButtons({
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="border-b border-white/10 px-3 py-2.5">
+              <div className="mb-1.5 flex items-center justify-between gap-3">
+                <label
+                  htmlFor="studio-export-quality"
+                  className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500"
+                >
+                  Qualité du fichier
+                </label>
+                <select
+                  id="studio-export-quality"
+                  value={quality}
+                  onChange={(event) => onQualityChange(event.target.value as ExportQuality)}
+                  className="cursor-pointer rounded border border-white/10 bg-neutral-800 px-2 py-1 text-[11px] font-semibold text-neutral-100 outline-none focus:border-sky-500"
+                >
+                  {qualityOptions.map((option) => (
+                    <option key={option.key} value={option.key}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-[10px] leading-4 text-neutral-400">
+                {selectedQuality?.description}
+              </p>
             </div>
 
             <button

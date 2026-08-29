@@ -1,16 +1,33 @@
 import logging
 
+from django.conf import settings
+from django.contrib.auth.models import User
 from django.core.exceptions import ObjectDoesNotExist
 from django.urls import path, include
 from rest_framework_simplejwt.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+from .media_access import set_media_session_cookie
 from .media_views import ProtectedMediaView
 from .throttles import LoginRateThrottle
 
 audit = logging.getLogger('evacstudio.audit')
+
+
+def attach_media_session_from_access_token(response):
+    """Bind protected image requests to the browser that received the JWT."""
+    access_value = getattr(response, 'data', {}).get('access')
+    if response.status_code != 200 or not access_value:
+        return response
+    token = AccessToken(access_value)
+    user = User.objects.filter(
+        pk=token[settings.SIMPLE_JWT['USER_ID_CLAIM']],
+        is_active=True,
+    ).first()
+    return set_media_session_cookie(response, user) if user is not None else response
 
 
 class SafeTokenRefreshSerializer(TokenRefreshSerializer):
@@ -52,7 +69,7 @@ class ThrottledTokenObtainPairView(TokenObtainPairView):
                 "auth.api_login.success username=%s",
                 str(request.data.get('username', '?'))[:150],
             )
-        return response
+        return attach_media_session_from_access_token(response)
 
 
 class ThrottledTokenRefreshView(TokenRefreshView):
@@ -60,6 +77,10 @@ class ThrottledTokenRefreshView(TokenRefreshView):
 
     throttle_classes = [LoginRateThrottle]
     serializer_class = SafeTokenRefreshSerializer
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        return attach_media_session_from_access_token(response)
 
 from .views import (
     RegisterView,

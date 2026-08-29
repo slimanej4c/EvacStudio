@@ -15,7 +15,7 @@ import LayerPanel, { EditorLayerItem, LayerMoveDirection } from "@/components/La
 import { IconType, SAFETY_ICONS, SafetyIconDefinition, buildIconPreviewSource, buildStretchableIconSource, getIconImageSource, isYouAreHereIcon, inferPictogramColor, normalizePictogramColorOverride } from "@/utils/safetyIcons";
 import { SafetyIconArtwork } from "@/components/SafetyIconArtwork";
 import { CanvasIcon, CanvasShape, CanvasText, CanvasPlanOverlay, CanvasPlanTransform, CanvasMultiSelection, ShapeKind, EraserShape, EraserTarget, PlanCanvasHandle, FONT_OPTIONS, MAIN_PLAN_ID, isPolygonTool, isPolygonShape, pointLabel, shapeWithoutPoint, boundsFromPoints } from "@/components/PlanCanvas";
-import { buildApiUrl } from "@/lib/api";
+import { buildApiUrl, imageCrossOrigin } from "@/lib/api";
 import {
   SHEET_WIDTH,
   SHEET_HEIGHT,
@@ -24,6 +24,7 @@ import {
   SheetTemplateKey,
   createSheetBlocks,
   createSheetPlanPlacement,
+  ensureSheetLegendBlock,
   createOfficialEvacuationModernLandscapeFromPortraitBlocks,
   createOfficialEvacuationPortraitFromPsiBlocks,
   createFreeTextBlock,
@@ -34,6 +35,7 @@ import type { SheetLegendEntry } from "@/components/SheetBlockNode";
 import { createDefaultWatermarkConfig, normalizeWatermarkConfig, WatermarkConfig } from "@/lib/watermark";
 import { DEFAULT_STUDIO_LOGO, getStoredStudioLogo, prepareLogoFile, storeStudioLogo } from "@/lib/brandLogos";
 import { buildCurvePathData } from "@/lib/curvePath";
+import type { ExportQuality } from "@/components/ExportButtons";
 import {
   MAX_CANVAS_ICON_DIMENSION,
   MAX_CANVAS_LEADER_WIDTH,
@@ -89,6 +91,101 @@ interface StoredSheetTemplateVersion {
 }
 const cloneSheetBlocks = (blocks: SheetBlock[]) =>
   JSON.parse(JSON.stringify(blocks)) as SheetBlock[];
+const isPersonalSheetTemplateVersionId = (versionId: string) =>
+  versionId.startsWith("custom:") || versionId.startsWith("baseline:");
+const lockDefaultSheetBlocks = (blocks: SheetBlock[]) =>
+  cloneSheetBlocks(blocks).map((block) => ({ ...block, locked: true }));
+const unlockPersonalSheetBlocks = (blocks: SheetBlock[]) =>
+  cloneSheetBlocks(blocks).map((block) => ({
+    ...block,
+    // An imported PDF is the immutable paper artwork. Personal content placed
+    // over it is free to edit, while the source page can never be dragged or
+    // removed accidentally.
+    locked: block.kind === "background",
+  }));
+
+const PDF_TEMPLATE_MAX_PAGES = 20;
+
+/** Find the largest low-ink rectangle near the centre of a rasterized PDF. */
+const detectPdfPlanWindow = (
+  canvas: HTMLCanvasElement,
+  sheetWidth: number,
+  sheetHeight: number,
+) => {
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  const fallback = sheetWidth > sheetHeight
+    ? { x: sheetWidth * 0.18, y: sheetHeight * 0.16, width: sheetWidth * 0.64, height: sheetHeight * 0.68 }
+    : { x: sheetWidth * 0.12, y: sheetHeight * 0.19, width: sheetWidth * 0.76, height: sheetHeight * 0.60 };
+  if (!context || !canvas.width || !canvas.height) return fallback;
+
+  const columns = 48;
+  const rows = Math.max(28, Math.round(columns * canvas.height / canvas.width));
+  const cellWidth = canvas.width / columns;
+  const cellHeight = canvas.height / rows;
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  const blank = Array.from({ length: rows }, () => Array(columns).fill(false));
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const startX = Math.floor(column * cellWidth);
+      const endX = Math.min(canvas.width, Math.ceil((column + 1) * cellWidth));
+      const startY = Math.floor(row * cellHeight);
+      const endY = Math.min(canvas.height, Math.ceil((row + 1) * cellHeight));
+      const stepX = Math.max(1, Math.floor((endX - startX) / 5));
+      const stepY = Math.max(1, Math.floor((endY - startY) / 5));
+      let ink = 0;
+      let samples = 0;
+      for (let y = startY; y < endY; y += stepY) {
+        for (let x = startX; x < endX; x += stepX) {
+          const offset = (y * canvas.width + x) * 4;
+          const alpha = pixels[offset + 3] / 255;
+          const luminance = (pixels[offset] * 0.2126 + pixels[offset + 1] * 0.7152 + pixels[offset + 2] * 0.0722) * alpha + 255 * (1 - alpha);
+          if (luminance < 232) ink += 1;
+          samples += 1;
+        }
+      }
+      blank[row][column] = samples > 0 && ink / samples < 0.045;
+    }
+  }
+
+  const heights = Array(columns).fill(0);
+  let best: { left: number; top: number; width: number; height: number; score: number } | null = null;
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      heights[column] = blank[row][column] ? heights[column] + 1 : 0;
+    }
+    const stack: number[] = [];
+    for (let column = 0; column <= columns; column += 1) {
+      const currentHeight = column === columns ? 0 : heights[column];
+      while (stack.length && heights[stack[stack.length - 1]] > currentHeight) {
+        const height = heights[stack.pop()!];
+        const left = stack.length ? stack[stack.length - 1] + 1 : 0;
+        const width = column - left;
+        const top = row - height + 1;
+        if (width < columns * 0.28 || height < rows * 0.22) continue;
+        const centerX = (left + width / 2) / columns;
+        const centerY = (top + height / 2) / rows;
+        if (centerX < 0.18 || centerX > 0.82 || centerY < 0.16 || centerY > 0.84) continue;
+        const centerPenalty = 1 - Math.min(0.55, Math.hypot(centerX - 0.5, centerY - 0.5));
+        const score = width * height * centerPenalty;
+        if (!best || score > best.score) best = { left, top, width, height, score };
+      }
+      stack.push(column);
+    }
+  }
+
+  if (!best) return fallback;
+  const detected = {
+    x: best.left / columns * sheetWidth,
+    y: best.top / rows * sheetHeight,
+    width: best.width / columns * sheetWidth,
+    height: best.height / rows * sheetHeight,
+  };
+  // Avoid selecting the entire empty page: a useful plan window keeps a paper
+  // margin and remains easy to resize after import.
+  if (detected.width > sheetWidth * 0.9 && detected.height > sheetHeight * 0.9) return fallback;
+  return detected;
+};
 const hasSameSheetTemplateState = (
   left: Pick<StoredSheetTemplateVersion, "blocks" | "planPlacement">,
   right: Pick<StoredSheetTemplateVersion, "blocks" | "planPlacement">
@@ -104,11 +201,35 @@ interface SheetTemplateTransferFile {
   exportedAt: string;
   versions: StoredSheetTemplateVersion[];
   pictograms: Array<{ name: string; svg: string }>;
+  templateAssets?: Array<{ id: string; name: string; imageData: string }>;
 }
 const EXPORT_PAPER_OPTIONS = (Object.keys(EXPORT_PAPER_SIZES) as ExportPaperFormat[]).map((key) => ({
   key,
   label: EXPORT_PAPER_SIZES[key].label
 }));
+const EXPORT_QUALITY_OPTIONS: ReadonlyArray<{
+  key: ExportQuality;
+  label: string;
+  description: string;
+}> = [
+  { key: "very-light", label: "Très léger", description: "Partage rapide et aperçu à l’écran (96 dpi)." },
+  { key: "light", label: "Léger", description: "Petit fichier, lecture confortable à l’écran (150 dpi)." },
+  { key: "medium", label: "Moyenne", description: "Bon équilibre entre netteté et poids (220 dpi)." },
+  { key: "high", label: "Haute", description: "Qualité d’impression recommandée (300 dpi)." },
+  { key: "very-high", label: "Très haute", description: "Netteté maximale pour zoom et grand format (450 dpi)." },
+];
+const EXPORT_QUALITY_SETTINGS: Record<ExportQuality, {
+  dpi: number;
+  jpegQuality: number;
+  pdfImageType: "PNG" | "JPEG";
+  maxPixelRatio: number;
+}> = {
+  "very-light": { dpi: 96, jpegQuality: 0.6, pdfImageType: "JPEG", maxPixelRatio: 3 },
+  light: { dpi: 150, jpegQuality: 0.72, pdfImageType: "JPEG", maxPixelRatio: 4 },
+  medium: { dpi: 220, jpegQuality: 0.84, pdfImageType: "JPEG", maxPixelRatio: 5 },
+  high: { dpi: 300, jpegQuality: 0.94, pdfImageType: "PNG", maxPixelRatio: 6 },
+  "very-high": { dpi: 450, jpegQuality: 0.98, pdfImageType: "PNG", maxPixelRatio: 8 },
+};
 const EXPORT_OFFICIAL_FONDS = {
   none: { label: "Aucun fond officiel", file: "", paper: "a4", orientation: "landscape" },
   a2PayPi: { label: "A2 PAY PI - Fond de plan", file: "/export-fonds/a2-pay-pi-fond-de-plan.pdf", paper: "a2", orientation: "landscape" },
@@ -458,8 +579,9 @@ const EXPORT_STAGE_PIXEL_RATIO = 6;
 // Print resolution of an exported file. What matters is the size on paper, not
 // the pixel count: capturing a large plan at a fixed ratio gave a hundred-
 // megapixel image, and a PDF of several hundred megabytes with it.
-const EXPORT_TARGET_DPI = 300;
 const EXPORT_MAX_PIXEL_RATIO = 6;
+const EXPORT_MAX_CAPTURE_SIDE = 8192;
+const EXPORT_MAX_CAPTURE_PIXELS = 48_000_000;
 
 function isCopyableSheetBlock(block: SheetBlock | null | undefined): block is SheetBlock {
   return Boolean(block && block.kind !== "plan" && block.kind !== "background");
@@ -494,14 +616,27 @@ const downloadTextFile = (content: string, filename: string, mimeType: string) =
 };
 
 /** Longest edge, in pixels, that fills the given paper at the export's dpi. */
-const paperLongEdgePx = (paper: { widthMm: number; heightMm: number }) =>
-  (Math.max(paper.widthMm, paper.heightMm) / 25.4) * EXPORT_TARGET_DPI;
+const paperLongEdgePx = (paper: { widthMm: number; heightMm: number }, dpi: number) =>
+  (Math.max(paper.widthMm, paper.heightMm) / 25.4) * dpi;
 
 /** Capture ratio that brings a region of that size to the wanted long edge. */
-const fitPixelRatio = (width: number, height: number, targetLongEdgePx: number) => {
+const fitPixelRatio = (
+  width: number,
+  height: number,
+  targetLongEdgePx: number,
+  maxPixelRatio = EXPORT_MAX_PIXEL_RATIO,
+) => {
   const longEdge = Math.max(width, height);
   if (!longEdge) return 1;
-  return Math.min(EXPORT_MAX_PIXEL_RATIO, Math.max(1, targetLongEdgePx / longEdge));
+  const maxBySide = EXPORT_MAX_CAPTURE_SIDE / longEdge;
+  const pixelArea = width * height;
+  const maxByArea = pixelArea > 0
+    ? Math.sqrt(EXPORT_MAX_CAPTURE_PIXELS / pixelArea)
+    : maxPixelRatio;
+  return Math.max(
+    0.25,
+    Math.min(maxPixelRatio, maxBySide, maxByArea, targetLongEdgePx / longEdge),
+  );
 };
 const EXPORT_PREVIEW_STAGE_PIXEL_RATIO = 2;
 
@@ -541,6 +676,9 @@ interface EvacuationPlanBackend {
   main_plan_group_id?: string;
   main_plan_grouping_enabled?: boolean;
   watermark_config?: Partial<WatermarkConfig>;
+  active_sheet_template_key?: string;
+  active_sheet_template_version_id?: string;
+  active_sheet_template_name?: string;
   icons: Array<{
     id: number;
     icon_type: IconType;
@@ -654,6 +792,15 @@ interface PlanPictogramBackend {
   file_name: string;
   url: string;
   deletable?: boolean;
+}
+
+interface SheetTemplateAssetBackend {
+  id: string;
+  name: string;
+  url: string;
+  width: number;
+  height: number;
+  created_at: string;
 }
 
 type CleanMethod = "local_plan" | "local_walls" | "grok";
@@ -791,6 +938,8 @@ export default function PlanEditorPage() {
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [selectedSheetBlockIds, setSelectedSheetBlockIds] = useState<string[]>([]);
   const [sheetPlanPlacement, setSheetPlanPlacement] = useState({ scale: 100, offsetX: 0, offsetY: 0 });
+  const [canEditDefaultTemplates, setCanEditDefaultTemplates] = useState(false);
+  const [activeSheetTemplateVersionId, setActiveSheetTemplateVersionId] = useState("");
   const [nonStandardIconColorOpen, setNonStandardIconColorOpen] = useState(false);
 
   const getNextLayerZIndex = () => Math.max(
@@ -965,12 +1114,17 @@ const MAX_HISTORY_STEPS = 50;
     setMainPlanGroupId(target.mainPlanGroupId);
     setMainPlanGroupingEnabled(target.mainPlanGroupingEnabled);
     setWatermarkConfig(target.watermark);
-    setSheetTemplate(target.sheetTemplate ?? "none");
-    setSheetBlocks(target.sheetBlocks ?? []);
-    setSheetPlanPlacement(target.sheetPlanPlacement ?? { scale: 100, offsetX: 0, offsetY: 0 });
-    setSelectedBlockId((currentId) =>
-      currentId && target.sheetBlocks?.some((block) => block.id === currentId) ? currentId : null
-    );
+    const protectedDefaultActive = sheetTemplate !== "none"
+      && !activeSheetTemplateVersionId.startsWith("custom:")
+      && !canEditDefaultTemplates;
+    if (!protectedDefaultActive) {
+      setSheetTemplate(target.sheetTemplate ?? "none");
+      setSheetBlocks(target.sheetBlocks ?? []);
+      setSheetPlanPlacement(target.sheetPlanPlacement ?? { scale: 100, offsetX: 0, offsetY: 0 });
+      setSelectedBlockId((currentId) =>
+        currentId && target.sheetBlocks?.some((block) => block.id === currentId) ? currentId : null
+      );
+    }
     requestEraseStrokeTarget(target.eraseStrokeCount ?? 0);
     setAreaSelectionMode(false);
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
@@ -978,7 +1132,7 @@ const MAX_HISTORY_STEPS = 50;
     setSelectedBatBlock(false);
     historyIndexRef.current = index - 1;
     setHistoryIndex(historyIndexRef.current);
-  }, [flushPendingHistorySnapshot, requestEraseStrokeTarget]);
+  }, [activeSheetTemplateVersionId, canEditDefaultTemplates, flushPendingHistorySnapshot, requestEraseStrokeTarget, sheetTemplate]);
 
   const handleRedo = useCallback(() => {
     flushPendingHistorySnapshot();
@@ -998,12 +1152,17 @@ const MAX_HISTORY_STEPS = 50;
     setMainPlanGroupId(target.mainPlanGroupId);
     setMainPlanGroupingEnabled(target.mainPlanGroupingEnabled);
     setWatermarkConfig(target.watermark);
-    setSheetTemplate(target.sheetTemplate ?? "none");
-    setSheetBlocks(target.sheetBlocks ?? []);
-    setSheetPlanPlacement(target.sheetPlanPlacement ?? { scale: 100, offsetX: 0, offsetY: 0 });
-    setSelectedBlockId((currentId) =>
-      currentId && target.sheetBlocks?.some((block) => block.id === currentId) ? currentId : null
-    );
+    const protectedDefaultActive = sheetTemplate !== "none"
+      && !activeSheetTemplateVersionId.startsWith("custom:")
+      && !canEditDefaultTemplates;
+    if (!protectedDefaultActive) {
+      setSheetTemplate(target.sheetTemplate ?? "none");
+      setSheetBlocks(target.sheetBlocks ?? []);
+      setSheetPlanPlacement(target.sheetPlanPlacement ?? { scale: 100, offsetX: 0, offsetY: 0 });
+      setSelectedBlockId((currentId) =>
+        currentId && target.sheetBlocks?.some((block) => block.id === currentId) ? currentId : null
+      );
+    }
     requestEraseStrokeTarget(target.eraseStrokeCount ?? 0);
     setAreaSelectionMode(false);
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
@@ -1011,7 +1170,7 @@ const MAX_HISTORY_STEPS = 50;
     setSelectedBatBlock(false);
     historyIndexRef.current = index + 1;
     setHistoryIndex(historyIndexRef.current);
-  }, [flushPendingHistorySnapshot, requestEraseStrokeTarget]);
+  }, [activeSheetTemplateVersionId, canEditDefaultTemplates, flushPendingHistorySnapshot, requestEraseStrokeTarget, sheetTemplate]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1181,12 +1340,16 @@ const MAX_HISTORY_STEPS = 50;
   const [importingOverlays, setImportingOverlays] = useState(false);
   const [sheetReframeMode, setSheetReframeMode] = useState(false);
   const [sheetLogoImages, setSheetLogoImages] = useState<Record<string, HTMLImageElement | null>>({});
+  const [sheetTemplateAssets, setSheetTemplateAssets] = useState<SheetTemplateAssetBackend[]>([]);
+  const [sheetTemplateAssetImages, setSheetTemplateAssetImages] = useState<Record<string, HTMLImageElement | null>>({});
   const [sheetLegendImages, setSheetLegendImages] = useState<Record<string, HTMLImageElement>>({});
   const [sheetPictoImages, setSheetPictoImages] = useState<Record<string, HTMLImageElement>>({});
   const [sheetExporting, setSheetExporting] = useState(false);
+  const [exportQuality, setExportQuality] = useState<ExportQuality>("high");
   const [storedSheetTemplateVersions, setStoredSheetTemplateVersions] = useState<StoredSheetTemplateVersion[]>([]);
   const [sheetTemplateLibraryReady, setSheetTemplateLibraryReady] = useState(false);
-  const [activeSheetTemplateVersionId, setActiveSheetTemplateVersionId] = useState("");
+  const [templatePermissionLoaded, setTemplatePermissionLoaded] = useState(false);
+  const [rememberedTemplateReady, setRememberedTemplateReady] = useState(false);
   const pePortraitUpgradeAttemptedRef = useRef(false);
   const peLandscapeUpgradeAttemptedRef = useRef(false);
   const peModernLandscapeUpgradeAttemptedRef = useRef(false);
@@ -1194,6 +1357,13 @@ const MAX_HISTORY_STEPS = 50;
   const peModernPortraitUpgradeAttemptedRef = useRef(false);
   const pendingTemplateServerSyncRef = useRef<StoredSheetTemplateVersion[] | null>(null);
   const templateServerSyncRunningRef = useRef(false);
+  const rememberedTemplatePlanIdRef = useRef<number | null>(null);
+  const pendingPlanTemplateSelectionRef = useRef<{
+    active_sheet_template_key: string;
+    active_sheet_template_version_id: string;
+    active_sheet_template_name: string;
+  } | null>(null);
+  const planTemplateSelectionSyncRunningRef = useRef(false);
   const templateTransferInputRef = useRef<HTMLInputElement>(null);
   const [templateTransferBusy, setTemplateTransferBusy] = useState(false);
 
@@ -1509,6 +1679,9 @@ const MAX_HISTORY_STEPS = 50;
 
   useEffect(() => {
     const fetchPlan = async () => {
+      rememberedTemplatePlanIdRef.current = null;
+      pendingPlanTemplateSelectionRef.current = null;
+      setRememberedTemplateReady(false);
       const headers = getPlanAuthHeaders();
       if (!("Authorization" in headers)) {
         if (!authLoading) router.push("/login");
@@ -1665,6 +1838,9 @@ const MAX_HISTORY_STEPS = 50;
             mainPlanGroupId: data.main_plan_group_id || "",
             mainPlanGroupingEnabled: Boolean(data.main_plan_grouping_enabled),
             watermark: loadedWatermarkWithLogos,
+            sheetTemplate: data.active_sheet_template_key || "none",
+            activeSheetTemplateVersionId: data.active_sheet_template_version_id || "",
+            activeSheetTemplateName: data.active_sheet_template_name || "Plan seul",
           }));
         } else if (res.status === 401 || res.status === 403) {
           router.push("/login");
@@ -1740,7 +1916,7 @@ const MAX_HISTORY_STEPS = 50;
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
-  }, [icons, shapes, texts, planOverlays, mainPlanTransform, mainPlanLocked, mainPlanGroupId, mainPlanGroupingEnabled, watermarkConfig, savedSnapshot]);
+  }, [icons, shapes, texts, planOverlays, mainPlanTransform, mainPlanLocked, mainPlanGroupId, mainPlanGroupingEnabled, watermarkConfig, sheetTemplate, activeSheetTemplateVersionId, storedSheetTemplateVersions, savedSnapshot]);
 
   useEffect(() => {
     if (!placementIconType) return;
@@ -1998,6 +2174,9 @@ const MAX_HISTORY_STEPS = 50;
       mainPlanGroupId,
       mainPlanGroupingEnabled,
       watermark: watermarkConfig,
+      sheetTemplate,
+      activeSheetTemplateVersionId,
+      activeSheetTemplateName: sheetTemplate === "none" ? "Plan seul" : activeSheetTemplateLabel,
     });
 
   const hasUnsavedChanges = () => buildEditableSnapshot() !== savedSnapshot;
@@ -2045,7 +2224,7 @@ const MAX_HISTORY_STEPS = 50;
   const loadImage = (source: string): Promise<HTMLImageElement> =>
     new Promise((resolve, reject) => {
       const img = new Image();
-      img.crossOrigin = "anonymous";
+      img.crossOrigin = imageCrossOrigin(source);
       img.onload = () => resolve(img);
       img.onerror = () => reject(new Error("Image illisible"));
       img.src = source;
@@ -2307,6 +2486,9 @@ const MAX_HISTORY_STEPS = 50;
           main_plan_z_index: mainPlanZIndex,
           main_plan_group_id: mainPlanGroupId,
           main_plan_grouping_enabled: mainPlanGroupingEnabled,
+          active_sheet_template_key: sheetTemplate,
+          active_sheet_template_version_id: sheetTemplate === "none" ? "" : activeSheetTemplateVersionId,
+          active_sheet_template_name: sheetTemplate === "none" ? "Plan seul" : activeSheetTemplateLabel,
           watermark: watermarkConfig,
         },
       });
@@ -2996,6 +3178,9 @@ const MAX_HISTORY_STEPS = 50;
 
   // ── Sheet mode plumbing ────────────────────────────────────────────────────
   const sheetActive = sheetTemplate !== "none" && sheetBlocks.length > 0;
+  const personalSheetTemplateActive = activeSheetTemplateVersionId.startsWith("custom:");
+  const defaultSheetTemplateActive = sheetActive && !personalSheetTemplateActive;
+  const canEditActiveSheetTemplate = !defaultSheetTemplateActive || canEditDefaultTemplates;
   const currentSheetTemplateVersions = useMemo(
     () => sheetTemplate === "none"
       ? []
@@ -3026,11 +3211,16 @@ const MAX_HISTORY_STEPS = 50;
       .filter((version) => version.id.startsWith("custom:"))
       .map((version) => {
         const config = SHEET_TEMPLATES[version.template];
+        const importedFromPdf = version.blocks.some(
+          (block) => block.kind === "background" && Boolean(block.assetId)
+        );
         return {
           id: version.id,
           template: version.template,
           name: version.name,
-          description: `Template personnalisé au format ${config.width < config.height ? "portrait" : "paysage"}. Son état de départ reste restaurable.`,
+          description: importedFromPdf
+            ? `Template PDF personnel au format ${config.width < config.height ? "portrait" : "paysage"}. Le fond reste verrouillé et la zone du plan est ajustable.`
+            : `Template personnalisé au format ${config.width < config.height ? "portrait" : "paysage"}. Son état de départ reste restaurable.`,
           width: config.width,
           height: config.height,
           blocks: cloneSheetBlocks(version.blocks),
@@ -3061,10 +3251,17 @@ const MAX_HISTORY_STEPS = 50;
     () => (sheetActive ? { ...activeSheetSize, blocks: sheetBlocks } : null),
     [sheetActive, activeSheetSize, sheetBlocks]
   );
+  const resolvedSheetImages = useMemo(
+    () => ({ ...sheetLogoImages, ...sheetTemplateAssetImages }),
+    [sheetLogoImages, sheetTemplateAssetImages]
+  );
 
   const selectedBlock = useMemo(
     () => sheetBlocks.find((block) => block.id === selectedBlockId) ?? null,
     [sheetBlocks, selectedBlockId]
+  );
+  const protectedPdfBackgroundSelected = Boolean(
+    selectedBlock?.kind === "background" && selectedBlock.assetId
   );
 
   useEffect(() => {
@@ -3104,7 +3301,8 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const updateSelectedBlock = (patch: Partial<SheetBlock>) => {
-    if (!selectedBlockId) return;
+    if (!selectedBlockId || !canEditActiveSheetTemplate) return;
+    if (protectedPdfBackgroundSelected) return;
     setSheetBlocks((blocks) =>
       blocks.map((block) => (block.id === selectedBlockId ? { ...block, ...patch } : block))
     );
@@ -3185,6 +3383,9 @@ const MAX_HISTORY_STEPS = 50;
         label: block.label,
         visible: block.visible,
         locked: Boolean(block.locked),
+        // Default templates stay geometrically immutable, but their automatic
+        // legend may still be hidden for the current final export.
+        visibilityEditable: block.kind === "legend",
         // Sheet blocks are rendered bottom-to-top in array order.
         zIndex: index * 10,
       }))
@@ -3225,6 +3426,10 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const handleToggleLayerVisibility = (item: EditorLayerItem) => {
+    const sheetBlock = sheetActive
+      ? sheetBlocks.find((block) => block.id === item.id)
+      : undefined;
+    if (sheetActive && !canEditActiveSheetTemplate && sheetBlock?.kind !== "legend") return;
     const visible = !item.visible;
     if (sheetActive) {
       if (!visible && selectedBlockId === item.id) setSelectedBlockId(null);
@@ -3261,7 +3466,27 @@ const MAX_HISTORY_STEPS = 50;
     }
   };
 
+  // Old saved drafts and imported PDF templates may predate the automatic
+  // legend. Add it once when such a sheet is opened. Existing legends — even a
+  // legend the user deliberately hid — are never reset by this migration.
+  useEffect(() => {
+    if (
+      sheetTemplate === "none"
+      || !sheetBlocks.length
+      || sheetBlocks.some((block) => block.kind === "legend")
+    ) {
+      return;
+    }
+    setSheetBlocks((current) => {
+      const normalized = ensureSheetLegendBlock(sheetTemplate, current);
+      return defaultSheetTemplateActive
+        ? lockDefaultSheetBlocks(normalized)
+        : normalized;
+    });
+  }, [sheetTemplate, sheetBlocks, defaultSheetTemplateActive]);
+
   const handleToggleLayerLock = (item: EditorLayerItem) => {
+    if (sheetActive && !canEditActiveSheetTemplate) return;
     const locked = !item.locked;
     if (sheetActive) {
       setSheetBlocks((current) => current.map((block) =>
@@ -3318,6 +3543,7 @@ const MAX_HISTORY_STEPS = 50;
 
   const handleReorderLayers = (topToBottomIds: string[]) => {
     if (sheetActive) {
+      if (!canEditActiveSheetTemplate) return;
       const byId = new Map(sheetBlocks.map((block) => [block.id, block]));
       const normalizedIds = [
         ...topToBottomIds.filter((id, index) => byId.has(id) && topToBottomIds.indexOf(id) === index),
@@ -3330,6 +3556,7 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const handleMoveLayer = (id: string, direction: LayerMoveDirection) => {
+    if (sheetActive && !canEditActiveSheetTemplate) return;
     const bottomToTop = [...activeLayerItems].reverse();
     const currentIndex = bottomToTop.findIndex((item) => item.id === id);
     if (currentIndex < 0) return;
@@ -3458,7 +3685,7 @@ const MAX_HISTORY_STEPS = 50;
 
   const getTextExportBounds = (text: CanvasText) => {
     const lines = text.text.split("\n");
-    const width = Math.max(1, ...lines.map((line) => line.length)) * text.font_size * 0.62;
+    const width = Math.max(1, ...lines.map((line) => line.length)) * text.font_size * 0.75 + text.font_size * 0.5;
     const height = Math.max(text.font_size, lines.length * text.font_size * 1.25);
     return { x: text.x, y: text.y, width, height };
   };
@@ -3666,6 +3893,7 @@ const MAX_HISTORY_STEPS = 50;
     // objects drawn directly on the plan. Give the active sheet selection
     // priority in case a stale canvas selection still exists underneath it.
     if (selectedBlockId) {
+      if (!canEditActiveSheetTemplate) return false;
       const selectedIds = new Set(
         selectedSheetBlockIds.length ? selectedSheetBlockIds : [selectedBlockId]
       );
@@ -3784,7 +4012,7 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const handleGroupSheetSelection = () => {
-    if (selectedSheetBlockIds.length < 2) return;
+    if (!canEditActiveSheetTemplate || selectedSheetBlockIds.length < 2) return;
     const ids = new Set(selectedSheetBlockIds);
     const groupId = sharedSheetObjectGroupId || `sheet-object-group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setSheetBlocks((current) => current.map((block) =>
@@ -3795,7 +4023,7 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const handleUngroupSheetSelection = () => {
-    if (!selectedSheetObjectGroupIds.length) return;
+    if (!canEditActiveSheetTemplate || !selectedSheetObjectGroupIds.length) return;
     const groupIds = new Set(selectedSheetObjectGroupIds);
     setSheetBlocks((current) => current.map((block) =>
       block.objectGroupId && groupIds.has(block.objectGroupId)
@@ -3807,6 +4035,7 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const handleDeleteSheetSelection = () => {
+    if (!canEditActiveSheetTemplate) return;
     const ids = new Set(selectedSheetBlockIds.length
       ? selectedSheetBlockIds
       : selectedBlockId ? [selectedBlockId] : []);
@@ -3945,6 +4174,7 @@ const MAX_HISTORY_STEPS = 50;
         current.map((overlay) => overlay.tempId === selectedOverlay.tempId ? { ...overlay, locked } : overlay)
       );
     } else if (selectedBlock) {
+      if (!canEditActiveSheetTemplate || protectedPdfBackgroundSelected) return;
       updateSelectedBlock({ locked });
     } else if (selectedIcon) {
       setIcons((current) =>
@@ -4217,9 +4447,15 @@ const MAX_HISTORY_STEPS = 50;
     );
   };
 
-  const syncSheetTemplateVersionsToServer = (versions: StoredSheetTemplateVersion[]) => {
+  const syncSheetTemplateVersionsToServer = (
+    versions: StoredSheetTemplateVersion[],
+    allowDefaultEdits = canEditDefaultTemplates
+  ) => {
+    const writableVersions = allowDefaultEdits
+      ? versions
+      : versions.filter((version) => isPersonalSheetTemplateVersionId(version.id));
     pendingTemplateServerSyncRef.current = JSON.parse(
-      JSON.stringify(versions)
+      JSON.stringify(writableVersions)
     ) as StoredSheetTemplateVersion[];
     if (templateServerSyncRunningRef.current) return;
 
@@ -4251,8 +4487,11 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const writeStoredSheetTemplateVersions = (versions: StoredSheetTemplateVersion[]) => {
-    cacheSheetTemplateVersions(versions);
-    syncSheetTemplateVersionsToServer(versions);
+    const writableVersions = canEditDefaultTemplates
+      ? versions
+      : versions.filter((version) => isPersonalSheetTemplateVersionId(version.id));
+    cacheSheetTemplateVersions(writableVersions);
+    syncSheetTemplateVersionsToServer(writableVersions);
   };
 
   const exportPortableSheetTemplates = async () => {
@@ -4274,7 +4513,10 @@ const MAX_HISTORY_STEPS = 50;
       for (const iconType of referencedIconTypes) {
         const definition = iconDefinitions[iconType];
         if (!definition?.imageUrl || !definition.fileName?.toLowerCase().endsWith(".svg")) continue;
-        const response = await fetch(definition.imageUrl, { cache: "no-store" });
+        const response = await fetch(definition.imageUrl, {
+          cache: "no-store",
+          credentials: "include",
+        });
         if (!response.ok) {
           throw new Error(`Le pictogramme « ${definition.label} » ne peut pas être inclus.`);
         }
@@ -4285,12 +4527,46 @@ const MAX_HISTORY_STEPS = 50;
         pictograms.push({ name: definition.type, svg });
       }
 
+      const referencedAssetIds = new Set(
+        versions
+          .flatMap((version) => version.blocks.map((block) => block.assetId))
+          .filter((assetId): assetId is string => Boolean(assetId))
+      );
+      const templateAssets: NonNullable<SheetTemplateTransferFile["templateAssets"]> = [];
+      for (const assetId of referencedAssetIds) {
+        const asset = sheetTemplateAssets.find((candidate) => candidate.id === assetId);
+        if (!asset) {
+          throw new Error("Le fond PDF d’un template n’est plus disponible sur le serveur.");
+        }
+        const response = await fetch(asset.url, {
+          cache: "no-store",
+          credentials: "include",
+        });
+        if (!response.ok) {
+          throw new Error(`Le fond PDF « ${asset.name} » ne peut pas être inclus.`);
+        }
+        const imageBlob = await response.blob();
+        if (imageBlob.size > 8 * 1024 * 1024) {
+          throw new Error(`Le fond PDF « ${asset.name} » dépasse 8 Mo.`);
+        }
+        const imageData = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => typeof reader.result === "string"
+            ? resolve(reader.result)
+            : reject(new Error("Impossible de lire un fond PDF."));
+          reader.onerror = () => reject(new Error("Impossible de lire un fond PDF."));
+          reader.readAsDataURL(imageBlob);
+        });
+        templateAssets.push({ id: asset.id, name: asset.name, imageData });
+      }
+
       const transfer: SheetTemplateTransferFile = {
         format: "prev-inc-cie-sheet-templates",
         version: 1,
         exportedAt: new Date().toISOString(),
         versions,
         pictograms,
+        templateAssets,
       };
       const blob = new Blob([JSON.stringify(transfer, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -4314,12 +4590,13 @@ const MAX_HISTORY_STEPS = 50;
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    if (file.size > 20 * 1024 * 1024) {
-      alert("Le fichier de templates dépasse 20 Mo.");
+    if (file.size > 80 * 1024 * 1024) {
+      alert("Le fichier de templates dépasse 80 Mo.");
       return;
     }
 
     setTemplateTransferBusy(true);
+    const uploadedTemplateAssetIds: string[] = [];
     try {
       const payload = JSON.parse(await file.text()) as Partial<SheetTemplateTransferFile>;
       if (
@@ -4330,7 +4607,7 @@ const MAX_HISTORY_STEPS = 50;
       ) {
         throw new Error("Ce fichier n’est pas un export de templates PREV’ INC & CIE valide.");
       }
-      const importedVersions = payload.versions;
+      let importedVersions = payload.versions;
       const validTemplateKeys = new Set(Object.keys(SHEET_TEMPLATES));
       if (
         importedVersions.length > 100
@@ -4346,6 +4623,76 @@ const MAX_HISTORY_STEPS = 50;
         ))
       ) {
         throw new Error("Une version de template contenue dans le fichier est invalide.");
+      }
+      if (
+        !canEditDefaultTemplates
+        && importedVersions.some((version) => !isPersonalSheetTemplateVersionId(version.id))
+      ) {
+        throw new Error(
+          "Ce fichier modifie un template par défaut. Un administrateur doit d’abord autoriser cette modification. Vous pouvez importer librement les templates personnels clonés."
+        );
+      }
+
+      const portableAssets = payload.templateAssets ?? [];
+      if (
+        !Array.isArray(portableAssets)
+        || portableAssets.length > 50
+        || portableAssets.some((asset) => (
+          !asset
+          || typeof asset.id !== "string"
+          || typeof asset.name !== "string"
+          || typeof asset.imageData !== "string"
+          || asset.imageData.length > 12_000_000
+          || !/^data:image\/(?:png|jpe?g|webp);base64,/i.test(asset.imageData)
+        ))
+      ) {
+        throw new Error("Un fond PDF contenu dans le fichier est invalide.");
+      }
+      const importedAssetIds = new Map<string, string>();
+      for (let index = 0; index < portableAssets.length; index += 1) {
+        const portableAsset = portableAssets[index];
+        const imageResponse = await fetch(portableAsset.imageData);
+        const imageBlob = await imageResponse.blob();
+        if (imageBlob.size > 8 * 1024 * 1024) {
+          throw new Error(`Le fond PDF « ${portableAsset.name} » dépasse 8 Mo.`);
+        }
+        const savedAsset = await uploadSheetTemplateAsset(
+          imageBlob,
+          portableAsset.name,
+          index + 1,
+        );
+        uploadedTemplateAssetIds.push(savedAsset.id);
+        importedAssetIds.set(portableAsset.id, savedAsset.id);
+        const assetImage = await loadImage(savedAsset.url);
+        setSheetTemplateAssets((current) => [...current, savedAsset]);
+        setSheetTemplateAssetImages((current) => ({
+          ...current,
+          [`templateAsset:${savedAsset.id}`]: assetImage,
+        }));
+      }
+      importedVersions = importedVersions.map((version) => ({
+        ...version,
+        blocks: version.blocks.map((block) => {
+          if (!block.assetId) return block;
+          const replacementId = importedAssetIds.get(block.assetId);
+          if (!replacementId) return block;
+          return {
+            ...block,
+            assetId: replacementId,
+            imageKey: `templateAsset:${replacementId}`,
+          };
+        }),
+      }));
+
+      const knownAssetIds = new Set([
+        ...sheetTemplateAssets.map((asset) => asset.id),
+        ...uploadedTemplateAssetIds,
+      ]);
+      const missingAsset = importedVersions
+        .flatMap((version) => version.blocks)
+        .find((block) => block.assetId && !knownAssetIds.has(block.assetId));
+      if (missingAsset) {
+        throw new Error("Le fichier ne contient pas le fond PDF requis par un template.");
       }
 
       const importedDefinitions: Record<string, SafetyIconDefinition> = {};
@@ -4410,6 +4757,13 @@ const MAX_HISTORY_STEPS = 50;
       );
       window.setTimeout(() => setSaveStatus(""), 4000);
     } catch (error) {
+      await Promise.all(uploadedTemplateAssetIds.map(async (assetId) => {
+        try {
+          await deleteSheetTemplateAsset(assetId);
+        } catch {
+          // Keep the useful import error below.
+        }
+      }));
       alert(error instanceof Error ? error.message : "Impossible d’importer les templates.");
     } finally {
       setTemplateTransferBusy(false);
@@ -4422,6 +4776,7 @@ const MAX_HISTORY_STEPS = 50;
     placement = sheetPlanPlacement
   ) => {
     if (template === "none" || !blocks.length) return;
+    if (!activeSheetTemplateVersionId.startsWith("custom:") && !canEditDefaultTemplates) return;
     const versions = readStoredSheetTemplateVersions();
     const now = new Date().toISOString();
     if (activeSheetTemplateVersionId.startsWith("custom:")) {
@@ -4463,16 +4818,38 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const getSavedTemplateDraft = (template: SheetTemplateKey) =>
-    readStoredSheetTemplateVersions().find((version) => version.id === `draft:${template}`);
+    canEditDefaultTemplates
+      ? readStoredSheetTemplateVersions().find((version) => version.id === `draft:${template}`)
+      : undefined;
 
   useEffect(() => {
     if (authLoading || !user) return;
     let cancelled = false;
     setSheetTemplateLibraryReady(false);
-    const localVersions = readStoredSheetTemplateVersions();
-    cacheSheetTemplateVersions(localVersions);
+    setTemplatePermissionLoaded(false);
 
     const loadServerVersions = async () => {
+      let allowDefaultEdits = false;
+      try {
+        const permissionResponse = await authenticatedFetch(
+          buildApiUrl("/api/plans/sheet-template-permissions/"),
+          { cache: "no-store" }
+        );
+        if (!permissionResponse.ok) throw new Error(await describeApiError(permissionResponse));
+        const permissionPayload = await permissionResponse.json();
+        allowDefaultEdits = Boolean(permissionPayload?.can_edit_default_templates);
+      } catch (error) {
+        console.warn("Template permission load failed; secure lock kept:", error);
+      }
+
+      if (cancelled) return;
+      setCanEditDefaultTemplates(allowDefaultEdits);
+      setTemplatePermissionLoaded(true);
+      const localVersions = readStoredSheetTemplateVersions().filter(
+        (version) => allowDefaultEdits || isPersonalSheetTemplateVersionId(version.id)
+      );
+      cacheSheetTemplateVersions(localVersions);
+
       try {
         const response = await authenticatedFetch(buildApiUrl("/api/plans/sheet-templates/"), {
           cache: "no-store",
@@ -4494,7 +4871,9 @@ const MAX_HISTORY_STEPS = 50;
 
         // Re-read just before merging: the user may have edited a template
         // while the server request was in flight.
-        const currentLocalVersions = readStoredSheetTemplateVersions();
+        const currentLocalVersions = readStoredSheetTemplateVersions().filter(
+          (version) => allowDefaultEdits || isPersonalSheetTemplateVersionId(version.id)
+        );
         const mergedById = new Map(currentLocalVersions.map((version) => [version.id, version]));
         serverVersions.forEach((serverVersion) => {
           const localVersion = mergedById.get(serverVersion.id);
@@ -4517,7 +4896,7 @@ const MAX_HISTORY_STEPS = 50;
           [...versions].sort((left, right) => left.id.localeCompare(right.id))
         );
         if (canonical(mergedVersions) !== canonical(serverVersions)) {
-          syncSheetTemplateVersionsToServer(mergedVersions);
+          syncSheetTemplateVersionsToServer(mergedVersions, allowDefaultEdits);
         }
       } catch (error) {
         // Offline/server failure: the local cache remains fully usable and will
@@ -4535,7 +4914,52 @@ const MAX_HISTORY_STEPS = 50;
   }, [id, authLoading, token, user?.id]);
 
   useEffect(() => {
-    if (!sheetTemplateLibraryReady) return;
+    if (authLoading || !user) return;
+    let cancelled = false;
+
+    const loadTemplateAssets = async () => {
+      try {
+        const response = await authenticatedFetch(
+          buildApiUrl("/api/plans/sheet-template-assets/"),
+          { cache: "no-store" }
+        );
+        if (!response.ok) throw new Error(await describeApiError(response));
+        const payload = await response.json();
+        const assets = Array.isArray(payload)
+          ? payload.filter((asset): asset is SheetTemplateAssetBackend => (
+              Boolean(asset)
+              && typeof asset.id === "string"
+              && typeof asset.name === "string"
+              && typeof asset.url === "string"
+              && Number.isFinite(asset.width)
+              && Number.isFinite(asset.height)
+            ))
+          : [];
+        const decoded = await Promise.all(assets.map(async (asset) => {
+          try {
+            return [asset.id, await loadImage(asset.url)] as const;
+          } catch {
+            return [asset.id, null] as const;
+          }
+        }));
+        if (cancelled) return;
+        setSheetTemplateAssets(assets);
+        setSheetTemplateAssetImages(Object.fromEntries(
+          decoded.map(([assetId, image]) => [`templateAsset:${assetId}`, image])
+        ));
+      } catch (error) {
+        console.warn("Template PDF assets could not be loaded:", error);
+      }
+    };
+
+    void loadTemplateAssets();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, authLoading, token, user?.id]);
+
+  useEffect(() => {
+    if (!sheetTemplateLibraryReady || !templatePermissionLoaded || !canEditDefaultTemplates) return;
     const versions = readStoredSheetTemplateVersions();
     const now = new Date().toISOString();
     let changed = false;
@@ -4548,7 +4972,7 @@ const MAX_HISTORY_STEPS = 50;
         id: baselineId,
         template,
         name: `${SHEET_TEMPLATES[template].label} — design par défaut`,
-        blocks: cloneSheetBlocks(createSheetBlocks(template)),
+        blocks: lockDefaultSheetBlocks(createSheetBlocks(template)),
         planPlacement: createSheetPlanPlacement(template),
         createdAt: existingBaseline?.createdAt || now,
         updatedAt: now,
@@ -4584,7 +5008,7 @@ const MAX_HISTORY_STEPS = 50;
     });
 
     if (changed) writeStoredSheetTemplateVersions(nextVersions);
-  }, [sheetTemplateLibraryReady, storedSheetTemplateVersions]);
+  }, [sheetTemplateLibraryReady, templatePermissionLoaded, canEditDefaultTemplates, storedSheetTemplateVersions]);
 
   useEffect(() => {
     if (sheetTemplate === "none" || !sheetBlocks.length) return;
@@ -4596,6 +5020,7 @@ const MAX_HISTORY_STEPS = 50;
 
   const saveCurrentSheetTemplateVersion = () => {
     if (sheetTemplate === "none" || !sheetBlocks.length) return;
+    if (!personalSheetTemplateActive && !canEditDefaultTemplates) return;
     const defaultName = `${SHEET_TEMPLATES[sheetTemplate].label} - version ${new Date().toLocaleDateString("fr-FR")}`;
     const name = window.prompt("Nom de la nouvelle version du template :", defaultName);
     if (!name?.trim()) return;
@@ -4625,6 +5050,7 @@ const MAX_HISTORY_STEPS = 50;
     }
     const version = readStoredSheetTemplateVersions().find((item) => item.id === versionId);
     if (!version) return;
+    if (!isPersonalSheetTemplateVersionId(version.id) && !canEditDefaultTemplates) return;
     saveTemplateDraft();
     setSheetTemplate(version.template);
     const templateConfig = SHEET_TEMPLATES[version.template];
@@ -4642,6 +5068,7 @@ const MAX_HISTORY_STEPS = 50;
 
   const deleteCurrentSheetTemplateVersion = () => {
     if (!activeSheetTemplateVersionId.startsWith("version:")) return;
+    if (!canEditDefaultTemplates) return;
     if (!window.confirm("Supprimer cette version de template ?")) return;
     const versions = readStoredSheetTemplateVersions().filter((version) => version.id !== activeSheetTemplateVersionId);
     writeStoredSheetTemplateVersions(versions);
@@ -4713,6 +5140,9 @@ const MAX_HISTORY_STEPS = 50;
         );
       }
     }
+    // Every design shipped with the application starts fully locked. An
+    // authorised user may deliberately unlock individual blocks afterwards.
+    defaultBlocks = lockDefaultSheetBlocks(defaultBlocks);
     let defaultPlacement = createSheetPlanPlacement(template);
     if (options.reset && !options.latestBuiltin) {
       const baseline = readStoredSheetTemplateVersions().find(
@@ -4830,11 +5260,338 @@ const MAX_HISTORY_STEPS = 50;
     window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
   };
 
+  // Reopen each project with the exact sheet it last used. Custom templates
+  // are resolved only after the account template library has loaded; if a
+  // custom version was deleted (or a built-in edit permission was revoked),
+  // the corresponding protected built-in sheet remains a safe fallback.
+  useEffect(() => {
+    if (
+      !plan
+      || !sheetTemplateLibraryReady
+      || !templatePermissionLoaded
+      || rememberedTemplatePlanIdRef.current === plan.id
+    ) {
+      return;
+    }
+
+    rememberedTemplatePlanIdRef.current = plan.id;
+    const rememberedKey = plan.active_sheet_template_key || "none";
+    const rememberedVersionId = plan.active_sheet_template_version_id || "";
+    const validTemplate = rememberedKey !== "none"
+      && Object.prototype.hasOwnProperty.call(SHEET_TEMPLATES, rememberedKey);
+
+    if (!validTemplate) {
+      applySheetTemplate("none", { skipSave: true });
+      setRememberedTemplateReady(true);
+      return;
+    }
+
+    const savedVersion = rememberedVersionId
+      ? readStoredSheetTemplateVersions().find((version) => version.id === rememberedVersionId)
+      : undefined;
+    if (
+      savedVersion
+      && (isPersonalSheetTemplateVersionId(savedVersion.id) || canEditDefaultTemplates)
+    ) {
+      applyStoredSheetTemplateVersion(savedVersion.id);
+    } else {
+      applySheetTemplate(rememberedKey as SheetTemplateKey, {
+        reset: true,
+        skipSave: true,
+        latestBuiltin: true,
+      });
+    }
+    setRememberedTemplateReady(true);
+  }, [
+    plan,
+    sheetTemplateLibraryReady,
+    templatePermissionLoaded,
+    canEditDefaultTemplates,
+    storedSheetTemplateVersions,
+  ]);
+
+  const markRememberedTemplateAsSaved = (selection: {
+    active_sheet_template_key: string;
+    active_sheet_template_version_id: string;
+    active_sheet_template_name: string;
+  }) => {
+    setSavedSnapshot((current) => {
+      if (!current) return current;
+      try {
+        const parsed = JSON.parse(current) as Record<string, unknown>;
+        return JSON.stringify({
+          ...parsed,
+          sheetTemplate: selection.active_sheet_template_key,
+          activeSheetTemplateVersionId: selection.active_sheet_template_version_id,
+          activeSheetTemplateName: selection.active_sheet_template_name,
+        });
+      } catch {
+        return current;
+      }
+    });
+  };
+
+  const syncPlanTemplateSelectionToServer = async () => {
+    if (planTemplateSelectionSyncRunningRef.current) return;
+    planTemplateSelectionSyncRunningRef.current = true;
+    try {
+      while (pendingPlanTemplateSelectionRef.current) {
+        const selection = pendingPlanTemplateSelectionRef.current;
+        pendingPlanTemplateSelectionRef.current = null;
+        const response = await authenticatedFetch(buildApiUrl(`/api/plans/${id}/`), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(selection),
+        });
+        if (!response.ok) {
+          throw new Error(await describeApiError(response));
+        }
+        const updatedPlan = await response.json() as EvacuationPlanBackend;
+        setPlan((current) => current?.id === updatedPlan.id ? updatedPlan : current);
+        markRememberedTemplateAsSaved(selection);
+      }
+    } catch (error) {
+      console.warn("Active sheet template could not be remembered:", error);
+      setSaveStatus("Le template choisi n’a pas pu être mémorisé");
+      window.setTimeout(() => setSaveStatus(""), 3500);
+    } finally {
+      planTemplateSelectionSyncRunningRef.current = false;
+      if (pendingPlanTemplateSelectionRef.current) {
+        void syncPlanTemplateSelectionToServer();
+      }
+    }
+  };
+
+  // Selection changes are lightweight plan metadata, so remember them at once:
+  // the user does not have to press the full project-save button just to keep
+  // the final sheet associated with this plan.
+  useEffect(() => {
+    if (!plan || !rememberedTemplateReady) return;
+    const selection = {
+      active_sheet_template_key: sheetTemplate,
+      active_sheet_template_version_id: sheetTemplate === "none" ? "" : activeSheetTemplateVersionId,
+      active_sheet_template_name: sheetTemplate === "none" ? "Plan seul" : activeSheetTemplateLabel,
+    };
+    if (
+      plan.active_sheet_template_key === selection.active_sheet_template_key
+      && (plan.active_sheet_template_version_id || "") === selection.active_sheet_template_version_id
+      && (plan.active_sheet_template_name || "Plan seul") === selection.active_sheet_template_name
+    ) {
+      return;
+    }
+    pendingPlanTemplateSelectionRef.current = selection;
+    void syncPlanTemplateSelectionToServer();
+  }, [
+    plan,
+    rememberedTemplateReady,
+    sheetTemplate,
+    activeSheetTemplateVersionId,
+    activeSheetTemplateLabel,
+  ]);
+
   const createCustomTemplateIds = () => {
     const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     return { customId: `custom:${suffix}`, baselineId: `baseline:${suffix}` };
+  };
+
+  const deleteSheetTemplateAsset = async (assetId: string) => {
+    const response = await authenticatedFetch(
+      buildApiUrl(`/api/plans/sheet-template-assets/?id=${encodeURIComponent(assetId)}`),
+      { method: "DELETE" }
+    );
+    if (!response.ok && response.status !== 404) {
+      throw new Error(await describeApiError(response));
+    }
+    setSheetTemplateAssets((current) => current.filter((asset) => asset.id !== assetId));
+    setSheetTemplateAssetImages((current) => {
+      const next = { ...current };
+      delete next[`templateAsset:${assetId}`];
+      return next;
+    });
+  };
+
+  const uploadSheetTemplateAsset = async (
+    blob: Blob,
+    name: string,
+    pageNumber: number,
+  ) => {
+    const form = new FormData();
+    form.append("name", name);
+    form.append("file", blob, `template-pdf-page-${pageNumber}.jpg`);
+    const response = await authenticatedFetch(
+      buildApiUrl("/api/plans/sheet-template-assets/"),
+      { method: "POST", body: form }
+    );
+    if (!response.ok) throw new Error(await describeApiError(response));
+    return await response.json() as SheetTemplateAssetBackend;
+  };
+
+  const canvasAsJpegBlob = (canvas: HTMLCanvasElement) => new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => blob ? resolve(blob) : reject(new Error("Impossible de préparer la page PDF.")),
+      "image/jpeg",
+      0.88,
+    );
+  });
+
+  const handleImportPdfSheetTemplate = async (file: File, requestedName: string) => {
+    if (file.size > 30 * 1024 * 1024) {
+      throw new Error("Le PDF dépasse la taille maximale de 30 Mo.");
+    }
+    const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+    if (!isPdf) throw new Error("Sélectionnez un fichier PDF valide.");
+
+    const currentVersions = readStoredSheetTemplateVersions();
+    const availablePages = Math.min(
+      PDF_TEMPLATE_MAX_PAGES,
+      Math.floor((100 - currentVersions.length) / 2),
+    );
+    if (availablePages < 1) {
+      throw new Error("La bibliothèque contient déjà trop de templates. Supprimez un ancien template personnel avant l’import.");
+    }
+
+    const uploadedAssetIds: string[] = [];
+    try {
+      const pdfjs = await import("pdfjs-dist");
+      pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+        "pdfjs-dist/build/pdf.worker.min.mjs",
+        import.meta.url
+      ).toString();
+      const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+      if (!pdf.numPages) throw new Error("Le PDF ne contient aucune page.");
+      const pageCount = Math.min(pdf.numPages, availablePages);
+      const now = new Date().toISOString();
+      const importedVersions: StoredSheetTemplateVersion[] = [];
+
+      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+        const page = await pdf.getPage(pageNumber);
+        const viewportAtOne = page.getViewport({ scale: 1 });
+        const landscape = viewportAtOne.width >= viewportAtOne.height;
+        const sheetWidth = landscape ? SHEET_WIDTH : SHEET_HEIGHT;
+        const sheetHeight = landscape ? SHEET_HEIGHT : SHEET_WIDTH;
+        const rasterLongEdge = 2200;
+        const pageScale = rasterLongEdge / Math.max(viewportAtOne.width, viewportAtOne.height);
+        const viewport = page.getViewport({ scale: Math.max(0.1, pageScale) });
+        const pageCanvas = document.createElement("canvas");
+        pageCanvas.width = Math.max(1, Math.round(viewport.width));
+        pageCanvas.height = Math.max(1, Math.round(viewport.height));
+        const pageContext = pageCanvas.getContext("2d");
+        if (!pageContext) throw new Error("Canvas PDF indisponible.");
+        await page.render({ canvas: pageCanvas, canvasContext: pageContext, viewport }).promise;
+
+        // Letterbox non-A-series documents rather than stretching them. The
+        // stored raster therefore has exactly the same ratio as the sheet.
+        const outputCanvas = document.createElement("canvas");
+        const outputScale = rasterLongEdge / Math.max(sheetWidth, sheetHeight);
+        outputCanvas.width = Math.round(sheetWidth * outputScale);
+        outputCanvas.height = Math.round(sheetHeight * outputScale);
+        const outputContext = outputCanvas.getContext("2d", { willReadFrequently: true });
+        if (!outputContext) throw new Error("Canvas de template indisponible.");
+        outputContext.fillStyle = "#ffffff";
+        outputContext.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
+        const fit = Math.min(
+          outputCanvas.width / pageCanvas.width,
+          outputCanvas.height / pageCanvas.height,
+        );
+        const drawWidth = pageCanvas.width * fit;
+        const drawHeight = pageCanvas.height * fit;
+        outputContext.drawImage(
+          pageCanvas,
+          (outputCanvas.width - drawWidth) / 2,
+          (outputCanvas.height - drawHeight) / 2,
+          drawWidth,
+          drawHeight,
+        );
+
+        const detectedWindow = detectPdfPlanWindow(outputCanvas, sheetWidth, sheetHeight);
+        const blob = await canvasAsJpegBlob(outputCanvas);
+        releaseCanvas(pageCanvas);
+        releaseCanvas(outputCanvas);
+
+        const pageName = pdf.numPages > 1
+          ? `${requestedName} — page ${pageNumber}`
+          : requestedName;
+        const asset = await uploadSheetTemplateAsset(blob, pageName, pageNumber);
+        uploadedAssetIds.push(asset.id);
+        const assetImage = await loadImage(asset.url);
+        setSheetTemplateAssets((current) => [...current, asset]);
+        setSheetTemplateAssetImages((current) => ({
+          ...current,
+          [`templateAsset:${asset.id}`]: assetImage,
+        }));
+
+        const formatTemplate: SheetTemplateKey = landscape ? "nfx08070" : "consignes_chambre";
+        const { customId, baselineId } = createCustomTemplateIds();
+        const blocks: SheetBlock[] = unlockPersonalSheetBlocks([
+          {
+            id: `pdf-background-${asset.id}`,
+            kind: "background",
+            label: `Fond PDF — ${pageName}`,
+            x: 0,
+            y: 0,
+            width: sheetWidth,
+            height: sheetHeight,
+            rotation: 0,
+            visible: true,
+            locked: true,
+            imageKey: `templateAsset:${asset.id}`,
+            assetId: asset.id,
+          },
+          {
+            id: `pdf-plan-window-${asset.id}`,
+            kind: "plan",
+            planSlot: "main",
+            label: "Zone principale du plan (détection automatique)",
+            x: Math.round(detectedWindow.x),
+            y: Math.round(detectedWindow.y),
+            width: Math.round(detectedWindow.width),
+            height: Math.round(detectedWindow.height),
+            rotation: 0,
+            visible: true,
+            locked: false,
+            fill: "#ffffff",
+            stroke: "#374151",
+            strokeWidth: 1,
+          },
+        ]);
+        const custom: StoredSheetTemplateVersion = {
+          id: customId,
+          template: formatTemplate,
+          name: pageName,
+          blocks,
+          planPlacement: { scale: 100, offsetX: 0, offsetY: 0 },
+          createdAt: now,
+          updatedAt: now,
+        };
+        importedVersions.push(
+          custom,
+          { ...custom, id: baselineId, name: `${pageName} — état de départ` },
+        );
+      }
+
+      writeStoredSheetTemplateVersions([...currentVersions, ...importedVersions]);
+      const firstCustom = importedVersions.find((version) => version.id.startsWith("custom:"));
+      if (firstCustom) applyStoredSheetTemplateVersion(firstCustom.id);
+      setTemplateLibraryOpen(false);
+      setSaveStatus(
+        `${pageCount} page${pageCount > 1 ? "s" : ""} PDF importée${pageCount > 1 ? "s" : ""} comme template personnel`
+      );
+      window.setTimeout(() => setSaveStatus(""), 4500);
+      if (pdf.numPages > pageCount) {
+        alert(`Le PDF contient ${pdf.numPages} pages. Les ${pageCount} premières ont été importées.`);
+      }
+    } catch (error) {
+      await Promise.all(uploadedAssetIds.map(async (assetId) => {
+        try {
+          await deleteSheetTemplateAsset(assetId);
+        } catch {
+          // The original import error is the useful one to show.
+        }
+      }));
+      throw error instanceof Error ? error : new Error("Impossible d’importer le template PDF.");
+    }
   };
 
   const saveNewCustomTemplate = (
@@ -4849,7 +5606,7 @@ const MAX_HISTORY_STEPS = 50;
       id: customId,
       template,
       name,
-      blocks: cloneSheetBlocks(blocks),
+      blocks: unlockPersonalSheetBlocks(blocks),
       planPlacement: { ...placement },
       createdAt: now,
       updatedAt: now,
@@ -4920,10 +5677,29 @@ const MAX_HISTORY_STEPS = 50;
     const suffix = item.id.slice("custom:".length);
     const baselineId = `baseline:${suffix}`;
     const wasActive = activeSheetTemplateVersionId === item.id;
-    const versions = readStoredSheetTemplateVersions().filter(
+    const currentVersions = readStoredSheetTemplateVersions();
+    const deletedAssetIds = new Set(
+      currentVersions
+        .filter((version) => version.id === item.id || version.id === baselineId)
+        .flatMap((version) => version.blocks.map((block) => block.assetId))
+        .filter((assetId): assetId is string => Boolean(assetId))
+    );
+    const versions = currentVersions.filter(
       (version) => version.id !== item.id && version.id !== baselineId
     );
     writeStoredSheetTemplateVersions(versions);
+    const remainingAssetIds = new Set(
+      versions
+        .flatMap((version) => version.blocks.map((block) => block.assetId))
+        .filter((assetId): assetId is string => Boolean(assetId))
+    );
+    void Promise.all(
+      [...deletedAssetIds]
+        .filter((assetId) => !remainingAssetIds.has(assetId))
+        .map((assetId) => deleteSheetTemplateAsset(assetId))
+    ).catch((error) => {
+      console.warn("Unused PDF template asset could not be deleted:", error);
+    });
     if (wasActive) {
       applySheetTemplate(item.template, { reset: true, skipSave: true });
     }
@@ -5186,6 +5962,7 @@ const MAX_HISTORY_STEPS = 50;
     y: number,
     size?: { width: number; height: number }
   ) => {
+    if (!canEditActiveSheetTemplate) return;
     const block = createPictoBlock(
       type,
       iconDefinitions[type]?.label || String(type),
@@ -5200,6 +5977,7 @@ const MAX_HISTORY_STEPS = 50;
 
   /** A text placed outside the plan window belongs to the printed sheet. */
   const handlePlaceSheetText = (x: number, y: number) => {
+    if (!canEditActiveSheetTemplate) return;
     const block = createFreeTextBlock(
       sheetBlocks.length + 1,
       activeSheetSize.width,
@@ -5214,6 +5992,7 @@ const MAX_HISTORY_STEPS = 50;
 
   /** Convert drawing coordinates into a self-contained, resizable sheet block. */
   const handlePlaceSheetShape = (shape: CanvasShape) => {
+    if (!canEditActiveSheetTemplate) return;
     const isPath = isPolygonShape(shape.shape_type) || shape.shape_type === "line";
     const absolutePoints = shape.points?.length
       ? shape.points
@@ -5442,7 +6221,7 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const placeSheetBlockCopy = (source: SheetBlock, offset = 16) => {
-    if (!sheetActive || !isCopyableSheetBlock(source)) return false;
+    if (!sheetActive || !canEditActiveSheetTemplate || !isCopyableSheetBlock(source)) return false;
     const pasted = makeSheetBlockCopy(source, offset);
     setSheetBlocks((blocks) => [...blocks, pasted]);
     setSelectedIconId(null);
@@ -5930,7 +6709,12 @@ const MAX_HISTORY_STEPS = 50;
     context.restore();
   };
 
-  const getStageDataUrl = async (pixelRatio: number, silent = false, targetLongEdgePx?: number) => {
+  const getStageDataUrl = async (
+    pixelRatio: number,
+    silent = false,
+    targetLongEdgePx?: number,
+    maxPixelRatio = EXPORT_MAX_PIXEL_RATIO,
+  ) => {
     const stage = getStageInstance();
     if (!stage) return null;
 
@@ -5966,7 +6750,7 @@ const MAX_HISTORY_STEPS = 50;
           // fixed ratio on a large drawing produced a hundred-megapixel image
           // (and a PDF to match). Aim at the print resolution instead.
           const ratio = targetLongEdgePx
-            ? fitPixelRatio(bounds.width, bounds.height, targetLongEdgePx)
+            ? fitPixelRatio(bounds.width, bounds.height, targetLongEdgePx, maxPixelRatio)
             : pixelRatio;
           return stage.toDataURL({
             x: bounds.x,
@@ -8081,7 +8865,7 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   /** Capture of the studio sheet, exactly as laid out, at the print resolution. */
-  const captureSheetImage = (targetLongEdgePx: number) => {
+  const captureSheetImage = (targetLongEdgePx: number, maxPixelRatio: number) => {
     const stage = getStageInstance();
     if (!stage) return null;
 
@@ -8104,7 +8888,12 @@ const MAX_HISTORY_STEPS = 50;
         y: 0,
         width: activeSheetSize.width,
         height: activeSheetSize.height,
-        pixelRatio: fitPixelRatio(activeSheetSize.width, activeSheetSize.height, targetLongEdgePx)
+        pixelRatio: fitPixelRatio(
+          activeSheetSize.width,
+          activeSheetSize.height,
+          targetLongEdgePx,
+          maxPixelRatio,
+        )
       });
     } finally {
       stage.position({ x: previousView.x, y: previousView.y });
@@ -8119,7 +8908,7 @@ const MAX_HISTORY_STEPS = 50;
    * it captures the plan and everything placed around it — never the viewport,
    * so the zoom and the scroll position have no say in the result.
    */
-  const convertDataUrlToJpeg = async (dataUrl: string) => {
+  const convertDataUrlToJpeg = async (dataUrl: string, quality = 0.94) => {
     const image = await loadImage(dataUrl);
     const canvas = document.createElement("canvas");
     canvas.width = image.naturalWidth || image.width;
@@ -8129,7 +8918,7 @@ const MAX_HISTORY_STEPS = 50;
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(image, 0, 0);
-    const jpeg = canvas.toDataURL("image/jpeg", 0.94);
+    const jpeg = canvas.toDataURL("image/jpeg", quality);
     releaseCanvas(canvas);
     return jpeg;
   };
@@ -8142,7 +8931,10 @@ const MAX_HISTORY_STEPS = 50;
     }
   };
 
-  const exportStudio = async (format: "png" | "jpeg" | "pdf") => {
+  const exportStudio = async (
+    format: "png" | "jpeg" | "pdf",
+    quality: ExportQuality = exportQuality,
+  ) => {
     const stage = getStageInstance();
     if (!stage) return;
 
@@ -8158,20 +8950,29 @@ const MAX_HISTORY_STEPS = 50;
 
     try {
       // The output is sized for the paper it is going on, so a big drawing no
-      // longer means a gigantic file — it means a sharp one at 300 dpi.
+      // longer means a gigantic file. The selected profile controls both the
+      // print resolution and, for JPEG-based files, the compression level.
       const paper = EXPORT_PAPER_SIZES[exportPaperFormat];
-      const targetLongEdgePx = paperLongEdgePx(paper);
+      const qualitySettings = EXPORT_QUALITY_SETTINGS[quality];
+      const targetLongEdgePx = paperLongEdgePx(paper, qualitySettings.dpi);
 
       const dataUrl = sheetActive
-        ? captureSheetImage(targetLongEdgePx)
-        : await getStageDataUrl(EXPORT_STAGE_PIXEL_RATIO, false, targetLongEdgePx);
+        ? captureSheetImage(targetLongEdgePx, qualitySettings.maxPixelRatio)
+        : await getStageDataUrl(
+            EXPORT_STAGE_PIXEL_RATIO,
+            false,
+            targetLongEdgePx,
+            qualitySettings.maxPixelRatio,
+          );
       if (!dataUrl) return;
 
       const suffix = sheetActive ? sheetTemplate : "plan";
       const filename = `${plan?.title || "plan"}_${suffix}`;
 
       if (format === "png" || format === "jpeg") {
-        const downloadDataUrl = format === "jpeg" ? await convertDataUrlToJpeg(dataUrl) : dataUrl;
+        const downloadDataUrl = format === "jpeg"
+          ? await convertDataUrlToJpeg(dataUrl, qualitySettings.jpegQuality)
+          : dataUrl;
         const link = document.createElement("a");
         link.download = `${filename}.${format === "jpeg" ? "jpg" : "png"}`;
         link.href = downloadDataUrl;
@@ -8180,6 +8981,13 @@ const MAX_HISTORY_STEPS = 50;
         document.body.removeChild(link);
         return;
       }
+
+      // Light PDF profiles use a compressed white-background JPEG. High and
+      // very-high profiles keep lossless PNG so symbols and fine lines remain
+      // perfectly crisp when printed.
+      const pdfDataUrl = qualitySettings.pdfImageType === "JPEG"
+        ? await convertDataUrlToJpeg(dataUrl, qualitySettings.jpegQuality)
+        : dataUrl;
 
       if (sheetActive) {
         // A template is drawn at the paper's own proportions: it fills the page.
@@ -8193,14 +9001,23 @@ const MAX_HISTORY_STEPS = 50;
         });
         // "FAST" is deflate: a plan is mostly white, and storing the image raw
         // is what turned a perfectly ordinary sheet into hundreds of megabytes.
-        pdf.addImage(dataUrl, "PNG", 0, 0, pdfWidth, pdfHeight, undefined, "FAST");
+        pdf.addImage(
+          pdfDataUrl,
+          qualitySettings.pdfImageType,
+          0,
+          0,
+          pdfWidth,
+          pdfHeight,
+          undefined,
+          "FAST",
+        );
         pdf.save(`${filename}.pdf`);
         return;
       }
 
       // A bare plan has whatever shape the building has, so the page follows it
       // and the drawing is centred inside, with a margin to keep it printable.
-      const image = await loadImage(dataUrl);
+      const image = await loadImage(pdfDataUrl);
       const landscape = image.width >= image.height;
       const pageWidth = landscape ? paper.widthMm : paper.heightMm;
       const pageHeight = landscape ? paper.heightMm : paper.widthMm;
@@ -8218,8 +9035,8 @@ const MAX_HISTORY_STEPS = 50;
         format: exportPaperFormat
       });
       pdf.addImage(
-        dataUrl,
-        "PNG",
+        pdfDataUrl,
+        qualitySettings.pdfImageType,
         (pageWidth - drawWidth) / 2,
         (pageHeight - drawHeight) / 2,
         drawWidth,
@@ -8328,7 +9145,12 @@ const MAX_HISTORY_STEPS = 50;
                 </button>
               </div>
               <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-                <img src={item.image_url} alt="Plan nettoyé historique" className="h-36 w-full object-contain" />
+                <img
+                  src={item.image_url}
+                  crossOrigin={imageCrossOrigin(item.image_url)}
+                  alt="Plan nettoyé historique"
+                  className="h-36 w-full object-contain"
+                />
               </div>
             </div>
           ))}
@@ -8482,6 +9304,21 @@ const MAX_HISTORY_STEPS = 50;
                 <Library className="h-3.5 w-3.5 shrink-0 text-brand-orange" />
                 <span className="truncate">{activeSheetTemplateLabel}</span>
               </button>
+              {defaultSheetTemplateActive && (
+                <span
+                  title={canEditDefaultTemplates
+                    ? "L’administrateur vous autorise à déverrouiller et modifier les éléments de ce template par défaut."
+                    : "Seul un administrateur Django peut autoriser la modification de ce template par défaut."}
+                  className={`flex items-center gap-1 rounded px-1.5 py-1 text-[9px] font-bold ${
+                    canEditDefaultTemplates
+                      ? "bg-emerald-500/15 text-emerald-300"
+                      : "bg-amber-500/15 text-amber-300"
+                  }`}
+                >
+                  {canEditDefaultTemplates ? <Unlock className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
+                  {canEditDefaultTemplates ? "Modification autorisée" : "Par défaut protégé"}
+                </span>
+              )}
               {sheetActive && (
                 <button
                   type="button"
@@ -8510,8 +9347,11 @@ const MAX_HISTORY_STEPS = 50;
                   <button
                     type="button"
                     onClick={saveCurrentSheetTemplateVersion}
-                    title="Enregistrer cette mise en page comme une nouvelle version"
-                    className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+                    disabled={!personalSheetTemplateActive && !canEditDefaultTemplates}
+                    title={!personalSheetTemplateActive && !canEditDefaultTemplates
+                      ? "Autorisation administrateur requise pour enregistrer une version du template par défaut"
+                      : "Enregistrer cette mise en page comme une nouvelle version"}
+                    className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
                   >
                     <Save className="h-3 w-3" />
                   </button>
@@ -8601,11 +9441,14 @@ const MAX_HISTORY_STEPS = 50;
 
             {/* One export, for both modes: it always captures the studio. */}
             <ExportButtons
-              onExport={(format) => void exportStudio(format)}
+              onExport={(format, quality) => void exportStudio(format, quality)}
               exporting={sheetExporting}
               paperFormat={exportPaperFormat}
               paperOptions={EXPORT_PAPER_OPTIONS}
               onPaperFormatChange={(key) => setExportPaperFormat(key as ExportPaperFormat)}
+              quality={exportQuality}
+              qualityOptions={EXPORT_QUALITY_OPTIONS}
+              onQualityChange={setExportQuality}
             />
 
             <button
@@ -8793,9 +9636,18 @@ const MAX_HISTORY_STEPS = 50;
             {hasLockableSelection && (
               <button
                 type="button"
+                disabled={Boolean(
+                  selectedBlock && (!canEditActiveSheetTemplate || protectedPdfBackgroundSelected)
+                )}
                 onClick={toggleSelectedObjectLock}
-                title={selectedObjectLocked ? "Déverrouiller l’objet sélectionné" : "Verrouiller l’objet sélectionné pour éviter un déplacement accidentel"}
-                className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+                title={protectedPdfBackgroundSelected
+                  ? "Le fond PDF reste verrouillé pour protéger la mise en page"
+                  : selectedBlock && !canEditActiveSheetTemplate
+                    ? "Déverrouillage interdit : autorisation administrateur requise"
+                  : selectedObjectLocked
+                    ? "Déverrouiller l’objet sélectionné"
+                    : "Verrouiller l’objet sélectionné pour éviter un déplacement accidentel"}
+                className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${
                   selectedObjectLocked
                     ? "border-amber-500/50 bg-amber-950/70 text-amber-200 hover:bg-amber-900/80"
                     : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
@@ -8947,6 +9799,7 @@ const MAX_HISTORY_STEPS = 50;
                   onToggleLock={handleToggleLayerLock}
                   onMove={handleMoveLayer}
                   onReorder={handleReorderLayers}
+                  readOnly={sheetActive && !canEditActiveSheetTemplate}
                 />
               )}
             </div>
@@ -8994,7 +9847,8 @@ const MAX_HISTORY_STEPS = 50;
                     }
                   }}
                   sheet={sheetProp}
-                  onSheetBlocksChange={setSheetBlocks}
+                  sheetEditingEnabled={canEditActiveSheetTemplate}
+                  onSheetBlocksChange={canEditActiveSheetTemplate ? setSheetBlocks : undefined}
                   selectedBlockId={selectedBlockId}
                   selectedBlockIds={selectedSheetBlockIds}
                   onSelectBlock={(blockId) => {
@@ -9016,15 +9870,15 @@ const MAX_HISTORY_STEPS = 50;
                       setSelectedOverlayId(null);
                     }
                   }}
-                  sheetImages={sheetLogoImages}
+                  sheetImages={resolvedSheetImages}
                   sheetLegendEntries={sheetLegendEntries}
                   sheetPictoImages={sheetPictoImages}
-                  onPlaceSheetIcon={handlePlaceSheetIcon}
-                  onPlaceSheetText={handlePlaceSheetText}
-                  onPlaceSheetShape={handlePlaceSheetShape}
+                  onPlaceSheetIcon={canEditActiveSheetTemplate ? handlePlaceSheetIcon : undefined}
+                  onPlaceSheetText={canEditActiveSheetTemplate ? handlePlaceSheetText : undefined}
+                  onPlaceSheetShape={canEditActiveSheetTemplate ? handlePlaceSheetShape : undefined}
                   planReframeMode={sheetReframeMode}
                   planPlacement={sheetPlanPlacement}
-                  onPlanPlacementChange={setSheetPlanPlacement}
+                  onPlanPlacementChange={canEditActiveSheetTemplate ? setSheetPlanPlacement : undefined}
                   mainPlanTransform={mainPlanTransform}
                   onMainPlanTransformChange={setMainPlanTransform}
                   mainPlanLocked={mainPlanLocked}
@@ -9143,6 +9997,35 @@ const MAX_HISTORY_STEPS = 50;
                   </p>
                 </div>
 
+                {!canEditActiveSheetTemplate ? (
+                  <div className="m-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                    <div className="flex items-center gap-2 text-amber-200">
+                      <Lock className="h-4 w-4 shrink-0" />
+                      <p className="text-[11px] font-bold">Template par défaut verrouillé</p>
+                    </div>
+                    <p className="mt-2 text-[10px] leading-relaxed text-neutral-300">
+                      Aucun élément ne peut être déplacé, masqué, supprimé ou déverrouillé sans l’autorisation d’un administrateur.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setTemplateLibraryOpen(true)}
+                      className="mt-3 flex w-full items-center justify-center gap-1.5 rounded bg-violet-600 px-2 py-1.5 text-[10px] font-bold text-white transition hover:bg-violet-500"
+                    >
+                      <CopyPlus className="h-3.5 w-3.5" />
+                      Cloner pour modifier librement
+                    </button>
+                  </div>
+                ) : protectedPdfBackgroundSelected ? (
+                  <div className="m-3 rounded-lg border border-sky-500/30 bg-sky-500/10 p-3">
+                    <div className="flex items-center gap-2 text-sky-200">
+                      <Lock className="h-4 w-4 shrink-0" />
+                      <p className="text-[11px] font-bold">Fond PDF verrouillé</p>
+                    </div>
+                    <p className="mt-2 text-[10px] leading-relaxed text-neutral-300">
+                      Cette page occupe toujours toute la feuille et ne peut pas être déplacée, redimensionnée, masquée, supprimée ou déverrouillée. Modifiez la zone principale du plan placée au-dessus.
+                    </p>
+                  </div>
+                ) : (
                 <div className="space-y-3 p-3">
                   {sheetSelectionCount > 1 && (
                     <div className="rounded border border-violet-500/25 bg-violet-500/[0.07] p-2.5">
@@ -9702,6 +10585,7 @@ const MAX_HISTORY_STEPS = 50;
                     )}
                   </div>
                 </div>
+                )}
               </div>
             ) : multiSelectionCount > 0 ? (
               <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
@@ -10815,15 +11699,19 @@ const MAX_HISTORY_STEPS = 50;
                       </button>
                       <button
                         type="button"
-                        onClick={() =>
+                        disabled={!canEditActiveSheetTemplate && block.kind !== "legend"}
+                        onClick={() => {
+                          if (!canEditActiveSheetTemplate && block.kind !== "legend") return;
                           setSheetBlocks((blocks) =>
                             blocks.map((item) =>
                               item.id === block.id ? { ...item, visible: !item.visible } : item
                             )
-                          )
-                        }
-                        title={block.visible ? "Masquer ce bloc" : "Afficher ce bloc"}
-                        className={`shrink-0 rounded p-1 transition-colors hover:bg-white/10 ${
+                          );
+                        }}
+                        title={!canEditActiveSheetTemplate && block.kind !== "legend"
+                          ? "Template par défaut verrouillé"
+                          : block.visible ? "Masquer ce bloc" : "Afficher ce bloc"}
+                        className={`shrink-0 rounded p-1 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35 ${
                           block.visible ? "text-emerald-400" : "text-neutral-600"
                         }`}
                       >
@@ -10834,7 +11722,9 @@ const MAX_HISTORY_STEPS = 50;
                 </div>
                 <button
                   type="button"
+                  disabled={!canEditActiveSheetTemplate}
                   onClick={() => {
+                    if (!canEditActiveSheetTemplate) return;
                     const block = createFreeTextBlock(
                       sheetBlocks.length + 1,
                       activeSheetSize.width,
@@ -10843,7 +11733,7 @@ const MAX_HISTORY_STEPS = 50;
                     setSheetBlocks((blocks) => [...blocks, block]);
                     setSelectedBlockId(block.id);
                   }}
-                  className="mt-3 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 py-1.5 text-[11px] font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/20"
+                  className="mt-3 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 py-1.5 text-[11px] font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-35"
                 >
                   <Type className="h-3.5 w-3.5" />
                   Ajouter un texte
@@ -11785,7 +12675,12 @@ const MAX_HISTORY_STEPS = 50;
                           {busy ? (
                             <Loader2 className="h-6 w-6 animate-spin text-safety-green" />
                           ) : value ? (
-                            <img src={value} alt={`Aperçu du ${label.toLowerCase()}`} className="max-h-full max-w-full object-contain" />
+                            <img
+                              src={value}
+                              crossOrigin={imageCrossOrigin(value)}
+                              alt={`Aperçu du ${label.toLowerCase()}`}
+                              className="max-h-full max-w-full object-contain"
+                            />
                           ) : (
                             <div className="text-center text-slate-400">
                               <ImagePlus className="mx-auto h-6 w-6" />
@@ -12970,7 +13865,9 @@ const MAX_HISTORY_STEPS = 50;
           onUse={handleUseSheetTemplateLibraryItem}
           onClone={handleCloneSheetTemplate}
           onCreate={handleCreateBlankSheetTemplate}
+          onImportPdf={handleImportPdfSheetTemplate}
           onDelete={handleDeleteCustomSheetTemplate}
+          images={resolvedSheetImages}
         />
 
         <WatermarkModal

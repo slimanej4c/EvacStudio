@@ -28,6 +28,8 @@ export interface EditorLayerItem {
   visible: boolean;
   locked: boolean;
   zIndex: number;
+  /** Keeps the eye control available for selected read-only sheet blocks. */
+  visibilityEditable?: boolean;
 }
 
 interface LayerPanelProps {
@@ -38,6 +40,7 @@ interface LayerPanelProps {
   onToggleLock: (item: EditorLayerItem) => void;
   onMove: (id: string, direction: LayerMoveDirection) => void;
   onReorder: (orderedIds: string[]) => void;
+  readOnly?: boolean;
 }
 
 const KIND_LABELS: Record<EditorLayerKind, string> = {
@@ -65,6 +68,7 @@ export default function LayerPanel({
   onToggleLock,
   onMove,
   onReorder,
+  readOnly = false,
 }: LayerPanelProps) {
   const [draggedId, setDraggedId] = React.useState<string | null>(null);
   const [dropTarget, setDropTarget] = React.useState<{
@@ -102,17 +106,21 @@ export default function LayerPanel({
       <div className="shrink-0 border-b border-black/40 px-3 py-2.5">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-300">Calques</p>
         <p className="mt-1 text-[9px] leading-3.5 text-neutral-500">
-          Glissez la poignée pour changer l’ordre. Le calque du haut apparaît devant.
+          {readOnly
+            ? "Template par défaut verrouillé. Clonez-le ou demandez l’autorisation administrateur."
+            : "Glissez la poignée pour changer l’ordre. Le calque du haut apparaît devant."}
         </p>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
         {items.map((item) => {
           const isSelected = item.id === selectedId;
+          const visibilityReadOnly = readOnly && !item.visibilityEditable;
           return (
             <div
               key={item.id}
               onDragOver={(event) => {
+                if (readOnly) return;
                 event.preventDefault();
                 event.dataTransfer.dropEffect = "move";
                 const position = getDropPosition(event);
@@ -122,7 +130,9 @@ export default function LayerPanel({
                     : { id: item.id, position }
                 );
               }}
-              onDrop={(event) => handleDrop(event, item.id)}
+              onDrop={(event) => {
+                if (!readOnly) handleDrop(event, item.id);
+              }}
               className={`relative mb-1 flex min-w-0 items-center gap-1 rounded border transition-colors ${
                 isSelected
                   ? "border-sky-500/60 bg-sky-500/15"
@@ -137,8 +147,12 @@ export default function LayerPanel({
               )}
               <button
                 type="button"
-                draggable
+                draggable={!readOnly}
                 onDragStart={(event) => {
+                  if (readOnly) {
+                    event.preventDefault();
+                    return;
+                  }
                   setDraggedId(item.id);
                   setDropTarget(null);
                   event.dataTransfer.effectAllowed = "move";
@@ -151,15 +165,16 @@ export default function LayerPanel({
                 onClick={() => onSelect(item)}
                 title="Faire glisser pour changer l’ordre"
                 aria-label={`Déplacer le calque ${item.label}`}
-                className="flex h-8 w-5 shrink-0 cursor-grab items-center justify-center text-neutral-600 hover:text-neutral-200 active:cursor-grabbing"
+                className={`flex h-8 w-5 shrink-0 items-center justify-center text-neutral-600 ${readOnly ? "cursor-not-allowed opacity-40" : "cursor-grab hover:text-neutral-200 active:cursor-grabbing"}`}
               >
                 <GripVertical className="pointer-events-none h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
+                disabled={visibilityReadOnly}
                 onClick={() => onToggleVisibility(item)}
                 title={item.visible ? "Masquer ce calque" : "Afficher ce calque"}
-                className="flex h-8 w-7 shrink-0 cursor-pointer items-center justify-center text-neutral-400 hover:text-white"
+                className="flex h-8 w-7 shrink-0 cursor-pointer items-center justify-center text-neutral-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
               >
                 {item.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
               </button>
@@ -179,11 +194,12 @@ export default function LayerPanel({
               </button>
               <button
                 type="button"
+                disabled={readOnly}
                 onClick={() => onToggleLock(item)}
                 title={item.locked ? "Déverrouiller cet objet" : "Verrouiller cet objet pour empêcher son déplacement"}
                 aria-label={item.locked ? `Déverrouiller ${item.label}` : `Verrouiller ${item.label}`}
                 aria-pressed={item.locked}
-                className={`flex h-8 w-7 shrink-0 cursor-pointer items-center justify-center rounded transition-colors ${
+                className={`flex h-8 w-7 shrink-0 cursor-pointer items-center justify-center rounded transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
                   item.locked
                     ? "bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 hover:text-amber-300"
                     : "text-neutral-600 hover:bg-white/10 hover:text-neutral-200"
@@ -200,7 +216,7 @@ export default function LayerPanel({
         <div className="grid grid-cols-4 gap-1">
           <button
             type="button"
-            disabled={!selected || selectedIndex === 0}
+            disabled={readOnly || !selected || selectedIndex === 0}
             onClick={() => selected && onMove(selected.id, "front")}
             title="Mettre tout devant"
             className="flex h-7 cursor-pointer items-center justify-center rounded border border-white/10 text-neutral-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
@@ -209,7 +225,7 @@ export default function LayerPanel({
           </button>
           <button
             type="button"
-            disabled={!selected || selectedIndex === 0}
+            disabled={readOnly || !selected || selectedIndex === 0}
             onClick={() => selected && onMove(selected.id, "up")}
             title="Avancer d’un niveau"
             className="flex h-7 cursor-pointer items-center justify-center rounded border border-white/10 text-neutral-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
@@ -218,7 +234,7 @@ export default function LayerPanel({
           </button>
           <button
             type="button"
-            disabled={!selected || selectedIndex === items.length - 1}
+            disabled={readOnly || !selected || selectedIndex === items.length - 1}
             onClick={() => selected && onMove(selected.id, "down")}
             title="Reculer d’un niveau"
             className="flex h-7 cursor-pointer items-center justify-center rounded border border-white/10 text-neutral-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
@@ -227,7 +243,7 @@ export default function LayerPanel({
           </button>
           <button
             type="button"
-            disabled={!selected || selectedIndex === items.length - 1}
+            disabled={readOnly || !selected || selectedIndex === items.length - 1}
             onClick={() => selected && onMove(selected.id, "back")}
             title="Mettre tout derrière"
             className="flex h-7 cursor-pointer items-center justify-center rounded border border-white/10 text-neutral-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"

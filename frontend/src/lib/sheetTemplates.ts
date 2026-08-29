@@ -78,6 +78,8 @@ export interface SheetBlock {
   /** Body text. Line breaks are kept, long lines wrap inside the block. */
   text?: string;
   imageKey?: SheetImageKey;
+  /** Server-side raster asset used by an imported PDF template background. */
+  assetId?: string;
   /** For `picto` blocks: which safety pictogram is shown. */
   iconType?: string;
   /** Mirror the pictogram artwork without changing its frame geometry. */
@@ -289,6 +291,63 @@ export interface SheetPlanPlacement {
   scale: number;
   offsetX: number;
   offsetY: number;
+}
+
+/**
+ * Guarantees that every sheet can explain the pictograms used on its plan.
+ * Some historical official layouts intentionally shipped without a legend;
+ * the fallback is placed over the lower-right corner of the plan window so it
+ * also works for imported/personal sheets whose geometry is not known here.
+ * An existing legend is left untouched, including an explicit `visible: false`
+ * chosen by the user.
+ */
+export function ensureSheetLegendBlock(
+  template: SheetTemplateKey,
+  blocks: SheetBlock[]
+): SheetBlock[] {
+  if (blocks.some((block) => block.kind === "legend")) return blocks;
+
+  const sheet = SHEET_TEMPLATES[template];
+  const plan = blocks.find(
+    (block) => block.kind === "plan" && (block.planSlot === "main" || !block.planSlot)
+  ) ?? blocks.find((block) => block.kind === "plan");
+  const region = plan ?? {
+    x: 24,
+    y: 24,
+    width: sheet.width - 48,
+    height: sheet.height - 48,
+  };
+  const width = Math.max(160, Math.min(300, region.width * 0.32, sheet.width - 48));
+  const height = Math.max(180, Math.min(300, region.height * 0.3, sheet.height - 48));
+  const x = Math.max(24, Math.min(sheet.width - width - 24, region.x + region.width - width - 16));
+  const y = Math.max(24, Math.min(sheet.height - height - 24, region.y + region.height - height - 16));
+
+  return [
+    ...blocks,
+    {
+      id: `${template}-automatic-legend`,
+      kind: "legend",
+      label: "Légende",
+      x: Math.round(x),
+      y: Math.round(y),
+      width: Math.round(width),
+      height: Math.round(height),
+      rotation: 0,
+      visible: true,
+      title: "LÉGENDE",
+      titleColor: "#1a1a1a",
+      titleFontSize: 15,
+      titleHeight: 30,
+      titleAlign: "center",
+      titleRule: true,
+      fill: "#ffffff",
+      stroke: "#1a1a1a",
+      strokeWidth: 1,
+      color: "#1a1a1a",
+      fontSize: 11,
+      padding: 8,
+    },
+  ];
 }
 
 interface FinalSheetTemplateState {
@@ -1693,23 +1752,29 @@ export function createSheetBlocks(
   context: SheetTemplateContext = {}
 ): SheetBlock[] {
   const finalBlocks = createFinalSheetBlocks(template, context);
-  if (finalBlocks) return finalBlocks;
+  if (finalBlocks) return ensureSheetLegendBlock(template, finalBlocks);
 
   if (template.startsWith("official_")) {
-    return createOfficialEditableBlocks(template, context);
+    return ensureSheetLegendBlock(template, createOfficialEditableBlocks(template, context));
   }
 
+  let blocks: SheetBlock[];
   switch (template) {
     case "consignes_chambre":
-      return createConsignesChambreBlocks(context);
+      blocks = createConsignesChambreBlocks(context);
+      break;
     case "evacuation_consigne_gauche":
-      return createEvacuationConsigneGaucheBlocks(context);
+      blocks = createEvacuationConsigneGaucheBlocks(context);
+      break;
     case "intervention_multiniveaux":
-      return createInterventionMultiniveauxBlocks(context);
+      blocks = createInterventionMultiniveauxBlocks(context);
+      break;
     case "nfx08070":
     default:
-      return createNfx08070Blocks(context);
+      blocks = createNfx08070Blocks(context);
+      break;
   }
+  return ensureSheetLegendBlock(template, blocks);
 }
 
 function createOfficialEditableBlocks(

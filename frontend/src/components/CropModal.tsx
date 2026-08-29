@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { X, Crop, Check, RotateCcw, Loader2, Sparkles, Move, Maximize2 } from "lucide-react";
+import { imageCrossOrigin } from "@/lib/api";
 
 interface CropRect {
   x: number; // 0..1 normalized
@@ -194,6 +195,7 @@ export function CropModal({
             {/* Base Image */}
             <img
               src={imageUrl}
+              crossOrigin={imageCrossOrigin(imageUrl)}
               alt="Plan source à rogner"
               className="max-h-[60vh] w-auto max-w-full object-contain pointer-events-none"
             />

@@ -7,7 +7,7 @@ from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from PIL import Image, UnidentifiedImageError
-from .media_access import signed_url_for_field
+from .media_access import protected_url_for_field
 from .upload_validation import (
     UploadRejected,
     safe_upload_name,
@@ -20,6 +20,7 @@ from .models import (
     PlanOverlay,
     PlanShape,
     PlanText,
+    SheetTemplateAsset,
     SheetTemplateVersion,
     UserXaiSettings,
     WorkspaceInvitation,
@@ -219,7 +220,7 @@ class PlanOverlaySerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_image_url(self, obj):
-        return signed_url_for_field(self.context.get('request'), obj.image_file)
+        return protected_url_for_field(self.context.get('request'), obj.image_file)
 
     def get_can_revert_original(self, obj):
         return bool(obj.original_image_file)
@@ -322,6 +323,20 @@ class EditorPlanSettingsSerializer(serializers.Serializer):
     main_plan_z_index = serializers.IntegerField(required=False, default=0)
     main_plan_group_id = serializers.CharField(required=False, allow_blank=True, default='', max_length=64)
     main_plan_grouping_enabled = serializers.BooleanField(required=False, default=False)
+    active_sheet_template_key = serializers.RegexField(
+        r'^(?:none|[a-z0-9_]{1,64})$',
+        required=False,
+    )
+    active_sheet_template_version_id = serializers.RegexField(
+        r'^[A-Za-z0-9:_-]{0,160}$',
+        required=False,
+        allow_blank=True,
+    )
+    active_sheet_template_name = serializers.CharField(
+        required=False,
+        allow_blank=False,
+        max_length=255,
+    )
     watermark = WatermarkConfigSerializer(required=False, default=dict)
 
 
@@ -335,8 +350,8 @@ class SyncEditorSerializer(serializers.Serializer):
     plan_settings = EditorPlanSettingsSerializer()
 
 
-class SignedFileField(serializers.FileField):
-    """FileField qui *rend* une URL signée sans rien changer à l'écriture.
+class ProtectedFileField(serializers.FileField):
+    """FileField qui rend une URL protégée sans changer l'écriture.
 
     Le FileField de DRF renvoie l'URL brute de MEDIA_URL, qui n'est plus servie.
     Seule `to_representation` est redéfinie : la validation et l'upload passent
@@ -347,20 +362,29 @@ class SignedFileField(serializers.FileField):
     def to_representation(self, value):
         if not value:
             return None
-        return signed_url_for_field(self.context.get('request'), value) or None
+        return protected_url_for_field(self.context.get('request'), value) or None
 
 
 class EvacuationPlanSerializer(serializers.ModelSerializer):
     # Déclarés explicitement : c'est ainsi qu'on impose une classe de champ.
     # Le nom et le comportement en écriture ne changent pas, seule la sortie
-    # devient une URL signée — le frontend continue d'envoyer `background_file`.
-    background_file = SignedFileField()
-    cleaned_background_file = SignedFileField(read_only=True)
+    # devient une URL protégée — le frontend continue d'envoyer `background_file`.
+    background_file = ProtectedFileField()
+    cleaned_background_file = ProtectedFileField(read_only=True)
     icons = PlanIconSerializer(many=True, read_only=True)
     shapes = PlanShapeSerializer(many=True, read_only=True)
     texts = PlanTextSerializer(many=True, read_only=True)
     overlays = PlanOverlaySerializer(many=True, read_only=True)
     user = serializers.PrimaryKeyRelatedField(read_only=True)
+    active_sheet_template_key = serializers.RegexField(
+        r'^(?:none|[a-z0-9_]{1,64})$',
+        required=False,
+    )
+    active_sheet_template_version_id = serializers.RegexField(
+        r'^[A-Za-z0-9:_-]{0,160}$',
+        required=False,
+        allow_blank=True,
+    )
 
     class Meta:
         model = EvacuationPlan
@@ -369,7 +393,9 @@ class EvacuationPlanSerializer(serializers.ModelSerializer):
                   'main_plan_x', 'main_plan_y', 'main_plan_width', 'main_plan_height',
                   'main_plan_locked', 'main_plan_visible', 'main_plan_z_index',
                   'main_plan_group_id', 'main_plan_grouping_enabled',
-                  'watermark_config', 'icons', 'shapes', 'texts',
+                  'watermark_config', 'active_sheet_template_key',
+                  'active_sheet_template_version_id', 'active_sheet_template_name',
+                  'icons', 'shapes', 'texts',
                   'overlays', 'created_at', 'updated_at']
         read_only_fields = ['id', 'user', 'cleaned_background_file', 'created_at', 'updated_at']
 
@@ -404,7 +430,7 @@ class PlanCleaningHistorySerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'plan', 'cleaning_method', 'title', 'image_url', 'options', 'created_at']
 
     def get_image_url(self, obj):
-        return signed_url_for_field(self.context.get('request'), obj.image_file)
+        return protected_url_for_field(self.context.get('request'), obj.image_file)
 
 
 class UserXaiSettingsSerializer(serializers.ModelSerializer):
@@ -456,6 +482,19 @@ class SheetTemplateVersionSerializer(serializers.ModelSerializer):
         if attrs['source_updated_at'] < attrs['source_created_at']:
             raise serializers.ValidationError('La date de modification du template est invalide.')
         return attrs
+
+
+class SheetTemplateAssetSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(source='asset_id', read_only=True)
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SheetTemplateAsset
+        fields = ['id', 'name', 'url', 'width', 'height', 'created_at']
+        read_only_fields = fields
+
+    def get_url(self, obj):
+        return protected_url_for_field(self.context.get('request'), obj.image_file)
 
 
 class SheetTemplateSyncSerializer(serializers.Serializer):

@@ -16,12 +16,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .media_access import (
-    MEDIA_EXPIRY_PARAM,
-    MEDIA_SIGNATURE_PARAM,
+    media_session_user,
     normalize_media_path,
-    verify_media_signature,
 )
-from .throttles import SignedMediaRateThrottle
+from .models import user_can_access_media_path
+from .throttles import ProtectedMediaRateThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -36,22 +35,20 @@ SAFE_INLINE_CONTENT_TYPES = {
 class ProtectedMediaView(APIView):
     """Sert un fichier de MEDIA_ROOT après vérification.
 
-    L'accès est accordé dans deux cas seulement :
-
-    * l'URL porte une signature valide et non expirée — le cas d'une balise
-      ``<img>``, qui ne peut pas transmettre d'en-tête ;
-    * la requête est authentifiée — le cas d'un client d'API.
+    L'accès exige un compte authentifié — par JWT pour un client d'API ou par
+    le cookie média HttpOnly pour une balise ``<img>`` — puis vérifie que le
+    fichier appartient au compte ou à un espace auquel il a été invité.
 
     Toute autre requête reçoit 403, et un chemin invalide 404, sans jamais
     révéler d'emplacement réel sur le serveur.
     """
 
-    # La permission est décidée dans `get` : une URL signée doit fonctionner
-    # sans jeton, sinon les images ne s'afficheraient pas.
+    # La permission est décidée dans `get`, car les balises image utilisent le
+    # cookie média plutôt que l'authentificateur JWT de DRF.
     permission_classes = [permissions.AllowAny]
     # Do not use DRF's generic anonymous bucket here: one editor load requests
     # the whole pictogram library and would exhaust its 60/hour allowance.
-    throttle_classes = [SignedMediaRateThrottle]
+    throttle_classes = [ProtectedMediaRateThrottle]
 
     def get(self, request, media_path):
         relative_path = normalize_media_path(media_path)
@@ -64,14 +61,11 @@ class ProtectedMediaView(APIView):
             )
             raise Http404
 
-        signature_ok = verify_media_signature(
-            relative_path,
-            request.GET.get(MEDIA_EXPIRY_PARAM),
-            request.GET.get(MEDIA_SIGNATURE_PARAM),
-        )
-        if not signature_ok and not (request.user and request.user.is_authenticated):
+        jwt_user = request.user if request.user and request.user.is_authenticated else None
+        authorized_user = jwt_user or media_session_user(request)
+        if not user_can_access_media_path(authorized_user, relative_path):
             return Response(
-                {"detail": "Authentification requise pour accéder à ce fichier."},
+                {"detail": "Vous n'avez pas accès à ce fichier."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -106,6 +100,8 @@ class ProtectedMediaView(APIView):
         if content_type == 'application/octet-stream':
             filename = os.path.basename(relative_path)
             response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        # Privé : ces fichiers ne doivent pas finir dans un cache partagé.
-        response['Cache-Control'] = 'private, max-age=3600'
+        # Ne pas conserver une copie après révocation d'une invitation ou
+        # déconnexion. `Vary` empêche aussi tout mélange entre deux comptes.
+        response['Cache-Control'] = 'private, no-store'
+        response['Vary'] = 'Cookie, Authorization'
         return response
