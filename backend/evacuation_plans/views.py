@@ -960,6 +960,16 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, WorkspaceEditPermission]
     serializer_class = EvacuationPlanSerializer
 
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        if (
+            200 <= response.status_code < 400
+            and request.user
+            and request.user.is_authenticated
+        ):
+            return set_media_session_cookie(response, request.user)
+        return response
+
     def get_queryset(self):
         # Only the owner and explicitly invited workspace members may reach a
         # plan. `restrict_plans_to` keeps that decision in one place.

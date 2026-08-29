@@ -9,6 +9,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import models
 from django.utils import timezone
+from .media_access import media_path_aliases
 
 
 def _derive_xai_settings_keys():
@@ -613,28 +614,31 @@ def user_can_access_media_path(user, relative_path):
     top_level_directory = relative_path.split('/', 1)[0]
     if top_level_directory in {'plan_picto', 'nf_x-picto'}:
         return True
+    path_aliases = media_path_aliases(relative_path)
+    if not path_aliases:
+        return False
 
     plan_file = EvacuationPlan.objects.filter(user_id__in=owner_ids).filter(
-        models.Q(background_file=relative_path)
-        | models.Q(cleaned_background_file=relative_path)
+        models.Q(background_file__in=path_aliases)
+        | models.Q(cleaned_background_file__in=path_aliases)
     ).exists()
     if plan_file:
         return True
 
     overlay_file = PlanOverlay.objects.filter(plan__user_id__in=owner_ids).filter(
-        models.Q(image_file=relative_path)
-        | models.Q(original_image_file=relative_path)
+        models.Q(image_file__in=path_aliases)
+        | models.Q(original_image_file__in=path_aliases)
     ).exists()
     if overlay_file:
         return True
 
     if PlanCleaningHistory.objects.filter(
         plan__user_id__in=owner_ids,
-        image_file=relative_path,
+        image_file__in=path_aliases,
     ).exists():
         return True
 
     return SheetTemplateAsset.objects.filter(
         user_id__in=owner_ids,
-        image_file=relative_path,
+        image_file__in=path_aliases,
     ).exists()

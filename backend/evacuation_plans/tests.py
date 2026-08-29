@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import types
+from urllib.parse import quote
 from unittest.mock import patch
 
 from datetime import timedelta
@@ -2146,6 +2147,17 @@ class SecurityAuditTests(_PlanFactoryMixin, TestCase):
 class ProtectedMediaTests(_PlanFactoryMixin, TestCase):
     """Une URL seule ne suffit jamais : compte + propriété/invitation requis."""
 
+    REAL_NF_X_PICTOGRAM_NAMES = [
+        "Extincteur.svg",
+        "Bouche d’incendie.svg",
+        "Itinéraire d’évacuation.svg",
+        "Poteau d'incendie.svg",
+        "Equipement divers de lutte contre l’incendie (à préciser).svg",
+        "Extincteur  sur roues.svg",
+        "Espace d’attente sécurisé.svg",
+        "Accès pompiers principal.svg",
+    ]
+
     def setUp(self):
         super().setUp()
         self.user = User.objects.create_user(username="media", password="pw-media-99")
@@ -2177,11 +2189,118 @@ class ProtectedMediaTests(_PlanFactoryMixin, TestCase):
         target.cookies[django_settings.MEDIA_SESSION_COOKIE_NAME] = media_session_value(user)
         return target
 
+    def _store_media_bytes(self, relative_path, content):
+        full_path = os.path.join(self._test_media.name, relative_path)
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "wb") as handle:
+            handle.write(content)
+        return ContentFile(content, name=os.path.basename(relative_path))
+
     def test_the_api_hands_out_a_protected_url_without_a_bearer_signature(self):
         url = self._protected_url_from_api()
         self.assertIn("/api/media/", url)
         self.assertNotIn("sig=", url)
         self.assertNotIn("exp=", url)
+
+    def test_plan_api_refreshes_media_cookie_for_existing_jwt_sessions(self):
+        from django.conf import settings as django_settings
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get(f"/api/plans/{self.plan.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(django_settings.MEDIA_SESSION_COOKIE_NAME, response.cookies)
+
+    def test_existing_plan_backgrounds_cleaned_backgrounds_and_pdfs_are_served(self):
+        media_cases = [
+            ("backgrounds/ancien plan étage.png", _png_bytes(), "image/png", "image"),
+            ("backgrounds/ancien plan photo.jpg", _png_bytes(), "image/jpeg", "image"),
+            ("backgrounds/ancien plan pdf.pdf", b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF", "application/pdf", "pdf"),
+        ]
+
+        for relative_path, content, expected_type, background_type in media_cases:
+            with self.subTest(relative_path=relative_path):
+                self._store_media_bytes(relative_path, content)
+                self.plan.background_file.name = relative_path
+                self.plan.background_type = background_type
+                self.plan.save(update_fields=["background_file", "background_type"])
+                self.client.force_authenticate(user=self.user)
+                api_response = self.client.get(f"/api/plans/{self.plan.id}/")
+                self.assertEqual(api_response.status_code, 200)
+                url = api_response.data["background_file"]
+                self.assertIn("/api/media/", url)
+                self.assertNotIn("%2520", url)
+                self.assertNotIn("%25C3", url)
+                self.client.force_authenticate(user=None)
+                self._use_media_cookie(self.user)
+                media_response = self.client.get(url)
+                self.assertEqual(media_response.status_code, 200)
+                self.assertEqual(media_response["Content-Type"], expected_type)
+
+        cleaned_path = "backgrounds_cleaned/ancien nettoyé étage.png"
+        self._store_media_bytes(cleaned_path, _png_bytes(color=(240, 240, 240)))
+        self.plan.cleaned_background_file.name = cleaned_path
+        self.plan.use_cleaned_background = True
+        self.plan.save(update_fields=["cleaned_background_file", "use_cleaned_background"])
+        self.client.force_authenticate(user=self.user)
+        api_response = self.client.get(f"/api/plans/{self.plan.id}/")
+        self.assertEqual(api_response.status_code, 200)
+        cleaned_url = api_response.data["cleaned_background_file"]
+        self.assertIn("/api/media/backgrounds_cleaned/", cleaned_url)
+        self.assertNotIn("%2520", cleaned_url)
+        self.client.force_authenticate(user=None)
+        self._use_media_cookie(self.user)
+        cleaned_response = self.client.get(cleaned_url)
+        self.assertEqual(cleaned_response.status_code, 200)
+        self.assertEqual(cleaned_response["Content-Type"], "image/png")
+
+    def test_legacy_media_prefixed_database_paths_still_authorize_existing_plans(self):
+        from .media_access import normalize_media_path, protected_media_path
+
+        real_path = "backgrounds/ancien legacy espace.png"
+        self._store_media_bytes(real_path, _png_bytes())
+        self.plan.background_file.name = f"/media/{real_path}"
+        self.plan.save(update_fields=["background_file"])
+
+        self.assertEqual(normalize_media_path(f"/media/{real_path}"), real_path)
+        self.assertEqual(normalize_media_path(f"/api/media/{real_path}"), real_path)
+        self.assertEqual(
+            protected_media_path(f"https://example.com/media/{real_path}"),
+            "/api/media/backgrounds/ancien%20legacy%20espace.png",
+        )
+
+        self.client.force_authenticate(user=self.user)
+        api_response = self.client.get(f"/api/plans/{self.plan.id}/")
+        self.assertEqual(api_response.status_code, 200)
+        self.assertEqual(
+            api_response.data["background_file"],
+            "http://testserver/api/media/backgrounds/ancien%20legacy%20espace.png",
+        )
+
+        self.client.force_authenticate(user=None)
+        self._use_media_cookie(self.user)
+        response = self.client.get("/api/media/backgrounds/ancien%20legacy%20espace.png")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/png")
+
+    @override_settings(MEDIA_USE_X_ACCEL_REDIRECT=True, MEDIA_X_ACCEL_LOCATION='/protected-media/')
+    def test_x_accel_redirect_is_once_encoded_for_existing_plan_backgrounds(self):
+        real_path = "backgrounds/ancien plan étage espace.png"
+        self._store_media_bytes(real_path, _png_bytes())
+        self.plan.background_file.name = real_path
+        self.plan.save(update_fields=["background_file"])
+        self._use_media_cookie(self.user)
+
+        response = self.client.get("/api/media/backgrounds/ancien%2520plan%2520%C3%A9tage%2520espace.png")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["X-Accel-Redirect"],
+            "/protected-media/backgrounds/ancien%20plan%20%C3%A9tage%20espace.png",
+        )
+        self.assertEqual(response["Content-Type"], "image/png")
+        self.assertNotIn("%2520", response["X-Accel-Redirect"])
+        self.assertNotIn("%25C3", response["X-Accel-Redirect"])
 
     def test_protected_media_does_not_use_the_generic_anonymous_quota(self):
         from .media_views import ProtectedMediaView
@@ -2380,6 +2499,108 @@ class ProtectedMediaTests(_PlanFactoryMixin, TestCase):
         finally:
             default_storage.delete(name)
 
+    def test_protected_media_url_is_encoded_once_for_real_pictogram_names(self):
+        from .media_access import build_protected_media_url, normalize_media_path, protected_media_path
+
+        real_names = [
+            *self.REAL_NF_X_PICTOGRAM_NAMES,
+            "vous etes ici.svg",
+            "Sortie 🚪 spéciale.svg",
+        ]
+
+        for filename in real_names:
+            filesystem_path = f"nf_x-picto/{filename}"
+            expected_url = f"/api/media/{quote(filesystem_path, safe='/')}"
+            once_encoded_path = expected_url.removeprefix("/api/media/")
+            twice_encoded_path = quote(once_encoded_path, safe="/")
+            with self.subTest(path=filesystem_path):
+                self.assertEqual(normalize_media_path(filesystem_path), filesystem_path)
+                self.assertEqual(normalize_media_path(once_encoded_path), filesystem_path)
+                self.assertEqual(normalize_media_path(twice_encoded_path), filesystem_path)
+                self.assertEqual(protected_media_path(filesystem_path), expected_url)
+                self.assertEqual(protected_media_path(once_encoded_path), expected_url)
+                self.assertEqual(protected_media_path(twice_encoded_path), expected_url)
+                self.assertNotIn("%2520", expected_url)
+                self.assertNotIn("%25C3", expected_url)
+                self.assertNotIn("%25E2", expected_url)
+                self.assertNotIn("%25F0", expected_url)
+
+        request = self.client.get("/api/plans/").wsgi_request
+        absolute = build_protected_media_url(request, "nf_x-picto/vous%20etes%20ici.svg")
+        self.assertTrue(absolute.endswith("/api/media/nf_x-picto/vous%20etes%20ici.svg"))
+        self.assertNotIn("%2520", absolute)
+
+    def test_pictogram_api_returns_once_encoded_urls_for_real_library_names(self):
+        svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"/>'
+        saved = [
+            default_storage.save(f"nf_x-picto/{filename}", ContentFile(svg))
+            for filename in self.REAL_NF_X_PICTOGRAM_NAMES
+        ]
+        self.client.force_authenticate(user=self.user)
+
+        try:
+            response = self.client.get("/api/plans/pictograms/")
+            self.assertEqual(response.status_code, 200)
+            urls_by_file = {item["file_name"]: item["url"] for item in response.data}
+
+            for filename in self.REAL_NF_X_PICTOGRAM_NAMES:
+                with self.subTest(filename=filename):
+                    url = urls_by_file[filename]
+                    self.assertIn(f"/api/media/{quote(f'nf_x-picto/{filename}', safe='/')}", url)
+                    self.assertNotIn("%2520", url)
+                    self.assertNotIn("%25C3", url)
+                    self.assertNotIn("%25E2", url)
+        finally:
+            for name in saved:
+                default_storage.delete(name)
+
+    def test_protected_media_route_accepts_once_and_twice_encoded_real_svg_names(self):
+        svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"/>'
+        names = [f"nf_x-picto/{filename}" for filename in self.REAL_NF_X_PICTOGRAM_NAMES]
+        saved = [default_storage.save(name, ContentFile(svg)) for name in names]
+        self._use_media_cookie(self.user)
+
+        try:
+            for filesystem_path in names:
+                once_encoded_path = quote(filesystem_path, safe="/")
+                twice_encoded_path = quote(once_encoded_path, safe="/")
+                for attempt in (once_encoded_path, twice_encoded_path):
+                    with self.subTest(attempt=attempt):
+                        response = self.client.get(f"/api/media/{attempt}")
+                        self.assertEqual(response.status_code, 200)
+                        self.assertEqual(response["Content-Type"], "image/svg+xml")
+                        self.assertNotIn("application/json", response["Content-Type"])
+                        self.assertNotIn("text/html", response["Content-Type"])
+                        self.assertTrue(b"<svg" in b"".join(response.streaming_content))
+        finally:
+            for name in saved:
+                default_storage.delete(name)
+
+    @override_settings(MEDIA_USE_X_ACCEL_REDIRECT=True, MEDIA_X_ACCEL_LOCATION='/protected-media/')
+    def test_x_accel_redirect_is_once_encoded_for_real_svg_names(self):
+        svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"/>'
+        names = [f"nf_x-picto/{filename}" for filename in self.REAL_NF_X_PICTOGRAM_NAMES]
+        saved = [default_storage.save(name, ContentFile(svg)) for name in names]
+        self._use_media_cookie(self.user)
+
+        try:
+            for filesystem_path in names:
+                once_encoded_path = quote(filesystem_path, safe="/")
+                twice_encoded_path = quote(once_encoded_path, safe="/")
+                with self.subTest(path=filesystem_path):
+                    response = self.client.get(f"/api/media/{twice_encoded_path}")
+                    self.assertEqual(response.status_code, 200)
+                    redirect = response["X-Accel-Redirect"]
+                    self.assertEqual(redirect, f"/protected-media/{once_encoded_path}")
+                    self.assertNotIn("%2520", redirect)
+                    self.assertNotIn("%25C3", redirect)
+                    self.assertNotIn("%25E2", redirect)
+                    self.assertNotIn("%25F0", redirect)
+                    self.assertEqual(response["Content-Type"], "image/svg+xml")
+        finally:
+            for name in saved:
+                default_storage.delete(name)
+
     def test_path_traversal_is_refused(self):
         self.client.force_authenticate(user=self.user)
         for attempt in (
@@ -2421,7 +2642,7 @@ class ProtectedMediaTests(_PlanFactoryMixin, TestCase):
                 self.assertIn(self.client.get(f"/api/media/{attempt}").status_code, (403, 404))
 
     def test_a_svg_is_served_as_an_attachment_not_inline(self):
-        """Servi en ligne, un SVG s'exécuterait sur l'origine de l'application."""
+        """SVG files remain protected, but are served with their real image type."""
         self.plan.background_file.save(
             "essai-media.svg",
             ContentFile(b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"/>'),
@@ -2430,8 +2651,8 @@ class ProtectedMediaTests(_PlanFactoryMixin, TestCase):
         self._use_media_cookie(self.user)
         response = self.client.get(f"/api/media/{self.plan.background_file.name}")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "application/octet-stream")
-        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(response["Content-Type"], "image/svg+xml")
+        self.assertNotIn("attachment", response.get("Content-Disposition", ""))
 
     @override_settings(MEDIA_USE_X_ACCEL_REDIRECT=True, MEDIA_X_ACCEL_LOCATION='/protected-media/')
     def test_production_delegates_the_transfer_to_nginx(self):

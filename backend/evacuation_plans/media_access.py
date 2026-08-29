@@ -10,7 +10,7 @@ le transfert à la location Nginx ``internal`` via ``X-Accel-Redirect``.
 """
 
 import os
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -18,6 +18,46 @@ from django.core import signing
 from django.utils.crypto import constant_time_compare
 
 MEDIA_SESSION_SALT = 'evacstudio.media-session.v1'
+
+
+def decode_media_path(raw_path):
+    """Decode URL escaping until the filesystem path is reached.
+
+    Local Django tests usually pass decoded path segments to the view, while
+    production stacks can forward an already-escaped path. Decoding a bounded
+    number of times makes ``%20`` and accidental ``%2520`` converge to the same
+    filesystem name, then the realpath check below keeps traversal attempts out.
+    """
+    candidate = str(raw_path)
+    for _ in range(3):
+        decoded = unquote(candidate)
+        if decoded == candidate:
+            break
+        candidate = decoded
+    return candidate
+
+
+def strip_media_url_prefix(raw_path):
+    """Accept legacy/public media URLs and return the stored relative path."""
+    candidate = decode_media_path(raw_path).replace('\\', '/').strip()
+    if '://' in candidate:
+        candidate = urlsplit(candidate).path
+    candidate = candidate.lstrip('/')
+
+    prefixes = []
+    for prefix in (
+        getattr(settings, 'PROTECTED_MEDIA_URL', ''),
+        getattr(settings, 'MEDIA_URL', ''),
+        '/api/media/',
+    ):
+        normalized_prefix = str(prefix or '').strip('/')
+        if normalized_prefix:
+            prefixes.append(f'{normalized_prefix}/')
+
+    for prefix in sorted(set(prefixes), key=len, reverse=True):
+        if candidate.startswith(prefix):
+            return candidate[len(prefix):]
+    return candidate
 
 
 def normalize_media_path(raw_path):
@@ -30,7 +70,7 @@ def normalize_media_path(raw_path):
     if not raw_path:
         return None
 
-    candidate = str(raw_path).replace('\\', '/').lstrip('/')
+    candidate = strip_media_url_prefix(raw_path)
     if '\x00' in candidate:
         return None
 
@@ -50,7 +90,26 @@ def protected_media_path(relative_path):
     normalized = normalize_media_path(relative_path)
     if normalized is None:
         return ''
-    return f'{settings.PROTECTED_MEDIA_URL}{quote(normalized)}'
+    return f'{settings.PROTECTED_MEDIA_URL}{quote(normalized, safe="/")}'
+
+
+def media_path_aliases(relative_path):
+    """Stored-name variants accepted for pre-protected-media rows."""
+    normalized = normalize_media_path(relative_path)
+    if normalized is None:
+        return []
+
+    encoded = quote(normalized, safe='/')
+    aliases = {normalized, encoded}
+    for prefix in (getattr(settings, 'MEDIA_URL', ''), getattr(settings, 'PROTECTED_MEDIA_URL', '')):
+        clean = str(prefix or '').strip('/')
+        if not clean:
+            continue
+        aliases.add(f'{clean}/{normalized}')
+        aliases.add(f'/{clean}/{normalized}')
+        aliases.add(f'{clean}/{encoded}')
+        aliases.add(f'/{clean}/{encoded}')
+    return sorted(aliases)
 
 
 def build_protected_media_url(request, relative_path):

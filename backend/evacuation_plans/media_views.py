@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # qu'un fichier ne soit jamais interprété par le navigateur.
 SAFE_INLINE_CONTENT_TYPES = {
     'image/png', 'image/jpeg', 'image/webp', 'image/gif',
-    'image/bmp', 'image/tiff', 'application/pdf',
+    'image/bmp', 'image/tiff', 'image/svg+xml', 'application/pdf',
 }
 
 
@@ -76,9 +76,9 @@ class ProtectedMediaView(APIView):
         content_type = (
             mimetypes.guess_type(relative_path)[0] or 'application/octet-stream'
         )
-        # Un SVG rendu en ligne s'exécute sur cette origine. Servi en octets
-        # bruts et en pièce jointe, il redevient un simple fichier — l'éditeur
-        # ne le charge que via <img>, ce qui reste possible.
+        # Uploaded SVG files are sanitised before storage, and the bundled
+        # pictogram library is trusted application data. Keep everything else as
+        # inert bytes so arbitrary uploads cannot become same-origin documents.
         if content_type not in SAFE_INLINE_CONTENT_TYPES:
             content_type = 'application/octet-stream'
 
@@ -88,7 +88,7 @@ class ProtectedMediaView(APIView):
             # le fichier ni occuper un worker pendant le transfert.
             response = HttpResponse(status=200)
             response['X-Accel-Redirect'] = (
-                f"{settings.MEDIA_X_ACCEL_LOCATION}{quote(relative_path)}"
+                f"{settings.MEDIA_X_ACCEL_LOCATION}{quote(relative_path, safe='/')}"
             )
             # Laisser Nginx fixer la longueur ; la conserver ici tronquerait.
             del response['Content-Type']
