@@ -3088,11 +3088,14 @@ class SyncIconsRobustnessTests(_PlanFactoryMixin, TestCase):
                     {"id": "point-a", "x": 10, "y": 20},
                     {"id": "point-b", "x": 30, "y": 40},
                 ],
+                "leader_color": "#e11d48",
             }],
             format="json",
         )
         self.assertEqual(valid.status_code, 200, valid.content)
-        self.assertEqual(len(self.plan.icons.get().leader_points), 2)
+        saved_icon = self.plan.icons.get()
+        self.assertEqual(len(saved_icon.leader_points), 2)
+        self.assertEqual(saved_icon.leader_color, "#e11d48")
 
         invalid = self.client.post(
             f"/api/plans/{self.plan.id}/sync-icons/",

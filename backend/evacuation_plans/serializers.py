@@ -548,7 +548,7 @@ class PlanIconSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanIcon
         fields = ['id', 'plan', 'icon_type', 'x', 'y', 'width', 'height', 'rotation', 'label',
-                  'anchor_x', 'anchor_y', 'leader_points', 'leader_width', 'framed', 'flip_x', 'flip_y',
+                  'anchor_x', 'anchor_y', 'leader_points', 'leader_width', 'leader_color', 'framed', 'flip_x', 'flip_y',
                   'lock_aspect_ratio', 'locked',
                   'visible', 'z_index', 'group_id', 'object_group_id', 'color',
                   'created_at', 'updated_at']
@@ -753,6 +753,14 @@ class SyncPlanIconSerializer(serializers.Serializer):
         validators=[validate_icon_leader_points],
     )
     leader_width = serializers.FloatField(required=False, min_value=0, default=2.0)
+    leader_color = serializers.RegexField(
+        r'^(#[0-9a-fA-F]{6})?$',
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        default='',
+        error_messages={'invalid': "La couleur du déport doit être au format #rrggbb."},
+    )
     framed = serializers.BooleanField(required=False, default=False)
     flip_x = serializers.BooleanField(required=False, default=False)
     flip_y = serializers.BooleanField(required=False, default=False)
