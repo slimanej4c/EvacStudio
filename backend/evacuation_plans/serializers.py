@@ -575,6 +575,9 @@ class PlanIconSerializer(serializers.ModelSerializer):
     def validate_leader_points(self, value):
         return validate_icon_leader_points(value)
 
+    def validate_leader_color(self, value):
+        return value or ''
+
 class PlanShapeListSerializer(serializers.ListSerializer):
     def validate(self, shapes):
         if sum(bool(shape.get('is_scale_calibration')) for shape in shapes) > 1:
@@ -778,6 +781,12 @@ class SyncPlanIconSerializer(serializers.Serializer):
         default='',
         error_messages={'invalid': "La couleur doit être au format #rrggbb."},
     )
+
+    def validate_leader_color(self, value):
+        return value or ''
+
+    def validate_color(self, value):
+        return value or ''
 
 
 class WatermarkConfigSerializer(serializers.Serializer):

@@ -2625,7 +2625,7 @@ const MAX_HISTORY_STEPS = 50;
       anchor_y: icon.anchor_y ?? null,
       leader_points: canvasIconLeaderPoints(icon),
       leader_width: normalizeCanvasLeaderWidth(icon.leader_width),
-      leader_color: icon.leader_color ?? null,
+      leader_color: icon.leader_color || "",
       framed: icon.framed ?? false,
       flip_x: icon.flip_x ?? false,
       flip_y: icon.flip_y ?? false,
