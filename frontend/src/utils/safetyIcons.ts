@@ -336,9 +336,15 @@ const normalisePictoName = (value: string) =>
 
 export function getIconLeaderColor(
   iconType: IconType,
-  options?: { leaderColor?: string | null; label?: string; definitions?: Record<IconType, SafetyIconDefinition> }
+  options?: {
+    leaderColor?: string | null;
+    iconColor?: string | null;
+    label?: string;
+    definitions?: Record<IconType, SafetyIconDefinition>;
+  }
 ): string {
-  if (options?.leaderColor) return options.leaderColor;
+  if (options?.leaderColor && options.leaderColor.trim()) return options.leaderColor.trim();
+  if (options?.iconColor && options.iconColor.trim()) return options.iconColor.trim();
   const normalised = normalisePictoName(`${iconType}`);
   if (PICTOGRAM_LEADER_COLORS[normalised]) return PICTOGRAM_LEADER_COLORS[normalised];
   const labelNorm = normalisePictoName(`${options?.label ?? options?.definitions?.[iconType]?.label ?? ""}`);
@@ -348,6 +354,8 @@ export function getIconLeaderColor(
   for (const key of Object.keys(PICTOGRAM_LEADER_COLORS)) {
     if (normalised.includes(key) || labelNorm.includes(key)) return PICTOGRAM_LEADER_COLORS[key];
   }
+  const defColor = options?.definitions?.[iconType]?.color;
+  if (defColor && defColor !== "#ffffff" && defColor !== "transparent") return defColor;
   return LEADER_COLOR_DARK;
 }
 

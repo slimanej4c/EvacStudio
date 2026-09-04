@@ -41,6 +41,8 @@ export interface CanvasIcon {
   leader_points?: CanvasLeaderPoint[];
   /** Leader-line stroke width (editable per icon). */
   leader_width?: number;
+  /** Leader-line color (editable per icon, defaults to icon color). */
+  leader_color?: string | null;
   /** When true, the pictogram is drawn inside a square frame. */
   framed?: boolean;
   /** When true, the pictogram artwork is mirrored horizontally. */
@@ -4204,6 +4206,8 @@ function PlanCanvas({
             // line and anchor dot use the pictogram's functional colour (red for
             // fire-fighting, green for escape, …) rather than a flat tint.
             const leaderColor = getIconLeaderColor(icon.icon_type, {
+              leaderColor: icon.leader_color,
+              iconColor: icon.color,
               label: iconDefinitions[icon.icon_type]?.label,
               definitions: iconDefinitions,
             });
