@@ -15,7 +15,7 @@ import PlanSituationModal from "@/components/PlanSituationModal";
 import { BrandLogo } from "@/components/BrandLogo";
 import SheetTemplateLibraryModal, { SheetTemplateLibraryItem } from "@/components/SheetTemplateLibraryModal";
 import LayerPanel, { EditorLayerItem, LayerMoveDirection } from "@/components/LayerPanel";
-import { IconType, SAFETY_ICONS, SAFETY_RED, SafetyIconDefinition, buildIconPreviewSource, buildStretchableIconSource, getIconImageSource, isYouAreHereIcon, inferPictogramColor, normalizePictogramColorOverride, withLegacyTemplatePictogramAliases } from "@/utils/safetyIcons";
+import { IconType, SAFETY_ICONS, SAFETY_RED, SafetyIconDefinition, buildIconPreviewSource, buildStretchableIconSource, getIconImageSource, getIconLeaderColor, isYouAreHereIcon, inferPictogramColor, normalizePictogramColorOverride, withLegacyTemplatePictogramAliases } from "@/utils/safetyIcons";
 import { SafetyIconArtwork } from "@/components/SafetyIconArtwork";
 import { CanvasIcon, CanvasShape, CanvasText, CanvasPlanOverlay, CanvasPlanTransform, CanvasMultiSelection, ShapeKind, EraserShape, EraserTarget, PlanCanvasHandle, FONT_OPTIONS, MAIN_PLAN_ID, isPolygonTool, isPolygonShape, pointLabel, shapeWithoutPoint, boundsFromPoints, canvasIconLeaderPoints } from "@/components/PlanCanvas";
 import { buildApiUrl, imageCrossOrigin } from "@/lib/api";
@@ -817,6 +817,7 @@ interface EvacuationPlanBackend {
     anchor_y: number | null;
     leader_points?: Array<{ id: string; x: number; y: number }>;
     leader_width?: number;
+    leader_color?: string | null;
     framed?: boolean;
     flip_x?: boolean;
     color?: string;
@@ -1149,6 +1150,16 @@ const ICON_NON_STANDARD_COLOR_SWATCHES = [
   { value: "#7c3aed", label: "Violet" },
   { value: "#111827", label: "Noir" },
   { value: "#6b7280", label: "Gris" },
+] as const;
+
+const LEADER_COLOR_SWATCHES = [
+  { value: SAFETY_RED, label: "Rouge incendie" },
+  { value: "#00a651", label: "Vert évacuation" },
+  { value: "#3046b8", label: "Bleu obligation" },
+  { value: "#ffd500", label: "Jaune danger" },
+  { value: "#111827", label: "Noir" },
+  { value: "#6b7280", label: "Gris" },
+  { value: "#ffffff", label: "Blanc" },
 ] as const;
 
 const MAX_HISTORY_STEPS = 50;
@@ -1979,6 +1990,7 @@ const MAX_HISTORY_STEPS = 50;
             anchor_y: icon.anchor_y ?? null,
             leader_points: Array.isArray(icon.leader_points) ? icon.leader_points : [],
             leader_width: normalizeCanvasLeaderWidth(icon.leader_width),
+            leader_color: icon.leader_color || null,
             framed: icon.framed ?? false,
             flip_x: icon.flip_x ?? false,
             color: icon.color ?? "",
@@ -2096,8 +2108,8 @@ const MAX_HISTORY_STEPS = 50;
           // The very same fields as buildEditableSnapshot, or the editor would
           // report unsaved changes before the user has touched anything.
           setSavedSnapshot(JSON.stringify({
-            icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
-              icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
+            icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_color, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
+              icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_color: leader_color || "", framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
             })),
             shapes: canvasShapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m }) => ({
               shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m,
@@ -2456,8 +2468,8 @@ const MAX_HISTORY_STEPS = 50;
   // tempId/id) so a deep-equality check detects any real change.
   const buildEditableSnapshot = () =>
     JSON.stringify({
-      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
-        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
+      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_color, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
+        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_color: leader_color || "", framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
       })),
       shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m }) => ({
         shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m,
@@ -2613,6 +2625,7 @@ const MAX_HISTORY_STEPS = 50;
       anchor_y: icon.anchor_y ?? null,
       leader_points: canvasIconLeaderPoints(icon),
       leader_width: normalizeCanvasLeaderWidth(icon.leader_width),
+      leader_color: icon.leader_color ?? null,
       framed: icon.framed ?? false,
       flip_x: icon.flip_x ?? false,
       flip_y: icon.flip_y ?? false,
@@ -4917,7 +4930,12 @@ const MAX_HISTORY_STEPS = 50;
 
   const iconToSvg = (icon: CanvasIcon) => {
     const definition = iconDefinitions[icon.icon_type];
-    const leaderColor = definition?.color || "#22c55e";
+    const leaderColor = getIconLeaderColor(icon.icon_type, {
+      leaderColor: icon.leader_color,
+      iconColor: icon.color,
+      label: definition?.label,
+      definitions: iconDefinitions,
+    });
     const parts: string[] = [];
     const centerX = icon.x + icon.width / 2;
     const centerY = icon.y + icon.height / 2;
@@ -7547,6 +7565,13 @@ const MAX_HISTORY_STEPS = 50;
       )));
       return;
     }
+    if (field === "leader_color") {
+      const leaderColor = typeof value === "string" ? value.trim() : null;
+      setIcons((currentIcons) => currentIcons.map((icon) => (
+        icon.tempId === selectedIconId ? { ...icon, leader_color: leaderColor || null } : icon
+      )));
+      return;
+    }
     setIcons(
       (currentIcons) => currentIcons.map((icon) => {
         if (icon.tempId === selectedIconId) {
@@ -7759,6 +7784,7 @@ const MAX_HISTORY_STEPS = 50;
           anchor_y: selectedIcon.anchor_y ?? null,
           leader_points: canvasIconLeaderPoints(selectedIcon),
           leader_width: normalizeCanvasLeaderWidth(selectedIcon.leader_width),
+          leader_color: selectedIcon.leader_color ?? null,
           framed: selectedIcon.framed ?? false,
           flip_x: selectedIcon.flip_x ?? false,
           flip_y: selectedIcon.flip_y ?? false,
@@ -7792,6 +7818,7 @@ const MAX_HISTORY_STEPS = 50;
       anchor_y: source.anchor_y ?? null,
       leader_points: Array.isArray(source.leader_points) ? source.leader_points : [],
       leader_width: normalizeCanvasLeaderWidth(source.leader_width),
+      leader_color: source.leader_color ?? null,
       framed: source.framed ?? false,
       flip_x: source.flip_x ?? false,
       flip_y: source.flip_y ?? false,
@@ -12910,6 +12937,101 @@ const MAX_HISTORY_STEPS = 50;
                             onChange={(event) => handleUpdateSelectedIcon("leader_width", event.currentTarget.valueAsNumber)}
                             className="h-1 w-full cursor-pointer accent-emerald-500"
                           />
+                        </div>
+
+                        {/* Leader line colour */}
+                        <div className="mb-2 rounded border border-white/10 bg-white/[0.03] p-2">
+                          <div className="mb-1.5 flex items-center justify-between">
+                            <span className="text-[10px] font-medium text-neutral-400">
+                              Couleur de la ligne
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className="inline-block h-3 w-3 rounded-full border border-white/30 shadow-sm"
+                                style={{
+                                  backgroundColor: getIconLeaderColor(selectedIcon.icon_type, {
+                                    leaderColor: selectedIcon.leader_color,
+                                    iconColor: selectedIcon.color,
+                                    label: iconDefinitions[selectedIcon.icon_type]?.label,
+                                    definitions: iconDefinitions,
+                                  }),
+                                }}
+                                title="Couleur actuelle de la ligne et du point d'ancrage"
+                              />
+                              <span className="font-mono text-[9px] uppercase text-neutral-400">
+                                {selectedIcon.leader_color || "Identique picto"}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateSelectedIcon("leader_color", "")}
+                              className={`rounded border px-2 py-1 text-[10px] font-medium transition-colors ${
+                                !selectedIcon.leader_color
+                                  ? "border-sky-500 bg-sky-500/20 text-sky-300"
+                                  : "border-black/50 bg-[#1b1b1d] text-neutral-300 hover:bg-white/10"
+                              }`}
+                              title="La ligne prend automatiquement la même couleur que le pictogramme déporté"
+                            >
+                              Identique au picto
+                            </button>
+                            {LEADER_COLOR_SWATCHES.map((swatch) => (
+                              <button
+                                key={swatch.value}
+                                type="button"
+                                onClick={() => handleUpdateSelectedIcon("leader_color", swatch.value)}
+                                className={`h-6 w-6 cursor-pointer rounded border transition-transform hover:scale-110 ${
+                                  selectedIcon.leader_color?.toLowerCase() === swatch.value.toLowerCase()
+                                    ? "border-white ring-2 ring-sky-400"
+                                    : "border-black/50"
+                                }`}
+                                style={{ backgroundColor: swatch.value }}
+                                title={swatch.label}
+                                aria-label={swatch.label}
+                              />
+                            ))}
+                          </div>
+
+                          {/* Custom colour picker */}
+                          <div className="mt-2 flex items-center gap-2 border-t border-white/5 pt-1.5">
+                            <input
+                              type="color"
+                              value={normalizeHexColor(
+                                selectedIcon.leader_color
+                                  || getIconLeaderColor(selectedIcon.icon_type, {
+                                    iconColor: selectedIcon.color,
+                                    label: iconDefinitions[selectedIcon.icon_type]?.label,
+                                    definitions: iconDefinitions,
+                                  }),
+                                "#22c55e"
+                              )}
+                              onChange={(event) => handleUpdateSelectedIcon("leader_color", event.target.value.toLowerCase())}
+                              className="h-7 w-9 shrink-0 cursor-pointer rounded border border-white/20 bg-transparent p-0"
+                              title="Choisir une couleur manuelle pour la ligne de déport"
+                              aria-label="Choisir une couleur manuelle pour la ligne de déport"
+                            />
+                            <input
+                              key={`leader-color-${selectedIcon.tempId}-${selectedIcon.leader_color || "auto"}`}
+                              defaultValue={selectedIcon.leader_color || ""}
+                              onBlur={(event) => {
+                                const val = event.target.value.trim();
+                                if (!val) {
+                                  handleUpdateSelectedIcon("leader_color", "");
+                                } else if (isValidHexColor(val)) {
+                                  handleUpdateSelectedIcon("leader_color", normalizeHexColor(val, "#22c55e"));
+                                }
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") event.currentTarget.blur();
+                              }}
+                              placeholder="Code HEX manuel"
+                              spellCheck={false}
+                              className="min-w-0 flex-1 rounded border border-white/10 bg-black/20 px-2 py-1 font-mono text-[10px] uppercase text-neutral-200 outline-none focus:border-sky-400"
+                              aria-label="Code HEX de la couleur de déport"
+                            />
+                          </div>
                         </div>
                         <button
                           onClick={handleClearIconOffset}
