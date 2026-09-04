@@ -46,6 +46,59 @@ export function normalizeTransformedCanvasIconDimension(
   return normalizeCanvasIconDimension(numericValue, previousValue);
 }
 
+/**
+ * Fit a pictogram box to its artwork ratio while keeping the dragged size.
+ * The longest requested side drives the result, then both minimum and maximum
+ * limits are applied together so clamping can never deform the artwork.
+ */
+export function normalizeCanvasIconSizeToAspectRatio(
+  width: unknown,
+  height: unknown,
+  aspectRatio: unknown,
+  fallback: { width: number; height: number } = {
+    width: MIN_CANVAS_ICON_DIMENSION,
+    height: MIN_CANVAS_ICON_DIMENSION,
+  }
+): { width: number; height: number } {
+  const fallbackWidth = normalizeCanvasIconDimension(fallback.width);
+  const fallbackHeight = normalizeCanvasIconDimension(fallback.height);
+  const numericRatio = Number(aspectRatio);
+  const fallbackRatio = fallbackWidth / Math.max(1, fallbackHeight);
+  const safeRatio = Number.isFinite(numericRatio) && numericRatio > 0
+    ? Math.min(
+        MAX_CANVAS_ICON_DIMENSION / MIN_CANVAS_ICON_DIMENSION,
+        Math.max(
+          MIN_CANVAS_ICON_DIMENSION / MAX_CANVAS_ICON_DIMENSION,
+          numericRatio,
+        ),
+      )
+    : fallbackRatio;
+  const numericWidth = Number(width);
+  const numericHeight = Number(height);
+  const requestedLongSide = Math.max(
+    Number.isFinite(numericWidth) ? Math.abs(numericWidth) : fallbackWidth,
+    Number.isFinite(numericHeight) ? Math.abs(numericHeight) : fallbackHeight,
+  );
+  const minimumLongSide = safeRatio >= 1
+    ? MIN_CANVAS_ICON_DIMENSION * safeRatio
+    : MIN_CANVAS_ICON_DIMENSION / safeRatio;
+  const longSide = Math.min(
+    MAX_CANVAS_ICON_DIMENSION,
+    Math.max(minimumLongSide, requestedLongSide),
+  );
+
+  if (safeRatio >= 1) {
+    return {
+      width: Math.round(longSide),
+      height: Math.round(longSide / safeRatio),
+    };
+  }
+  return {
+    width: Math.round(longSide * safeRatio),
+    height: Math.round(longSide),
+  };
+}
+
 export function normalizeCanvasLeaderWidth(
   value: unknown,
   fallback: number = DEFAULT_CANVAS_LEADER_WIDTH

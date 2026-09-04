@@ -86,6 +86,7 @@ from .views import (
     RegisterView,
     CurrentUserView,
     EvacuationPlanViewSet,
+    PlanFolderViewSet,
     PlanIconViewSet,
     UserXaiSettingsView,
     SaveUserXaiSettingsView,
@@ -99,6 +100,7 @@ from .views import (
 
 router = DefaultRouter()
 router.register(r'plans', EvacuationPlanViewSet, basename='plan')
+router.register(r'plan-folders', PlanFolderViewSet, basename='plan-folder')
 router.register(r'evacuation-plans', EvacuationPlanViewSet, basename='evacuation-plan')
 router.register(r'icons', PlanIconViewSet, basename='icon')
 

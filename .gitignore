@@ -13,17 +13,15 @@ backend/venv/
 backend/.venv/
 
 # Base de données de développement et fichiers téléversés
-# Les deux bibliothèques de pictogrammes SVG sont versionnées afin qu'elles
-# soient installées sur le serveur par `git pull`. Les autres médias restent
-# locaux au poste ou au serveur.
+# Les catalogues structurés de pictogrammes SVG sont versionnés afin qu'ils
+# soient installés sur le serveur par `git pull`. Les médias téléversés et les
+# anciens dossiers plats restent locaux au poste ou au serveur.
 backend/db.sqlite3
 backend/media/*
-!backend/media/nf_x-picto/
-backend/media/nf_x-picto/*
-!backend/media/nf_x-picto/*.svg
-!backend/media/plan_picto/
-backend/media/plan_picto/*
-!backend/media/plan_picto/*.svg
+!backend/media/nf-x08-070-picto/
+!backend/media/nf-x08-070-picto/**
+!backend/media/autres-picto/
+!backend/media/autres-picto/**
 
 # macOS
 .DS_Store

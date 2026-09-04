@@ -2,7 +2,17 @@
 
 import React, { useMemo, useRef, useState } from "react";
 import { CopyPlus, FilePlus2, FileUp, Library, Loader2, Lock, Trash2, X } from "lucide-react";
-import type { SheetBlock, SheetTemplateKey } from "@/lib/sheetTemplates";
+import {
+  SHEET_DOCUMENT_TYPES,
+  SHEET_TEMPLATE_STANDARDS,
+} from "@/lib/sheetTemplates";
+import { SAFETY_RED } from "@/utils/safetyIcons";
+import type {
+  SheetBlock,
+  SheetDocumentTypeKey,
+  SheetTemplateKey,
+  SheetTemplateStandardKey,
+} from "@/lib/sheetTemplates";
 
 export interface SheetTemplateLibraryItem {
   id: string;
@@ -13,6 +23,8 @@ export interface SheetTemplateLibraryItem {
   height: number;
   blocks: SheetBlock[];
   kind: "builtin" | "custom";
+  standard: SheetTemplateStandardKey;
+  documentTypes: readonly SheetDocumentTypeKey[];
 }
 
 interface SheetTemplateLibraryModalProps {
@@ -37,7 +49,7 @@ const visibleFill = (value?: string) => {
 const pictogramColor = (block: SheetBlock) => {
   if (block.color) return block.color;
   const key = `${block.iconType || ""} ${block.label || ""}`.toLowerCase();
-  if (/extinct|incend|fire|ria|alarme/.test(key)) return "#e63329";
+  if (/extinct|incend|fire|ria|alarme/.test(key)) return SAFETY_RED;
   if (/sortie|evac|issue|rassemblement|vous etes ici/.test(key)) return "#00a651";
   return "#2563eb";
 };
@@ -152,14 +164,39 @@ export function SheetTemplateLibraryModal({
   const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null);
   const [importingPdf, setImportingPdf] = useState(false);
   const [pdfImportError, setPdfImportError] = useState("");
+  const [selectedStandard, setSelectedStandard] = useState<SheetTemplateStandardKey>("nfx08070");
+  const [selectedDocumentType, setSelectedDocumentType] = useState<SheetDocumentTypeKey | "all">("all");
   const pdfInputRef = useRef<HTMLInputElement>(null);
 
+  const standard = SHEET_TEMPLATE_STANDARDS[selectedStandard];
+  const documentTypeCounts = useMemo(() => {
+    const counts = Object.fromEntries(
+      standard.documentTypes.map((documentType) => [documentType, 0])
+    ) as Record<SheetDocumentTypeKey, number>;
+    items
+      .filter((item) => item.standard === selectedStandard)
+      .forEach((item) => {
+        item.documentTypes.forEach((documentType) => {
+          counts[documentType] = (counts[documentType] || 0) + 1;
+        });
+      });
+    return counts;
+  }, [items, selectedStandard, standard.documentTypes]);
+
+  const filteredItems = useMemo(
+    () => items.filter((item) =>
+      item.standard === selectedStandard
+      && (selectedDocumentType === "all" || item.documentTypes.includes(selectedDocumentType))
+    ),
+    [items, selectedDocumentType, selectedStandard]
+  );
+
   const selected = useMemo(
-    () => items.find((item) => item.id === selectedId)
-      || items.find((item) => item.id === activeItemId)
-      || items[0]
+    () => filteredItems.find((item) => item.id === selectedId)
+      || filteredItems.find((item) => item.id === activeItemId)
+      || filteredItems[0]
       || null,
-    [items, selectedId, activeItemId]
+    [filteredItems, selectedId, activeItemId]
   );
 
   const askForName = (action: "create" | "clone") => {
@@ -204,7 +241,7 @@ export function SheetTemplateLibraryModal({
     setNameAction("pdf");
   };
 
-  if (!open || !selected) return null;
+  if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/75 p-4 backdrop-blur-md">
@@ -224,6 +261,64 @@ export function SheetTemplateLibraryModal({
           </button>
         </div>
 
+        <div className="shrink-0 border-b border-white/10 bg-black/15 px-5 py-4">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end">
+            <label className="block w-full shrink-0 xl:w-56">
+              <span className="mb-1.5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-neutral-400">
+                Norme
+                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[8px] text-emerald-300">Par défaut</span>
+              </span>
+              <select
+                value={selectedStandard}
+                onChange={(event) => {
+                  setSelectedStandard(event.target.value as SheetTemplateStandardKey);
+                  setSelectedDocumentType("all");
+                  setSelectedId("");
+                }}
+                className="w-full rounded-xl border border-white/15 bg-[#1b1b1d] px-3 py-2.5 text-sm font-semibold text-white outline-none transition focus:border-brand-orange focus:ring-2 focus:ring-brand-orange/20"
+              >
+                {(Object.entries(SHEET_TEMPLATE_STANDARDS) as Array<[
+                  SheetTemplateStandardKey,
+                  (typeof SHEET_TEMPLATE_STANDARDS)[SheetTemplateStandardKey]
+                ]>).map(([standardKey, definition]) => (
+                  <option key={standardKey} value={standardKey}>{definition.label}</option>
+                ))}
+              </select>
+            </label>
+
+            <div className="min-w-0 flex-1">
+              <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-brand-orange">
+                Étape 1 — Type de document
+              </p>
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrer par type de document">
+                <button
+                  type="button"
+                  aria-pressed={selectedDocumentType === "all"}
+                  onClick={() => { setSelectedDocumentType("all"); setSelectedId(""); }}
+                  className={`rounded-xl border px-3 py-2 text-left text-xs font-semibold transition ${selectedDocumentType === "all" ? "border-brand-orange bg-brand-orange text-white shadow-lg shadow-brand-orange/10" : "border-white/10 bg-white/5 text-neutral-300 hover:border-white/25 hover:bg-white/10"}`}
+                >
+                  Tous les types <span className="ml-1 text-[10px] opacity-70">{items.filter((item) => item.standard === selectedStandard).length}</span>
+                </button>
+                {standard.documentTypes.map((documentType) => {
+                  const active = selectedDocumentType === documentType;
+                  return (
+                    <button
+                      key={documentType}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => { setSelectedDocumentType(documentType); setSelectedId(""); }}
+                      className={`rounded-xl border px-3 py-2 text-left text-xs font-semibold transition ${active ? "border-brand-orange bg-brand-orange text-white shadow-lg shadow-brand-orange/10" : "border-white/10 bg-white/5 text-neutral-300 hover:border-white/25 hover:bg-white/10"}`}
+                    >
+                      {SHEET_DOCUMENT_TYPES[documentType].label}
+                      <span className="ml-1 text-[10px] opacity-70">{documentTypeCounts[documentType]}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(380px,0.9fr)_minmax(480px,1.3fr)]">
           <div className="min-h-0 overflow-y-auto border-r border-white/10 p-4">
             <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -241,19 +336,19 @@ export function SheetTemplateLibraryModal({
                 <FileUp className="h-4 w-4" />
                 Importer un PDF
               </button>
-              <button type="button" onClick={() => askForName("create")} className="inline-flex items-center gap-2 rounded-lg bg-brand-orange px-3 py-2 text-xs font-bold text-white transition hover:bg-brand-red">
+              <button type="button" disabled={!selected} onClick={() => askForName("create")} className="inline-flex items-center gap-2 rounded-lg bg-brand-orange px-3 py-2 text-xs font-bold text-white transition hover:bg-brand-red disabled:cursor-not-allowed disabled:opacity-40">
                 <FilePlus2 className="h-4 w-4" />
                 Nouveau template
               </button>
-              <button type="button" onClick={() => askForName("clone")} className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-neutral-200 transition hover:bg-white/10">
+              <button type="button" disabled={!selected} onClick={() => askForName("clone")} className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-neutral-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40">
                 <CopyPlus className="h-4 w-4" />
                 Cloner le modèle choisi
               </button>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
-              {items.map((item) => {
-                const active = item.id === selected.id;
+              {filteredItems.map((item) => {
+                const active = item.id === selected?.id;
                 return (
                   <button
                     key={item.id}
@@ -271,20 +366,44 @@ export function SheetTemplateLibraryModal({
                           {item.kind === "builtin" ? "Par défaut verrouillé" : "Personnel"}
                         </span>
                       </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {item.documentTypes.map((documentType) => (
+                          <span key={documentType} className="rounded-md bg-white/[0.07] px-1.5 py-1 text-[9px] font-semibold text-neutral-400">
+                            {SHEET_DOCUMENT_TYPES[documentType].label}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   </button>
                 );
               })}
+              {!filteredItems.length && (
+                <div className="col-span-full rounded-xl border border-dashed border-white/15 bg-black/20 px-5 py-10 text-center">
+                  <p className="text-sm font-semibold text-neutral-200">Aucun template pour ce type</p>
+                  <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+                    La catégorie est prête pour les futurs modèles conformes à {standard.label}.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 
           <div className="flex min-h-0 flex-col bg-[#1b1b1d]">
-            <div className="shrink-0 border-b border-white/10 px-5 py-4">
+            {selected ? <>
+              <div className="shrink-0 border-b border-white/10 px-5 py-4">
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-brand-orange">Aperçu sélectionné</p>
                   <h3 className="mt-1 text-lg font-bold text-white">{selected.name}</h3>
                   <p className="mt-1 max-w-2xl text-xs leading-relaxed text-neutral-400">{selected.description}</p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <span className="rounded-md bg-emerald-500/10 px-2 py-1 text-[9px] font-bold text-emerald-300">{SHEET_TEMPLATE_STANDARDS[selected.standard].label}</span>
+                    {selected.documentTypes.map((documentType) => (
+                      <span key={documentType} className="rounded-md bg-brand-orange/10 px-2 py-1 text-[9px] font-bold text-brand-orange">
+                        {SHEET_DOCUMENT_TYPES[documentType].label}
+                      </span>
+                    ))}
+                  </div>
                 </div>
                 <span className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-semibold text-neutral-400">
                   {selected.width < selected.height ? "Portrait" : "Paysage"}
@@ -318,6 +437,15 @@ export function SheetTemplateLibraryModal({
                 </button>
               )}
             </div>
+            </> : (
+              <div className="flex min-h-0 flex-1 items-center justify-center p-8 text-center">
+                <div>
+                  <Library className="mx-auto h-9 w-9 text-neutral-600" />
+                  <p className="mt-3 text-sm font-semibold text-neutral-300">Aucun aperçu disponible</p>
+                  <p className="mt-1 text-xs text-neutral-500">Choisissez un autre type de document.</p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -334,10 +462,10 @@ export function SheetTemplateLibraryModal({
                   </h3>
                   <p className="mt-1 text-xs leading-relaxed text-neutral-400">
                     {nameAction === "clone"
-                      ? `Une copie indépendante de « ${selected.name} » sera créée.`
+                      ? `Une copie indépendante de « ${selected?.name || "ce template"} » sera créée.`
                       : nameAction === "pdf"
                         ? `Chaque page de « ${pendingPdfFile?.name || "ce PDF"} » deviendra un template personnel avec un fond verrouillé.`
-                      : `Le nouveau template utilisera le format de « ${selected.name} ».`}
+                      : `Le nouveau template utilisera le format de « ${selected?.name || "ce template"} ».`}
                   </p>
                 </div>
               </div>

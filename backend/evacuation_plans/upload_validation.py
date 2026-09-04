@@ -154,9 +154,7 @@ def validate_background_upload(upload):
         return 'pdf'
 
     if extension == '.svg':
-        # Imported here: the sanitiser lives with the pictogram code, and
-        # importing views at module level would close an import cycle.
-        from .views import validate_and_sanitize_pictogram_svg
+        from .pictogram_security import validate_and_sanitize_pictogram_svg
 
         sanitized, error = validate_and_sanitize_pictogram_svg(content)
         if error:

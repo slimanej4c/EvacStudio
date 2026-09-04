@@ -24,6 +24,37 @@ export const SHEET_HEIGHT = 1131;
 export const PORTRAIT_SHEET_WIDTH = SHEET_HEIGHT;
 export const PORTRAIT_SHEET_HEIGHT = SHEET_WIDTH;
 
+/**
+ * Document families are deliberately independent from the template keys.
+ * A standard owns the families it supports, while every template only declares
+ * its classification. Adding another standard later therefore does not require
+ * changing the library UI or the actual content of existing templates.
+ */
+export const SHEET_DOCUMENT_TYPES = {
+  evacuation: { label: "Plan d’évacuation" },
+  intervention: { label: "Plan d’intervention" },
+  room: { label: "Plan de chambre" },
+  instructions: { label: "Consignes seules" },
+  technical_safety: { label: "Plan technique de sécurité" },
+} as const;
+
+export type SheetDocumentTypeKey = keyof typeof SHEET_DOCUMENT_TYPES;
+
+export const SHEET_TEMPLATE_STANDARDS = {
+  nfx08070: {
+    label: "NF X 08-070",
+    documentTypes: [
+      "evacuation",
+      "intervention",
+      "room",
+      "instructions",
+      "technical_safety",
+    ] as const satisfies readonly SheetDocumentTypeKey[],
+  },
+} as const;
+
+export type SheetTemplateStandardKey = keyof typeof SHEET_TEMPLATE_STANDARDS;
+
 export type SheetBlockKind =
   | "background" // a locked full-sheet template image, drawn behind the plan
   | "band" // a coloured bar or pill — the section headings
@@ -71,6 +102,36 @@ export interface SheetBlock {
   locked?: boolean;
   /** Independent editor group. Members are selected and moved together. */
   objectGroupId?: string;
+  /** Plan-specific blocks are rendered with a template but never saved into it. */
+  planSpecificKind?: "situation";
+  /** Original reusable-template geometry retained while a plan-specific legend override is displayed. */
+  planLegendBaseLayout?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    rotation: number;
+    visible: boolean;
+    locked?: boolean;
+  };
+  /** Semantic role used by the situation controls and the future NF audit. */
+  situationRole?:
+    | "frame"
+    | "background"
+    | "building_outline"
+    | "assembly_point"
+    | "observer"
+    | "represented_zone"
+    | "road"
+    | "parking"
+    | "building"
+    | "other_building"
+    | "remote_equipment"
+    | "text"
+    | "arrow"
+    | "pictogram";
+  /** Original plan-space polygon retained for automatic situation-plan fitting. */
+  situationSourcePoints?: SheetShapePoint[];
 
   // ── Content ──────────────────────────────────────────────────────────────
   /** Title bar text. Empty or absent means no title bar. */
@@ -85,6 +146,8 @@ export interface SheetBlock {
   /** Mirror the pictogram artwork without changing its frame geometry. */
   flipX?: boolean;
   flipY?: boolean;
+  /** Pictograms preserve their original proportions unless explicitly unlocked. */
+  lockAspectRatio?: boolean;
   /** Geometry used by blocks created with the sheet drawing tools. */
   shapeType?: SheetShapeKind;
   shapePoints?: SheetShapePoint[];
@@ -127,6 +190,8 @@ export interface SheetBlock {
 export const SHEET_TEMPLATES = {
   nfx08070: {
     label: "NF X08-070",
+    standard: "nfx08070",
+    documentTypes: ["technical_safety"],
     width: SHEET_WIDTH,
     height: SHEET_HEIGHT,
     description:
@@ -134,6 +199,8 @@ export const SHEET_TEMPLATES = {
   },
   intervention_multiniveaux: {
     label: "Intervention multi-niveaux",
+    standard: "nfx08070",
+    documentTypes: ["intervention"],
     width: SHEET_WIDTH,
     height: SHEET_HEIGHT,
     description:
@@ -141,6 +208,8 @@ export const SHEET_TEMPLATES = {
   },
   evacuation_consigne_gauche: {
     label: "Évacuation avec consignes",
+    standard: "nfx08070",
+    documentTypes: ["evacuation"],
     width: SHEET_WIDTH,
     height: SHEET_HEIGHT,
     description:
@@ -148,6 +217,8 @@ export const SHEET_TEMPLATES = {
   },
   consignes_chambre: {
     label: "Consignes de chambre",
+    standard: "nfx08070",
+    documentTypes: ["room"],
     width: PORTRAIT_SHEET_WIDTH,
     height: PORTRAIT_SHEET_HEIGHT,
     description:
@@ -155,6 +226,8 @@ export const SHEET_TEMPLATES = {
   },
   official_a2_pay_pi: {
     label: "Officiel A2 PAY PI",
+    standard: "nfx08070",
+    documentTypes: ["intervention"],
     width: SHEET_WIDTH,
     height: SHEET_HEIGHT,
     paper: "a2",
@@ -162,6 +235,8 @@ export const SHEET_TEMPLATES = {
   },
   official_a3_pe_pay: {
     label: "Officiel A3 PE PAY",
+    standard: "nfx08070",
+    documentTypes: ["evacuation"],
     width: SHEET_WIDTH,
     height: SHEET_HEIGHT,
     paper: "a3",
@@ -169,6 +244,8 @@ export const SHEET_TEMPLATES = {
   },
   official_a3_pi_pay: {
     label: "Officiel A3 PI PAY",
+    standard: "nfx08070",
+    documentTypes: ["intervention"],
     width: SHEET_WIDTH,
     height: SHEET_HEIGHT,
     paper: "a3",
@@ -176,6 +253,8 @@ export const SHEET_TEMPLATES = {
   },
   official_a3_pi_port: {
     label: "Officiel A3 PI PORT",
+    standard: "nfx08070",
+    documentTypes: ["intervention"],
     width: PORTRAIT_SHEET_WIDTH,
     height: PORTRAIT_SHEET_HEIGHT,
     paper: "a3",
@@ -183,6 +262,8 @@ export const SHEET_TEMPLATES = {
   },
   official_a3_pe_ph_por: {
     label: "Officiel A3 PE PH POR",
+    standard: "nfx08070",
+    documentTypes: ["evacuation"],
     width: PORTRAIT_SHEET_WIDTH,
     height: PORTRAIT_SHEET_HEIGHT,
     paper: "a3",
@@ -190,6 +271,8 @@ export const SHEET_TEMPLATES = {
   },
   official_ph_pe_a3_pay: {
     label: "Officiel PH PE A3 PAY",
+    standard: "nfx08070",
+    documentTypes: ["evacuation"],
     width: SHEET_WIDTH,
     height: SHEET_HEIGHT,
     paper: "a3",
@@ -197,6 +280,8 @@ export const SHEET_TEMPLATES = {
   },
   official_ph_pi_a3_pay: {
     label: "Officiel PH PI A3 PAY",
+    standard: "nfx08070",
+    documentTypes: ["intervention"],
     width: SHEET_WIDTH,
     height: SHEET_HEIGHT,
     paper: "a3",
@@ -204,6 +289,8 @@ export const SHEET_TEMPLATES = {
   },
   official_pi_a3_ph_por: {
     label: "Officiel PI A3 PH POR",
+    standard: "nfx08070",
+    documentTypes: ["intervention"],
     width: PORTRAIT_SHEET_WIDTH,
     height: PORTRAIT_SHEET_HEIGHT,
     paper: "a3",
@@ -211,6 +298,8 @@ export const SHEET_TEMPLATES = {
   },
   official_psi_a3_ph_pay: {
     label: "Officiel PSI A3 PH PAY",
+    standard: "nfx08070",
+    documentTypes: ["technical_safety"],
     width: SHEET_WIDTH,
     height: SHEET_HEIGHT,
     paper: "a3",
@@ -218,6 +307,8 @@ export const SHEET_TEMPLATES = {
   },
   official_psi_ph_a3_por: {
     label: "Officiel PSI PH A3 POR",
+    standard: "nfx08070",
+    documentTypes: ["technical_safety"],
     width: PORTRAIT_SHEET_WIDTH,
     height: PORTRAIT_SHEET_HEIGHT,
     paper: "a3",
@@ -225,6 +316,8 @@ export const SHEET_TEMPLATES = {
   },
   official_pe_a3_port: {
     label: "Officiel PE A3 PORT",
+    standard: "nfx08070",
+    documentTypes: ["evacuation"],
     width: PORTRAIT_SHEET_WIDTH,
     height: PORTRAIT_SHEET_HEIGHT,
     paper: "a3",
@@ -232,6 +325,8 @@ export const SHEET_TEMPLATES = {
   },
   official_pi_a2_port: {
     label: "Officiel PI A2 PORT",
+    standard: "nfx08070",
+    documentTypes: ["intervention"],
     width: PORTRAIT_SHEET_WIDTH,
     height: PORTRAIT_SHEET_HEIGHT,
     paper: "a2",
@@ -1032,7 +1127,7 @@ export function createEvacuationConsigneGaucheBlocks(
       id: "evac-green-header-picto",
       kind: "picto",
       label: "Pictogramme sortie du bandeau",
-      iconType: "issue_de_secours",
+      iconType: "nfx08070:01-evacuation:is_d",
       x: 488,
       y: 18,
       width: 58,
@@ -1111,7 +1206,7 @@ export function createEvacuationConsigneGaucheBlocks(
       id: "evac-green-assembly-picto",
       kind: "picto",
       label: "Pictogramme point de rassemblement",
-      iconType: "point_rassemblement",
+      iconType: "nfx08070:01-evacuation:rassemblement",
       x: leftX + 16,
       y: 770,
       width: 66,
@@ -1573,7 +1668,7 @@ export function createConsignesChambreBlocks(
       id: "room-assembly-picto",
       kind: "picto",
       label: "Pictogramme point de rassemblement",
-      iconType: "point_rassemblement",
+      iconType: "nfx08070:01-evacuation:rassemblement",
       x: 596,
       y: 958,
       width: 52,
@@ -3603,10 +3698,10 @@ export function createOfficialEvacuationPortraitFromPsiBlocks(
         text: "EN CAS DE FUMÉES, BAISSEZ VOUS.\nL'AIR FRAIS EST PRÈS DU SOL.",
         fontSize: 8.8,
       });
-    } else if (identity.includes("danger des fumees") || block.iconType === "urgence-01") {
+    } else if (identity.includes("danger des fumees") || block.iconType === "urgence-01" || block.iconType === "other:03-secours:urgence-01") {
       Object.assign(block, {
         label: "Danger des fumées",
-        iconType: "urgence-01",
+        iconType: "other:03-secours:urgence-01",
         x: 815,
         y: footerY + 32,
         width: 28,
@@ -3615,7 +3710,7 @@ export function createOfficialEvacuationPortraitFromPsiBlocks(
       });
     } else if (identity.includes("fermeture des portes coupe-feu")) {
       Object.assign(block, {
-        iconType: "Porte coupe-feu",
+        iconType: "nfx08070:03-lutte:pcf",
         x: 815,
         y: footerY + 72,
         width: 29,
@@ -3641,7 +3736,7 @@ export function createOfficialEvacuationPortraitFromPsiBlocks(
       id: `${template}-pe-fire-extinguisher`,
       kind: "picto",
       label: "Extincteur",
-      iconType: "exticnteur",
+      iconType: "nfx08070:03-lutte:3a-extincteurs:lutte_ext",
       x: 98,
       y: footerY + 114,
       width: 30,
@@ -3871,6 +3966,7 @@ export function createPictoBlock(
     rotation: 0,
     flipX: false,
     flipY: false,
+    lockAspectRatio: true,
     visible: true
   };
 }

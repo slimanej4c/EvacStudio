@@ -3,16 +3,47 @@ import logging
 from django.contrib.auth.models import User
 from django.contrib.auth.signals import user_logged_in, user_logged_out, user_login_failed
 from django.db import transaction
-from django.db.models.signals import post_delete, post_save, pre_save
+from django.db.models.signals import post_delete, post_migrate, post_save, pre_save
 from django.dispatch import receiver
 
 from .models import (
     EvacuationPlan,
     PlanOverlay,
+    PlanProjectAsset,
     SheetTemplateAsset,
     UserXaiSettings,
     WorkspaceMembership,
 )
+
+
+@receiver(post_delete, sender=PlanProjectAsset)
+def delete_project_asset_file_after_hard_delete(sender, instance, **kwargs):
+    """Only a true account/project purge removes autonomous asset bytes."""
+    if not instance.file or not instance.file.name:
+        return
+    name = instance.file.name
+    storage = instance.file.storage
+
+    def cleanup():
+        if PlanProjectAsset.objects.filter(file=name).exists():
+            return
+        if storage.exists(name):
+            storage.delete(name)
+
+    transaction.on_commit(cleanup)
+
+
+@receiver(post_migrate)
+def bootstrap_legacy_project_archives(sender, **kwargs):
+    if getattr(sender, 'name', '') != 'evacuation_plans':
+        return
+    from .project_archives import bootstrap_missing_project_archives
+
+    result = bootstrap_missing_project_archives()
+    if result['failed']:
+        logging.getLogger(__name__).error(
+            'project_archive.bootstrap_failed failures=%s', result['failed']
+        )
 
 
 @receiver(post_delete, sender=PlanOverlay)

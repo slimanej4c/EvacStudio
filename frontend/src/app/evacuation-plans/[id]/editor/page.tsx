@@ -5,22 +5,27 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter, useParams } from "next/navigation";
 import dynamic from "next/dynamic";
-import { AlignCenter, AlignLeft, AlignRight, ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Pencil, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw, Lock, Unlock, Stamp, Group as GroupIcon, Ungroup, BoxSelect, Layers3, Library, ImagePlus } from "lucide-react";
+import { AlignCenter, AlignLeft, AlignRight, ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Pencil, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw, Lock, Unlock, Stamp, Group as GroupIcon, Ungroup, BoxSelect, Layers3, Library, ImagePlus, Ruler, Hand } from "lucide-react";
 import { CropModal } from "@/components/CropModal";
 import { PolygonCropModal } from "@/components/PolygonCropModal";
 import { WatermarkModal } from "@/components/WatermarkModal";
+import PlanInformationModal from "@/components/PlanInformationModal";
+import ScaleCalibrationModal from "@/components/ScaleCalibrationModal";
+import PlanSituationModal from "@/components/PlanSituationModal";
 import { BrandLogo } from "@/components/BrandLogo";
 import SheetTemplateLibraryModal, { SheetTemplateLibraryItem } from "@/components/SheetTemplateLibraryModal";
 import LayerPanel, { EditorLayerItem, LayerMoveDirection } from "@/components/LayerPanel";
-import { IconType, SAFETY_ICONS, SafetyIconDefinition, buildIconPreviewSource, buildStretchableIconSource, getIconImageSource, isYouAreHereIcon, inferPictogramColor, normalizePictogramColorOverride } from "@/utils/safetyIcons";
+import { IconType, SAFETY_ICONS, SAFETY_RED, SafetyIconDefinition, buildIconPreviewSource, buildStretchableIconSource, getIconImageSource, isYouAreHereIcon, inferPictogramColor, normalizePictogramColorOverride, withLegacyTemplatePictogramAliases } from "@/utils/safetyIcons";
 import { SafetyIconArtwork } from "@/components/SafetyIconArtwork";
-import { CanvasIcon, CanvasShape, CanvasText, CanvasPlanOverlay, CanvasPlanTransform, CanvasMultiSelection, ShapeKind, EraserShape, EraserTarget, PlanCanvasHandle, FONT_OPTIONS, MAIN_PLAN_ID, isPolygonTool, isPolygonShape, pointLabel, shapeWithoutPoint, boundsFromPoints } from "@/components/PlanCanvas";
+import { CanvasIcon, CanvasShape, CanvasText, CanvasPlanOverlay, CanvasPlanTransform, CanvasMultiSelection, ShapeKind, EraserShape, EraserTarget, PlanCanvasHandle, FONT_OPTIONS, MAIN_PLAN_ID, isPolygonTool, isPolygonShape, pointLabel, shapeWithoutPoint, boundsFromPoints, canvasIconLeaderPoints } from "@/components/PlanCanvas";
 import { buildApiUrl, imageCrossOrigin } from "@/lib/api";
+import { loadPdfJs } from "@/lib/pdfjs";
 import {
   SHEET_WIDTH,
   SHEET_HEIGHT,
   SHEET_TEMPLATES,
   SheetBlock,
+  SheetPlanPlacement,
   SheetTemplateKey,
   createSheetBlocks,
   createSheetPlanPlacement,
@@ -32,16 +37,78 @@ import {
   upgradeConsignesChambreIndependentTextElements
 } from "@/lib/sheetTemplates";
 import type { SheetLegendEntry } from "@/components/SheetBlockNode";
+import type { AddSvgPictogramInput } from "@/components/IconToolbar";
 import { createDefaultWatermarkConfig, normalizeWatermarkConfig, WatermarkConfig } from "@/lib/watermark";
 import { DEFAULT_STUDIO_LOGO, getStoredStudioLogo, prepareLogoFile, storeStudioLogo } from "@/lib/brandLogos";
 import { buildCurvePathData } from "@/lib/curvePath";
+import {
+  DEFAULT_PLAN_INFORMATION_VISIBILITY,
+  EMPTY_PLAN_INFORMATION,
+  PLAN_INFORMATION_BLOCK_ID,
+  formatPlanReference,
+  getPlanInformationBlockLayout,
+  missingPlanInformationFields,
+  normalizePlanInformationVisibility,
+  readPlanInformation,
+  stripPlanInformationBlock,
+  upsertPlanInformationBlock,
+  type PlanInformationValues,
+  type PlanInformationVisibility,
+  type PlanInformationLayouts,
+} from "@/lib/planInformation";
+import {
+  applyPlanLegendLayout,
+  getPlanLegendLayout,
+  stripPlanLegendLayoutOverrides,
+  type PlanLegendLayouts,
+} from "@/lib/planLegend";
+import {
+  A2_MAX_SCALE_DENOMINATOR,
+  EXPORT_PAPER_SIZES,
+  RECOMMENDED_SCALE_DENOMINATOR,
+  STANDARD_MAX_SCALE_DENOMINATOR,
+  documentTypeLabel,
+  evaluateExportCompliance,
+  paperOptionsForDocumentType,
+  recommendedPaperForTemplate,
+  templateDocumentType,
+  type ExportPaperFormat,
+  type PlanDocumentType,
+  type ScaleCalibrationMeasurement,
+} from "@/lib/planCompliance";
 import type { ExportQuality } from "@/components/ExportButtons";
+import {
+  EMPTY_PLAN_SITUATION,
+  PLAN_SITUATION_BACKGROUND_ID,
+  PLAN_SITUATION_FRAME_ID,
+  PLAN_SITUATION_IMAGE_KEY,
+  addPlanSituationElement,
+  addPlanSituationPictogram,
+  createPlanSituation,
+  constrainPlanSituationBlocks,
+  decorateWithPlanSituation,
+  isPlanSituationBlock,
+  normalizePlanSituation,
+  orientPlanSituationFromObserver,
+  removePlanSituationBackground,
+  refreshPlanSituationVisibleArea,
+  refitPlanSituationTraces,
+  setPlanSituationOrientation,
+  situationBlocksFromSheet,
+  stripPlanSituationBlocks,
+  transformSituationChildrenForFrame,
+  traceIntoPlanSituation,
+  upsertPlanSituationBackground,
+  type PlanSituationRole,
+  type PlanSituationState,
+} from "@/lib/planSituation";
 import {
   MAX_CANVAS_ICON_DIMENSION,
   MAX_CANVAS_LEADER_WIDTH,
   MIN_CANVAS_ICON_DIMENSION,
   MIN_CANVAS_LEADER_WIDTH,
   normalizeCanvasIconDimension,
+  normalizeCanvasIconSizeToAspectRatio,
   normalizeCanvasLeaderWidth,
 } from "@/lib/canvasIconDimensions";
 import jsPDF from "jspdf";
@@ -72,14 +139,6 @@ const MAX_CANVAS_SIDE = 8192;
 const MAX_CANVAS_PIXELS = 24_000_000;
 
 const EXPORT_CANVAS_WIDTH = 1600;
-// A-series paper is 1:√2, so A4 and A3 share one design canvas — only the printed
-// size and the resulting resolution differ between them.
-const EXPORT_PAPER_SIZES = {
-  a2: { label: "A2", widthMm: 594, heightMm: 420 },
-  a4: { label: "A4", widthMm: 297, heightMm: 210 },
-  a3: { label: "A3", widthMm: 420, heightMm: 297 }
-} as const;
-type ExportPaperFormat = keyof typeof EXPORT_PAPER_SIZES;
 interface StoredSheetTemplateVersion {
   id: string;
   template: SheetTemplateKey;
@@ -88,11 +147,35 @@ interface StoredSheetTemplateVersion {
   planPlacement: { scale: number; offsetX: number; offsetY: number };
   createdAt: string;
   updatedAt: string;
+  owner?: number;
 }
+const DEFAULT_SHEET_PLAN_PLACEMENT: SheetPlanPlacement = {
+  scale: 100,
+  offsetX: 0,
+  offsetY: 0,
+};
+const normalizeSheetPlanPlacement = (value?: Partial<SheetPlanPlacement> | null): SheetPlanPlacement => ({
+  scale: typeof value?.scale === "number" && Number.isFinite(value.scale)
+    ? Math.max(20, Math.min(600, value.scale))
+    : 100,
+  offsetX: typeof value?.offsetX === "number" && Number.isFinite(value.offsetX)
+    ? Math.max(-10_000, Math.min(10_000, value.offsetX))
+    : 0,
+  offsetY: typeof value?.offsetY === "number" && Number.isFinite(value.offsetY)
+    ? Math.max(-10_000, Math.min(10_000, value.offsetY))
+    : 0,
+});
 const cloneSheetBlocks = (blocks: SheetBlock[]) =>
   JSON.parse(JSON.stringify(blocks)) as SheetBlock[];
+const reusableSheetBlocks = (blocks: SheetBlock[]) => stripPlanLegendLayoutOverrides(
+  stripPlanInformationBlock(stripPlanSituationBlocks(blocks)),
+);
 const isPersonalSheetTemplateVersionId = (versionId: string) =>
   versionId.startsWith("custom:") || versionId.startsWith("baseline:");
+const isWritableSheetTemplateVersion = (
+  version: Pick<StoredSheetTemplateVersion, "id" | "owner">,
+  userId?: number
+) => isPersonalSheetTemplateVersionId(version.id) && (!version.owner || version.owner === userId);
 const lockDefaultSheetBlocks = (blocks: SheetBlock[]) =>
   cloneSheetBlocks(blocks).map((block) => ({ ...block, locked: true }));
 const unlockPersonalSheetBlocks = (blocks: SheetBlock[]) =>
@@ -203,10 +286,6 @@ interface SheetTemplateTransferFile {
   pictograms: Array<{ name: string; svg: string }>;
   templateAssets?: Array<{ id: string; name: string; imageData: string }>;
 }
-const EXPORT_PAPER_OPTIONS = (Object.keys(EXPORT_PAPER_SIZES) as ExportPaperFormat[]).map((key) => ({
-  key,
-  label: EXPORT_PAPER_SIZES[key].label
-}));
 const EXPORT_QUALITY_OPTIONS: ReadonlyArray<{
   key: ExportQuality;
   label: string;
@@ -584,7 +663,13 @@ const EXPORT_MAX_CAPTURE_SIDE = 8192;
 const EXPORT_MAX_CAPTURE_PIXELS = 48_000_000;
 
 function isCopyableSheetBlock(block: SheetBlock | null | undefined): block is SheetBlock {
-  return Boolean(block && block.kind !== "plan" && block.kind !== "background");
+  return Boolean(
+    block
+    && block.kind !== "plan"
+    && block.kind !== "background"
+    && block.situationRole !== "frame"
+    && block.situationRole !== "background"
+  );
 }
 
 const SVG_EXPORT_PADDING = 8;
@@ -646,7 +731,7 @@ const PRESET_COLORS = [
   { name: "Vert sécurité", hex: "#16a34a" },
   { name: "Jaune", hex: "#eab308" },
   { name: "Orange", hex: "#f97316" },
-  { name: "Rouge", hex: "#ef4444" },
+  { name: "Rouge", hex: SAFETY_RED },
   { name: "Bleu", hex: "#0284c7" },
   { name: "Cyan", hex: "#06b6d4" },
   { name: "Gris foncé", hex: "#475569" },
@@ -657,11 +742,47 @@ const PRESET_COLORS = [
 
 interface EvacuationPlanBackend {
   id: number;
+  project_uuid?: string;
   created_at: string;
   updated_at: string;
   title: string;
+  establishment_name: string;
   building_name: string;
   floor_name: string;
+  plan_number: string;
+  design_date: string | null;
+  designer: string;
+  revision_index: string;
+  last_verification_date: string | null;
+  next_verification_date: string | null;
+  plan_information_visibility?: Partial<PlanInformationVisibility>;
+  plan_information_layout?: PlanInformationLayouts;
+  plan_legend_layout?: PlanLegendLayouts;
+  legend_hidden_icon_types?: string[];
+  template_snapshot?: {
+    schemaVersion?: number;
+    templateKey?: string;
+    versionId?: string;
+    name?: string;
+    blocks?: SheetBlock[];
+    planPlacement?: Partial<SheetPlanPlacement>;
+  };
+  project_pictograms?: PlanPictogramBackend[];
+  project_resources?: Array<{
+    role: string;
+    key: string;
+    sha256: string;
+    url: string;
+    media_type: string;
+    metadata?: Record<string, unknown>;
+  }>;
+  plan_situation_config?: Partial<PlanSituationState>;
+  plan_situation_background_file?: string | null;
+  sheet_plan_placement?: Partial<SheetPlanPlacement>;
+  document_type?: PlanDocumentType;
+  export_paper_format?: ExportPaperFormat;
+  print_scale_denominator?: number;
+  measured_scale_denominator?: number | null;
   background_file: string;
   background_type: "image" | "pdf";
   cleaned_background_file: string | null;
@@ -679,6 +800,10 @@ interface EvacuationPlanBackend {
   active_sheet_template_key?: string;
   active_sheet_template_version_id?: string;
   active_sheet_template_name?: string;
+  last_sheet_template_key?: string;
+  last_sheet_template_version_id?: string;
+  last_sheet_template_name?: string;
+  can_edit?: boolean;
   icons: Array<{
     id: number;
     icon_type: IconType;
@@ -690,11 +815,13 @@ interface EvacuationPlanBackend {
     label: string;
     anchor_x: number | null;
     anchor_y: number | null;
+    leader_points?: Array<{ id: string; x: number; y: number }>;
     leader_width?: number;
     framed?: boolean;
     flip_x?: boolean;
     color?: string;
     flip_y?: boolean;
+    lock_aspect_ratio?: boolean;
     locked?: boolean;
     visible?: boolean;
     z_index?: number;
@@ -723,6 +850,8 @@ interface EvacuationPlanBackend {
     z_index?: number;
     group_id?: string;
     object_group_id?: string;
+    is_scale_calibration?: boolean;
+    calibration_real_distance_m?: number | null;
   }>;
   texts?: Array<{
     id: number;
@@ -792,7 +921,28 @@ interface PlanPictogramBackend {
   file_name: string;
   url: string;
   deletable?: boolean;
+  standard?: string;
+  standard_label?: string;
+  category?: string;
+  category_label?: string;
+  subcategory?: string;
+  subcategory_label?: string;
 }
+
+const pictogramBackendDefinition = (pictogram: PlanPictogramBackend): SafetyIconDefinition => ({
+  type: pictogram.type,
+  label: pictogram.label,
+  fileName: pictogram.file_name,
+  imageUrl: pictogram.url,
+  color: inferPictogramColor(pictogram.type, pictogram.label),
+  deletable: Boolean(pictogram.deletable),
+  standardKey: pictogram.standard || "general",
+  standardLabel: pictogram.standard_label || "Personnels et généraux",
+  categoryKey: pictogram.category || "uncategorized",
+  categoryLabel: pictogram.category_label || "Non classés",
+  subcategoryKey: pictogram.subcategory || "",
+  subcategoryLabel: pictogram.subcategory_label || "",
+});
 
 interface SheetTemplateAssetBackend {
   id: string;
@@ -801,6 +951,7 @@ interface SheetTemplateAssetBackend {
   width: number;
   height: number;
   created_at: string;
+  owner?: number;
 }
 
 type CleanMethod = "local_plan" | "local_walls" | "grok";
@@ -850,14 +1001,21 @@ export default function PlanEditorPage() {
   const router = useRouter();
   
   const [plan, setPlan] = useState<EvacuationPlanBackend | null>(null);
+  const canEditPlan = plan?.can_edit !== false;
   const [availableIconDefinitions, setAvailableIconDefinitions] = useState<Record<string, SafetyIconDefinition>>(SAFETY_ICONS);
+  const [projectIconDefinitions, setProjectIconDefinitions] = useState<Record<string, SafetyIconDefinition>>({});
   const [icons, setIcons] = useState<CanvasIcon[]>([]);
   const [shapes, setShapes] = useState<CanvasShape[]>([]);
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
   const [shapeTool, setShapeTool] = useState<ShapeKind | null>(null);
+  const [scaleCalibrationCaptureActive, setScaleCalibrationCaptureActive] = useState(false);
+  const [scaleCalibrationModalOpen, setScaleCalibrationModalOpen] = useState(false);
+  const [scaleCalibrationDraftShapeId, setScaleCalibrationDraftShapeId] = useState<string | null>(null);
+  const [scaleMeasurement, setScaleMeasurement] = useState<ScaleCalibrationMeasurement | null>(null);
   const [shapeStrokeWidth, setShapeStrokeWidth] = useState(3);
   const [shapeColor, setShapeColor] = useState("#3b82f6");
   const [selectedIconId, setSelectedIconId] = useState<string | null>(null);
+  const [resizeSameTypeIcons, setResizeSameTypeIcons] = useState(false);
   const [placementIconType, setPlacementIconType] = useState<IconType | null>(null);
   const [defaultIconSize, setDefaultIconSize] = useState({ width: 40, height: 40 });
 
@@ -935,12 +1093,38 @@ export default function PlanEditorPage() {
   // the same Ctrl/Cmd+Z timeline as objects placed directly on the plan.
   const [sheetTemplate, setSheetTemplate] = useState<SheetTemplateKey | "none">("none");
   const [sheetBlocks, setSheetBlocks] = useState<SheetBlock[]>([]);
+  const [planSituation, setPlanSituation] = useState<PlanSituationState>(() => ({
+    ...EMPTY_PLAN_SITUATION,
+  }));
+  const [planSituationModalOpen, setPlanSituationModalOpen] = useState(false);
+  const [planSituationTraceMode, setPlanSituationTraceMode] = useState<"building_outline" | "represented_zone" | null>(null);
+  const [planSituationBackgroundImage, setPlanSituationBackgroundImage] = useState<HTMLImageElement | null>(null);
+  const [planSituationBackgroundUploading, setPlanSituationBackgroundUploading] = useState(false);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [selectedSheetBlockIds, setSelectedSheetBlockIds] = useState<string[]>([]);
-  const [sheetPlanPlacement, setSheetPlanPlacement] = useState({ scale: 100, offsetX: 0, offsetY: 0 });
+  const [sheetPlanPlacement, setSheetPlanPlacement] = useState<SheetPlanPlacement>({
+    ...DEFAULT_SHEET_PLAN_PLACEMENT,
+  });
+  const loadedSheetPlanPlacementPlanIdRef = useRef<number | null>(null);
   const [canEditDefaultTemplates, setCanEditDefaultTemplates] = useState(false);
   const [activeSheetTemplateVersionId, setActiveSheetTemplateVersionId] = useState("");
+  const [lastSheetTemplateSelection, setLastSheetTemplateSelection] = useState<{
+    key: SheetTemplateKey;
+    versionId: string;
+    name: string;
+  } | null>(null);
   const [nonStandardIconColorOpen, setNonStandardIconColorOpen] = useState(false);
+
+  const activateInteractionMode = useCallback((nextMode: "select" | "pan" | "erase") => {
+    // Permanent tools are exclusive. Without this reset, a stale drawing tool
+    // wins over pictogram placement and a stale eraser wins over everything.
+    planCanvasRef.current?.commitActiveDrawing();
+    setShapeTool(null);
+    setAreaSelectionMode(false);
+    setPlacementIconType(null);
+    setPlacementText(false);
+    setMode(nextMode);
+  }, []);
 
   const getNextLayerZIndex = () => Math.max(
     mainPlanZIndex,
@@ -954,7 +1138,7 @@ export default function PlanEditorPage() {
   // Regulated pictogram colours (NF X08-070). Any other colour is deliberately
 // placed behind the explicit "Hors norme" control in the properties panel.
 const ICON_COLOR_SWATCHES = [
-  { value: "#e63329", label: "Rouge incendie" },
+  { value: SAFETY_RED, label: "Rouge incendie — RAL 3020" },
   { value: "#00a651", label: "Vert évacuation" },
   { value: "#3046b8", label: "Bleu obligation" },
   { value: "#ffd500", label: "Jaune danger" },
@@ -983,6 +1167,7 @@ const MAX_HISTORY_STEPS = 50;
       watermark: WatermarkConfig;
       sheetTemplate: SheetTemplateKey | "none";
       sheetBlocks: SheetBlock[];
+      planSituation: PlanSituationState;
       sheetPlanPlacement: { scale: number; offsetX: number; offsetY: number };
       eraseStrokeCount: number;
       signature: string;
@@ -1052,6 +1237,7 @@ const MAX_HISTORY_STEPS = 50;
       watermark: watermarkConfig,
       sheetTemplate,
       sheetBlocks,
+      planSituation,
       sheetPlanPlacement,
       eraseStrokeCount,
     });
@@ -1069,6 +1255,7 @@ const MAX_HISTORY_STEPS = 50;
       watermark: watermarkConfig,
       sheetTemplate,
       sheetBlocks,
+      planSituation,
       sheetPlanPlacement,
       eraseStrokeCount,
       signature,
@@ -1090,7 +1277,7 @@ const MAX_HISTORY_STEPS = 50;
         historyTimerRef.current = null;
       }
     };
-  }, [icons, shapes, texts, planOverlays, mainPlanTransform, mainPlanLocked, mainPlanVisible, mainPlanZIndex, mainPlanGroupId, mainPlanGroupingEnabled, watermarkConfig, sheetTemplate, sheetBlocks, sheetPlanPlacement, eraseStrokeCount, loading, commitHistorySnapshot]);
+  }, [icons, shapes, texts, planOverlays, mainPlanTransform, mainPlanLocked, mainPlanVisible, mainPlanZIndex, mainPlanGroupId, mainPlanGroupingEnabled, watermarkConfig, sheetTemplate, sheetBlocks, planSituation, sheetPlanPlacement, eraseStrokeCount, loading, commitHistorySnapshot]);
 
   const handleUndo = useCallback(() => {
     if (planCanvasRef.current?.undoActiveDrawing()) return;
@@ -1124,7 +1311,14 @@ const MAX_HISTORY_STEPS = 50;
       setSelectedBlockId((currentId) =>
         currentId && target.sheetBlocks?.some((block) => block.id === currentId) ? currentId : null
       );
+    } else {
+      setSheetBlocks((current) => decorateWithPlanSituation(
+        stripPlanSituationBlocks(current),
+        target.planSituation ?? EMPTY_PLAN_SITUATION,
+      ));
+      setSheetPlanPlacement(target.sheetPlanPlacement ?? { ...DEFAULT_SHEET_PLAN_PLACEMENT });
     }
+    setPlanSituation(target.planSituation ?? { ...EMPTY_PLAN_SITUATION });
     requestEraseStrokeTarget(target.eraseStrokeCount ?? 0);
     setAreaSelectionMode(false);
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
@@ -1162,7 +1356,14 @@ const MAX_HISTORY_STEPS = 50;
       setSelectedBlockId((currentId) =>
         currentId && target.sheetBlocks?.some((block) => block.id === currentId) ? currentId : null
       );
+    } else {
+      setSheetBlocks((current) => decorateWithPlanSituation(
+        stripPlanSituationBlocks(current),
+        target.planSituation ?? EMPTY_PLAN_SITUATION,
+      ));
+      setSheetPlanPlacement(target.sheetPlanPlacement ?? { ...DEFAULT_SHEET_PLAN_PLACEMENT });
     }
+    setPlanSituation(target.planSituation ?? { ...EMPTY_PLAN_SITUATION });
     requestEraseStrokeTarget(target.eraseStrokeCount ?? 0);
     setAreaSelectionMode(false);
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
@@ -1342,7 +1543,9 @@ const MAX_HISTORY_STEPS = 50;
   const [sheetLogoImages, setSheetLogoImages] = useState<Record<string, HTMLImageElement | null>>({});
   const [sheetTemplateAssets, setSheetTemplateAssets] = useState<SheetTemplateAssetBackend[]>([]);
   const [sheetTemplateAssetImages, setSheetTemplateAssetImages] = useState<Record<string, HTMLImageElement | null>>({});
+  const [projectTemplateAssetImages, setProjectTemplateAssetImages] = useState<Record<string, HTMLImageElement | null>>({});
   const [sheetLegendImages, setSheetLegendImages] = useState<Record<string, HTMLImageElement>>({});
+  const [hiddenLegendIconTypes, setHiddenLegendIconTypes] = useState<string[]>([]);
   const [sheetPictoImages, setSheetPictoImages] = useState<Record<string, HTMLImageElement>>({});
   const [sheetExporting, setSheetExporting] = useState(false);
   const [exportQuality, setExportQuality] = useState<ExportQuality>("high");
@@ -1362,6 +1565,12 @@ const MAX_HISTORY_STEPS = 50;
     active_sheet_template_key: string;
     active_sheet_template_version_id: string;
     active_sheet_template_name: string;
+    last_sheet_template_key: string;
+    last_sheet_template_version_id: string;
+    last_sheet_template_name: string;
+    document_type: PlanDocumentType;
+    export_paper_format: ExportPaperFormat;
+    print_scale_denominator: number;
   } | null>(null);
   const planTemplateSelectionSyncRunningRef = useRef(false);
   const templateTransferInputRef = useRef<HTMLInputElement>(null);
@@ -1370,6 +1579,15 @@ const MAX_HISTORY_STEPS = 50;
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [logoManagerOpen, setLogoManagerOpen] = useState(false);
   const [templateLibraryOpen, setTemplateLibraryOpen] = useState(false);
+  const [planInformationModalOpen, setPlanInformationModalOpen] = useState(false);
+  const [planInformationDraft, setPlanInformationDraft] = useState<PlanInformationValues>(() => ({
+    ...EMPTY_PLAN_INFORMATION,
+  }));
+  const [planInformationVisibilityDraft, setPlanInformationVisibilityDraft] = useState<PlanInformationVisibility>(() => ({
+    ...DEFAULT_PLAN_INFORMATION_VISIBILITY,
+  }));
+  const [planInformationSaving, setPlanInformationSaving] = useState(false);
+  const [planInformationError, setPlanInformationError] = useState("");
   const [logoImportBusy, setLogoImportBusy] = useState<"client" | "studio" | null>(null);
   const [exportSaveConfirmOpen, setExportSaveConfirmOpen] = useState(false);
   const [pendingExportAction, setPendingExportAction] = useState<(() => Promise<void>) | null>(null);
@@ -1378,7 +1596,8 @@ const MAX_HISTORY_STEPS = 50;
   const [exportOfficialFond, setExportOfficialFond] = useState<ExportOfficialFondKey>("none");
   const [exportUseCustomColors, setExportUseCustomColors] = useState(false);
   const [exportCustomColors, setExportCustomColors] = useState<Record<ExportCustomColorKey, string>>(DEFAULT_EXPORT_CUSTOM_COLORS);
-  const [exportPaperFormat, setExportPaperFormat] = useState<ExportPaperFormat>("a4");
+  const [exportPaperFormat, setExportPaperFormat] = useState<ExportPaperFormat>("a3");
+  const [printScaleDenominator, setPrintScaleDenominator] = useState(RECOMMENDED_SCALE_DENOMINATOR);
   const [exporting, setExporting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [exportPreviewUrl, setExportPreviewUrl] = useState("");
@@ -1456,8 +1675,12 @@ const MAX_HISTORY_STEPS = 50;
   const [exportEvacAssemblyLabel, setExportEvacAssemblyLabel] = useState<string>(EVAC_DEFAULTS.assemblyLabel);
   const [exportEvacBodyFontSize, setExportEvacBodyFontSize] = useState(9);
   const iconDefinitions = useMemo(
-    () => ({ ...SAFETY_ICONS, ...availableIconDefinitions }),
-    [availableIconDefinitions]
+    () => withLegacyTemplatePictogramAliases({
+      ...SAFETY_ICONS,
+      ...availableIconDefinitions,
+      ...projectIconDefinitions,
+    }),
+    [availableIconDefinitions, projectIconDefinitions]
   );
   const LEFT_DOCK_WIDTH = 208;
   const RIGHT_DOCK_WIDTH = 224;
@@ -1469,14 +1692,24 @@ const MAX_HISTORY_STEPS = 50;
     return authToken ? { Authorization: `Bearer ${authToken}` } : {};
   };
 
-  const handleAddSvgPictogram = async ({ name, svg }: { name: string; svg: string }) => {
+  const handleAddSvgPictogram = async ({
+    name,
+    svg,
+    standardKey,
+    categoryKey,
+  }: AddSvgPictogramInput) => {
     const response = await fetch(buildApiUrl("/api/plans/pictograms/"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...getPlanAuthHeaders(),
       },
-      body: JSON.stringify({ name, svg }),
+      body: JSON.stringify({
+        name,
+        svg,
+        standard: standardKey,
+        category: categoryKey,
+      }),
     });
 
     let payload: (PlanPictogramBackend & { error?: string }) | null = null;
@@ -1497,6 +1730,12 @@ const MAX_HISTORY_STEPS = 50;
       imageUrl: payload.url,
       color: inferPictogramColor(payload.type, payload.label),
       deletable: Boolean(payload.deletable),
+      standardKey: payload.standard || standardKey,
+      standardLabel: payload.standard_label || standardKey,
+      categoryKey: payload.category || categoryKey,
+      categoryLabel: payload.category_label || categoryKey,
+      subcategoryKey: payload.subcategory || "",
+      subcategoryLabel: payload.subcategory_label || "",
     };
     setAvailableIconDefinitions((current) => ({
       ...current,
@@ -1571,6 +1810,12 @@ const MAX_HISTORY_STEPS = 50;
       imageUrl: payload.url,
       color: inferPictogramColor(payload.type, payload.label),
       deletable: Boolean(payload.deletable),
+      standardKey: payload.standard || definition.standardKey,
+      standardLabel: payload.standard_label || definition.standardLabel,
+      categoryKey: payload.category || definition.categoryKey,
+      categoryLabel: payload.category_label || definition.categoryLabel,
+      subcategoryKey: payload.subcategory || definition.subcategoryKey || "",
+      subcategoryLabel: payload.subcategory_label || definition.subcategoryLabel || "",
     };
     setAvailableIconDefinitions((current) => {
       const updated = { ...current };
@@ -1681,6 +1926,7 @@ const MAX_HISTORY_STEPS = 50;
     const fetchPlan = async () => {
       rememberedTemplatePlanIdRef.current = null;
       pendingPlanTemplateSelectionRef.current = null;
+      loadedSheetPlanPlacementPlanIdRef.current = null;
       setRememberedTemplateReady(false);
       const headers = getPlanAuthHeaders();
       if (!("Authorization" in headers)) {
@@ -1696,6 +1942,28 @@ const MAX_HISTORY_STEPS = 50;
         if (res.ok) {
           const data: EvacuationPlanBackend = await res.json();
           setPlan(data);
+          setProjectIconDefinitions(
+            (data.project_pictograms || []).reduce<Record<string, SafetyIconDefinition>>(
+              (definitions, pictogram) => {
+                definitions[pictogram.type] = pictogramBackendDefinition(pictogram);
+                return definitions;
+              },
+              {},
+            ),
+          );
+          const frozenTemplateAssets = (data.project_resources || []).filter(
+            (resource) => resource.role === "template_asset" && Boolean(resource.url),
+          );
+          void Promise.all(frozenTemplateAssets.map(async (resource) => {
+            try {
+              return [`templateAsset:${resource.key}`, await loadImage(resource.url)] as const;
+            } catch {
+              return [`templateAsset:${resource.key}`, null] as const;
+            }
+          })).then((images) => setProjectTemplateAssetImages(Object.fromEntries(images)));
+          const loadedPlanSituation = normalizePlanSituation(data.plan_situation_config);
+          const loadedSheetPlanPlacement = normalizeSheetPlanPlacement(data.sheet_plan_placement);
+          setPlanSituation(loadedPlanSituation);
           // Convert database icons to CanvasIcon type
           const canvasIcons: CanvasIcon[] = data.icons.map((icon) => ({
             id: icon.id,
@@ -1709,11 +1977,13 @@ const MAX_HISTORY_STEPS = 50;
             label: icon.label || "",
             anchor_x: icon.anchor_x ?? null,
             anchor_y: icon.anchor_y ?? null,
+            leader_points: Array.isArray(icon.leader_points) ? icon.leader_points : [],
             leader_width: normalizeCanvasLeaderWidth(icon.leader_width),
             framed: icon.framed ?? false,
             flip_x: icon.flip_x ?? false,
             color: icon.color ?? "",
             flip_y: icon.flip_y ?? false,
+            lock_aspect_ratio: icon.lock_aspect_ratio ?? true,
             locked: icon.locked ?? false,
             visible: icon.visible ?? true,
             z_index: icon.z_index ?? 300,
@@ -1721,6 +1991,7 @@ const MAX_HISTORY_STEPS = 50;
             object_group_id: icon.object_group_id || "",
           }));
           setIcons(canvasIcons);
+          setHiddenLegendIconTypes(Array.isArray(data.legend_hidden_icon_types) ? data.legend_hidden_icon_types : []);
 
           const canvasShapes: CanvasShape[] = (data.shapes || []).map((shape) => ({
             id: shape.id,
@@ -1745,6 +2016,8 @@ const MAX_HISTORY_STEPS = 50;
             z_index: shape.z_index ?? 200,
             group_id: shape.group_id || "",
             object_group_id: shape.object_group_id || "",
+            is_scale_calibration: shape.is_scale_calibration ?? false,
+            calibration_real_distance_m: shape.calibration_real_distance_m ?? null,
           }));
           setShapes(canvasShapes);
 
@@ -1814,16 +2087,20 @@ const MAX_HISTORY_STEPS = 50;
           setWatermarkDraft(loadedWatermarkWithLogos);
           setExportClientLogo(loadedWatermark.client_logo || "");
           setExportStudioLogo(studioLogo);
+          const loadedPaperFormat = data.export_paper_format || "a3";
+          const loadedScaleDenominator = data.print_scale_denominator || RECOMMENDED_SCALE_DENOMINATOR;
+          setExportPaperFormat(loadedPaperFormat);
+          setPrintScaleDenominator(loadedScaleDenominator);
 
           // Baseline for the unsaved-changes guard: the freshly loaded state.
           // The very same fields as buildEditableSnapshot, or the editor would
           // report unsaved changes before the user has touched anything.
           setSavedSnapshot(JSON.stringify({
-            icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
-              icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
+            icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
+              icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
             })),
-            shapes: canvasShapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id }) => ({
-              shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id,
+            shapes: canvasShapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m }) => ({
+              shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m,
             })),
             texts: canvasTexts.map(({ text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id }) => ({
               text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id,
@@ -1838,9 +2115,16 @@ const MAX_HISTORY_STEPS = 50;
             mainPlanGroupId: data.main_plan_group_id || "",
             mainPlanGroupingEnabled: Boolean(data.main_plan_grouping_enabled),
             watermark: loadedWatermarkWithLogos,
+            planSituation: loadedPlanSituation,
+            hiddenLegendIconTypes: Array.isArray(data.legend_hidden_icon_types) ? data.legend_hidden_icon_types : [],
+            sheetPlanPlacement: loadedSheetPlanPlacement,
             sheetTemplate: data.active_sheet_template_key || "none",
             activeSheetTemplateVersionId: data.active_sheet_template_version_id || "",
             activeSheetTemplateName: data.active_sheet_template_name || "Plan seul",
+            documentType: data.document_type || "",
+            exportPaperFormat: loadedPaperFormat,
+            printScaleDenominator: loadedScaleDenominator,
+            measuredScaleDenominator: data.measured_scale_denominator ?? null,
           }));
         } else if (res.status === 401 || res.status === 403) {
           router.push("/login");
@@ -1872,17 +2156,7 @@ const MAX_HISTORY_STEPS = 50;
         if (!data.length) return;
 
         const definitions = data.reduce<Record<string, SafetyIconDefinition>>((acc, pictogram) => {
-          acc[pictogram.type] = {
-            type: pictogram.type,
-            label: pictogram.label,
-            fileName: pictogram.file_name,
-            imageUrl: pictogram.url,
-            // Infer the safety-sign colour from the pictogram name so the leader
-            // line and anchor dot match the equipment's category (red for fire
-            // fighting, green for escape, …) instead of a single flat colour.
-            color: inferPictogramColor(pictogram.type, pictogram.label),
-            deletable: Boolean(pictogram.deletable),
-          };
+          acc[pictogram.type] = pictogramBackendDefinition(pictogram);
           return acc;
         }, {});
 
@@ -1916,7 +2190,7 @@ const MAX_HISTORY_STEPS = 50;
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
-  }, [icons, shapes, texts, planOverlays, mainPlanTransform, mainPlanLocked, mainPlanGroupId, mainPlanGroupingEnabled, watermarkConfig, sheetTemplate, activeSheetTemplateVersionId, storedSheetTemplateVersions, savedSnapshot]);
+  }, [icons, shapes, texts, planOverlays, mainPlanTransform, mainPlanLocked, mainPlanGroupId, mainPlanGroupingEnabled, watermarkConfig, planSituation, sheetPlanPlacement, sheetTemplate, activeSheetTemplateVersionId, storedSheetTemplateVersions, exportPaperFormat, printScaleDenominator, scaleMeasurement, plan?.document_type, savedSnapshot]);
 
   useEffect(() => {
     if (!placementIconType) return;
@@ -1985,13 +2259,14 @@ const MAX_HISTORY_STEPS = 50;
       }
 
       const key = event.key.toLowerCase();
-      if (key === "v") setMode("select");
-      else if (key === "h") setMode("pan");
-      else if (key === "e") {
-        setShapeTool(null);
-        setAreaSelectionMode(false);
-        setMode("erase");
+      if (planSituationTraceMode) {
+        if (key === "v") setMode("select");
+        else if (key === "h") setMode("pan");
+        return;
       }
+      if (key === "v") activateInteractionMode("select");
+      else if (key === "h") activateInteractionMode("pan");
+      else if (key === "e") activateInteractionMode("erase");
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
@@ -2015,7 +2290,7 @@ const MAX_HISTORY_STEPS = 50;
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
     };
-  }, []);
+  }, [activateInteractionMode, planSituationTraceMode]);
 
   useEffect(() => {
     if (!cleanModalOpen) return;
@@ -2051,9 +2326,16 @@ const MAX_HISTORY_STEPS = 50;
   }, [cleanModalOpen, cleanMethod, selectedCleanTargetId, token]);
 
   const handleAddIcon = (type: IconType) => {
+    activateInteractionMode("select");
     setPlacementIconType(type);
     setSelectedIconId(null);
-    setMode("select");
+    setSelectedShapeId(null);
+    setSelectedTextId(null);
+    setSelectedOverlayId(null);
+    setSelectedBlockId(null);
+    setSelectedSheetBlockIds([]);
+    setSelectedBatBlock(false);
+    setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
   };
 
   const handlePlaceIcon = (
@@ -2071,6 +2353,7 @@ const MAX_HISTORY_STEPS = 50;
       height: normalizeCanvasIconDimension(size.height),
       rotation: 0,
       label: "",
+      lock_aspect_ratio: true,
       visible: true,
       z_index: getNextLayerZIndex(),
     };
@@ -2085,11 +2368,31 @@ const MAX_HISTORY_STEPS = 50;
       width: normalizeCanvasIconDimension(icon.width),
       height: normalizeCanvasIconDimension(icon.height),
     }));
-    setIcons(normalizedIcons);
-    if (!selectedIconId) return;
+    if (!selectedIconId) {
+      setIcons(normalizedIcons);
+      return;
+    }
 
     const selected = normalizedIcons.find((icon) => icon.tempId === selectedIconId);
-    if (!selected) return;
+    const previousSelected = icons.find((icon) => icon.tempId === selectedIconId);
+    if (!selected) {
+      setIcons(normalizedIcons);
+      return;
+    }
+
+    const selectedSizeChanged = Boolean(
+      previousSelected
+      && (previousSelected.width !== selected.width || previousSelected.height !== selected.height)
+    );
+    const nextIcons = resizeSameTypeIcons && selectedSizeChanged
+      ? normalizedIcons.map((icon) => (
+          icon.icon_type === selected.icon_type
+            ? { ...icon, width: selected.width, height: selected.height }
+            : icon
+        ))
+      : normalizedIcons;
+
+    setIcons(nextIcons);
 
     setDefaultIconSize({
       width: selected.width,
@@ -2099,13 +2402,11 @@ const MAX_HISTORY_STEPS = 50;
 
   // ─── Text annotations ────────────────────────────────────────────────
   const handleAddText = () => {
+    activateInteractionMode("select");
     setPlacementText(true);
-    setPlacementIconType(null);
-    setShapeTool(null);
     setSelectedIconId(null);
     setSelectedShapeId(null);
     setSelectedTextId(null);
-    setMode("select");
   };
 
   const handlePlaceText = (x: number, y: number) => {
@@ -2155,11 +2456,11 @@ const MAX_HISTORY_STEPS = 50;
   // tempId/id) so a deep-equality check detects any real change.
   const buildEditableSnapshot = () =>
     JSON.stringify({
-      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
-        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
+      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
+        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
       })),
-      shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id }) => ({
-        shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id,
+      shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m }) => ({
+        shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m,
       })),
       texts: texts.map(({ text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id }) => ({
         text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id,
@@ -2174,9 +2475,16 @@ const MAX_HISTORY_STEPS = 50;
       mainPlanGroupId,
       mainPlanGroupingEnabled,
       watermark: watermarkConfig,
+      planSituation,
+      hiddenLegendIconTypes,
+      sheetPlanPlacement,
       sheetTemplate,
       activeSheetTemplateVersionId,
       activeSheetTemplateName: sheetTemplate === "none" ? "Plan seul" : activeSheetTemplateLabel,
+      documentType: activeDocumentType,
+      exportPaperFormat,
+      printScaleDenominator,
+      measuredScaleDenominator: scaleMeasurement?.measuredScaleDenominator ?? null,
     });
 
   const hasUnsavedChanges = () => buildEditableSnapshot() !== savedSnapshot;
@@ -2268,6 +2576,8 @@ const MAX_HISTORY_STEPS = 50;
       z_index: shape.z_index ?? 200,
       group_id: shape.group_id || "",
       object_group_id: shape.object_group_id || "",
+      is_scale_calibration: shape.is_scale_calibration ?? false,
+      calibration_real_distance_m: shape.calibration_real_distance_m ?? null,
     }));
 
   const textsPayload = (list: CanvasText[]) =>
@@ -2301,10 +2611,12 @@ const MAX_HISTORY_STEPS = 50;
       label: icon.label || "",
       anchor_x: icon.anchor_x ?? null,
       anchor_y: icon.anchor_y ?? null,
+      leader_points: canvasIconLeaderPoints(icon),
       leader_width: normalizeCanvasLeaderWidth(icon.leader_width),
       framed: icon.framed ?? false,
       flip_x: icon.flip_x ?? false,
       flip_y: icon.flip_y ?? false,
+      lock_aspect_ratio: icon.lock_aspect_ratio ?? true,
       color: icon.color ?? "",
       locked: icon.locked ?? false,
       visible: icon.visible ?? true,
@@ -2468,9 +2780,69 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const handleSave = async () => {
+    if (!canEditPlan) {
+      setSaveStatus("Lecture seule");
+      window.setTimeout(() => setSaveStatus(""), 2500);
+      return null;
+    }
+    if (sheetTemplate !== "none" && missingPlanInformationCount > 0) {
+      openPlanInformationSettings();
+      setPlanInformationError(
+        "Complétez et enregistrez les informations obligatoires avant de sauvegarder ce template.",
+      );
+      return false;
+    }
     setSaving(true);
     setSaveStatus("Sauvegarde...");
     try {
+      const planInformationLayouts = { ...(plan?.plan_information_layout ?? {}) };
+      const currentPlanInformationLayout = getPlanInformationBlockLayout(sheetBlocks);
+      if (sheetTemplate !== "none" && currentPlanInformationLayout) {
+        planInformationLayouts[sheetTemplate] = currentPlanInformationLayout;
+      }
+      const planLegendLayouts = { ...(plan?.plan_legend_layout ?? {}) };
+      const currentPlanLegendLayout = getPlanLegendLayout(sheetBlocks);
+      if (sheetTemplate !== "none" && currentPlanLegendLayout) {
+        planLegendLayouts[sheetTemplate] = currentPlanLegendLayout;
+      }
+      const projectIconTypes = new Set<string>(icons.map((icon) => icon.icon_type));
+      const collectIconTypes = (value: unknown) => {
+        if (Array.isArray(value)) {
+          value.forEach(collectIconTypes);
+          return;
+        }
+        if (!value || typeof value !== "object") return;
+        const row = value as Record<string, unknown>;
+        const iconType = row.iconType ?? row.icon_type;
+        if (typeof iconType === "string" && iconType) projectIconTypes.add(iconType);
+        Object.values(row).forEach(collectIconTypes);
+      };
+      collectIconTypes(sheetBlocks);
+      collectIconTypes(planSituation);
+      const pictogramSources = Array.from(projectIconTypes).flatMap((iconType) => {
+        const definition = iconDefinitions[iconType];
+        if (!definition) return [];
+        return [{
+          icon_type: iconType,
+          label: definition.label,
+          file_name: definition.fileName || "",
+          svg_text: definition.svg || "",
+          standard: definition.standardKey || "",
+          standard_label: definition.standardLabel || "",
+          category: definition.categoryKey || "",
+          category_label: definition.categoryLabel || "",
+        }];
+      });
+      const templateSnapshot = sheetTemplate === "none"
+        ? (plan?.template_snapshot || {})
+        : {
+            schemaVersion: 1,
+            templateKey: sheetTemplate,
+            versionId: activeSheetTemplateVersionId,
+            name: activeSheetTemplateLabel,
+            blocks: cloneSheetBlocks(sheetBlocks),
+            planPlacement: { ...sheetPlanPlacement },
+          };
       const response = await postJson(`/api/plans/${id}/sync-editor/`, {
         icons: iconsPayload(icons),
         shapes: shapesPayload(shapes),
@@ -2489,6 +2861,20 @@ const MAX_HISTORY_STEPS = 50;
           active_sheet_template_key: sheetTemplate,
           active_sheet_template_version_id: sheetTemplate === "none" ? "" : activeSheetTemplateVersionId,
           active_sheet_template_name: sheetTemplate === "none" ? "Plan seul" : activeSheetTemplateLabel,
+          last_sheet_template_key: lastSheetTemplateKeyForPersistence,
+          last_sheet_template_version_id: lastSheetTemplateVersionIdForPersistence,
+          last_sheet_template_name: lastSheetTemplateNameForPersistence,
+          plan_information_layout: planInformationLayouts,
+          plan_legend_layout: planLegendLayouts,
+          legend_hidden_icon_types: hiddenLegendIconTypes,
+          plan_situation_config: planSituation,
+          sheet_plan_placement: sheetPlanPlacement,
+          template_snapshot: templateSnapshot,
+          pictogram_sources: pictogramSources,
+          document_type: activeDocumentType,
+          export_paper_format: exportPaperFormat,
+          print_scale_denominator: printScaleDenominator,
+          measured_scale_denominator: scaleMeasurement?.measuredScaleDenominator ?? null,
           watermark: watermarkConfig,
         },
       });
@@ -3121,7 +3507,56 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const selectedIcon = icons.find((i) => i.tempId === selectedIconId);
+  const selectedIconLeaderPoints = selectedIcon ? canvasIconLeaderPoints(selectedIcon) : [];
+  const sameTypeIconCount = selectedIcon
+    ? icons.filter((icon) => icon.icon_type === selectedIcon.icon_type).length
+    : 0;
   const selectedText = texts.find((t) => t.tempId === selectedTextId);
+  const handleShapesChange = (updatedShapes: CanvasShape[]) => {
+    if (planSituationTraceMode) {
+      const currentIds = new Set(shapes.map((shape) => shape.tempId));
+      const tracedShape = updatedShapes.find(
+        (shape) => !currentIds.has(shape.tempId)
+          && isPolygonShape(shape.shape_type)
+          && shape.closed !== false
+          && (shape.points?.length ?? 0) >= 3,
+      );
+      if (tracedShape?.points) {
+        const next = traceIntoPlanSituation(planSituation, planSituationTraceMode, tracedShape.points);
+        setShapes(updatedShapes.filter((shape) => shape.tempId !== tracedShape.tempId));
+        setPlanSituationTraceMode(null);
+        setShapeTool(null);
+        setSelectedShapeId(null);
+        applyPlanSituationState(
+          next,
+          next.blocks.find((block) => block.situationRole === planSituationTraceMode)?.id ?? null,
+        );
+        setPlanSituationModalOpen(true);
+        setSaveStatus(planSituationTraceMode === "building_outline"
+          ? "Silhouette vectorielle créée automatiquement"
+          : "Zone représentée ajoutée à la silhouette");
+        window.setTimeout(() => setSaveStatus(""), 3500);
+        return;
+      }
+    }
+    if (scaleCalibrationCaptureActive) {
+      const currentIds = new Set(shapes.map((shape) => shape.tempId));
+      const calibrationDraft = updatedShapes.find(
+        (shape) => !currentIds.has(shape.tempId) && shape.shape_type === "line",
+      );
+      if (calibrationDraft) {
+        setShapes(updatedShapes);
+        setScaleCalibrationCaptureActive(false);
+        setScaleCalibrationDraftShapeId(calibrationDraft.tempId);
+        setScaleCalibrationModalOpen(true);
+        setSelectedShapeId(null);
+        setSaveStatus("");
+        return;
+      }
+    }
+    setShapes(updatedShapes);
+  };
+
   const selectedShape = shapes.find((s) => s.tempId === selectedShapeId);
 
   const handleUpdateSelectedShape = (key: keyof CanvasShape, value: any) => {
@@ -3172,15 +3607,208 @@ const MAX_HISTORY_STEPS = 50;
   useEffect(() => {
     setExportPlanRotation(effectivePlanRotation);
   }, [effectivePlanRotation]);
+
+  const lastSituationOrientationRef = useRef<number | null>(null);
+
+  // Synchronise situation plan silhouette and traces with the main plan reading orientation ("Vous êtes ici")
+  useEffect(() => {
+    if (!planSituation.enabled) return;
+    const targetOrientation = effectivePlanRotation;
+    if (lastSituationOrientationRef.current === targetOrientation) return;
+    if (planSituation.orientation === targetOrientation && planSituation.orientation_mode === "observer") {
+      lastSituationOrientationRef.current = targetOrientation;
+      return;
+    }
+    if (!youAreHereIcon && planSituation.orientation_mode !== "observer") return;
+
+    lastSituationOrientationRef.current = targetOrientation;
+    const next = refitPlanSituationTraces({
+      ...planSituation,
+      orientation: targetOrientation,
+      orientation_mode: "observer",
+    });
+    setPlanSituation(next);
+    setSheetBlocks((current) => decorateWithPlanSituation(stripPlanSituationBlocks(current), next));
+  }, [
+    effectivePlanRotation,
+    Boolean(youAreHereIcon),
+    planSituation.enabled,
+    planSituation.orientation,
+    planSituation.orientation_mode,
+  ]);
+
   const usedIconTypes = Array.from(new Set(
     icons.filter((icon) => icon.visible !== false).map((icon) => icon.icon_type)
   ));
+  const visibleLegendIconTypes = usedIconTypes.filter(
+    (type) => !hiddenLegendIconTypes.includes(String(type)),
+  );
 
   // ── Sheet mode plumbing ────────────────────────────────────────────────────
   const sheetActive = sheetTemplate !== "none" && sheetBlocks.length > 0;
+  const lastVisibleAreaPlacementRef = useRef<string>("");
+
+  // Auto-refresh the situation plan's represented zone when the main plan view moves or zooms
+  useEffect(() => {
+    if (
+      !planSituation.enabled
+      || !planSituation.auto_refresh_visible_area
+      || !sheetActive
+      || planSituationTraceMode !== null
+      || !planSituation.blocks.some((block) => block.situationRole === "building_outline")
+    ) {
+      return;
+    }
+
+    const planBlock = sheetBlocks.find((block) => block.kind === "plan");
+    if (!planBlock || planBlock.visible === false) return;
+
+    const placementKey = `${sheetPlanPlacement.scale.toFixed(2)}_${Math.round(sheetPlanPlacement.offsetX)}_${Math.round(sheetPlanPlacement.offsetY)}_${effectivePlanRotation}_${Math.round(planBlock.x)}_${Math.round(planBlock.y)}_${Math.round(planBlock.width)}_${Math.round(planBlock.height)}`;
+    if (lastVisibleAreaPlacementRef.current === placementKey) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      if (lastVisibleAreaPlacementRef.current === placementKey) return;
+      const visiblePlanPolygon = planCanvasRef.current?.getVisiblePlanPolygon();
+      if (!visiblePlanPolygon || visiblePlanPolygon.length < 3) return;
+
+      const next = refreshPlanSituationVisibleArea(planSituation, visiblePlanPolygon);
+      if (!next) return;
+
+      lastVisibleAreaPlacementRef.current = placementKey;
+      setPlanSituation(next);
+      setSheetBlocks((current) => decorateWithPlanSituation(stripPlanSituationBlocks(current), next));
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    planSituation.enabled,
+    planSituation.auto_refresh_visible_area,
+    Boolean(planSituationTraceMode),
+    sheetActive,
+    sheetPlanPlacement.scale,
+    sheetPlanPlacement.offsetX,
+    sheetPlanPlacement.offsetY,
+    effectivePlanRotation,
+    sheetBlocks,
+  ]);
+  const scaleCalibrationShape = shapes.find((shape) => shape.is_scale_calibration) ?? null;
+
+  const startScaleCalibration = () => {
+    if (!sheetActive) {
+      alert("Choisissez d’abord un template de feuille pour mesurer une échelle imprimée.");
+      return;
+    }
+    if (!canEditPlan) return;
+    activateInteractionMode("select");
+    setSelectedIconId(null);
+    setSelectedShapeId(null);
+    setSelectedTextId(null);
+    setSelectedOverlayId(null);
+    setSelectedBlockId(null);
+    setSelectedSheetBlockIds([]);
+    setScaleCalibrationDraftShapeId(null);
+    setScaleCalibrationCaptureActive(true);
+    setShapeTool("line");
+    setSaveStatus("Calibration : tracez une ligne entre deux points de distance connue");
+  };
+
+  const cancelScaleCalibrationCapture = () => {
+    setScaleCalibrationCaptureActive(false);
+    setShapeTool(null);
+    setSaveStatus("");
+  };
+
+  const saveScaleCalibration = (realDistanceM: number) => {
+    if (!scaleCalibrationDraftShapeId) return;
+    // Do not leave the previous measurement visible while React recomputes the
+    // result from the replacement line and its newly entered real distance.
+    setScaleMeasurement(null);
+    setShapes((current) => current
+      .filter((shape) => !shape.is_scale_calibration || shape.tempId === scaleCalibrationDraftShapeId)
+      .map((shape) => shape.tempId === scaleCalibrationDraftShapeId
+        ? {
+            ...shape,
+            color: "#0ea5e9",
+            locked: true,
+            visible: false,
+            is_scale_calibration: true,
+            calibration_real_distance_m: realDistanceM,
+          }
+        : shape));
+    setSelectedShapeId(null);
+    setScaleCalibrationModalOpen(false);
+    setScaleCalibrationDraftShapeId(null);
+    setSaveStatus("Calibration enregistrée");
+    window.setTimeout(() => setSaveStatus(""), 2500);
+  };
+
+  const cancelScaleCalibrationDistance = () => {
+    if (scaleCalibrationDraftShapeId) {
+      setShapes((current) => current.filter(
+        (shape) => shape.tempId !== scaleCalibrationDraftShapeId,
+      ));
+    }
+    setScaleCalibrationModalOpen(false);
+    setScaleCalibrationDraftShapeId(null);
+  };
+
+  const clearScaleCalibration = () => {
+    if (!scaleCalibrationShape || !canEditPlan) return;
+    if (!window.confirm("Supprimer la calibration d’échelle de ce plan ?")) return;
+    setShapes((current) => current.filter((shape) => !shape.is_scale_calibration));
+    setScaleMeasurement(null);
+  };
+
+  const adjustPlanToDeclaredScale = () => {
+    if (!sheetActive || !scaleMeasurement || !canEditPlan) return;
+    if (!Number.isFinite(printScaleDenominator) || printScaleDenominator <= 0) return;
+
+    // measured = real / printed. Scaling the plan by measured / target changes
+    // the printed distance by exactly the amount needed to reach the target.
+    const maximumScaleDenominator = exportPaperFormat === "a2"
+      ? A2_MAX_SCALE_DENOMINATOR
+      : STANDARD_MAX_SCALE_DENOMINATOR;
+    // At the exact permitted ceiling, stay a microscopic amount on the more
+    // legible side so floating-point rounding can never turn 1:250 into an
+    // artificial 1:250.0001 compliance error.
+    const adjustmentTarget = printScaleDenominator >= maximumScaleDenominator
+      ? printScaleDenominator * 0.99999
+      : printScaleDenominator;
+    const adjustmentFactor = (
+      scaleMeasurement.measuredScaleDenominator / adjustmentTarget
+    );
+    const nextScale = sheetPlanPlacement.scale * adjustmentFactor;
+    const minimumScale = 20;
+    const maximumScale = 600;
+
+    if (!Number.isFinite(nextScale) || nextScale < minimumScale || nextScale > maximumScale) {
+      alert(
+        `L’échelle 1:${printScaleDenominator} demanderait un zoom de ${nextScale.toFixed(1)} %. `
+        + `La plage autorisée est de ${minimumScale} % à ${maximumScale} %.`,
+      );
+      return;
+    }
+
+    setScaleMeasurement(null);
+    setSheetPlanPlacement((placement) => ({
+      ...placement,
+      scale: Math.round(nextScale * 100_000) / 100_000,
+    }));
+    setSaveStatus(`Plan ajusté automatiquement à l’échelle 1:${printScaleDenominator}`);
+    window.setTimeout(() => setSaveStatus(""), 3000);
+  };
+
   const personalSheetTemplateActive = activeSheetTemplateVersionId.startsWith("custom:");
   const defaultSheetTemplateActive = sheetActive && !personalSheetTemplateActive;
   const canEditActiveSheetTemplate = !defaultSheetTemplateActive || canEditDefaultTemplates;
+  const hasMovablePlanInformationBlock = sheetBlocks.some(
+    (block) => block.id === PLAN_INFORMATION_BLOCK_ID,
+  );
+  const canEditSheetCanvas = canEditActiveSheetTemplate
+    || hasMovablePlanInformationBlock
+    || (canEditPlan && sheetActive);
   const currentSheetTemplateVersions = useMemo(
     () => sheetTemplate === "none"
       ? []
@@ -3205,6 +3833,8 @@ const MAX_HISTORY_STEPS = 50;
         // account draft must not make an official template look out of date.
         blocks: cloneSheetBlocks(createSheetBlocks(template)),
         kind: "builtin" as const,
+        standard: config.standard,
+        documentTypes: config.documentTypes,
       };
     });
     const custom = storedSheetTemplateVersions
@@ -3225,6 +3855,8 @@ const MAX_HISTORY_STEPS = 50;
           height: config.height,
           blocks: cloneSheetBlocks(version.blocks),
           kind: "custom" as const,
+          standard: config.standard,
+          documentTypes: config.documentTypes,
         };
       });
     return [...builtins, ...custom];
@@ -3240,31 +3872,509 @@ const MAX_HISTORY_STEPS = 50;
       ? storedSheetTemplateVersions.find((version) => version.id === activeSheetTemplateVersionId)?.name
         || SHEET_TEMPLATES[sheetTemplate].label
       : SHEET_TEMPLATES[sheetTemplate].label;
+  const lastSheetTemplateKeyForPersistence = sheetTemplate !== "none"
+    ? sheetTemplate
+    : lastSheetTemplateSelection?.key ?? "none";
+  const lastSheetTemplateVersionIdForPersistence = sheetTemplate !== "none"
+    ? activeSheetTemplateVersionId
+    : lastSheetTemplateSelection?.versionId ?? "";
+  const lastSheetTemplateNameForPersistence = sheetTemplate !== "none"
+    ? activeSheetTemplateLabel
+    : lastSheetTemplateSelection?.name ?? "";
+  const activeDocumentType: PlanDocumentType = sheetTemplate === "none"
+    ? plan?.document_type || ""
+    : templateDocumentType(sheetTemplate);
+  const exportCompliance = useMemo(
+    () => evaluateExportCompliance({
+      documentType: activeDocumentType,
+      paperFormat: exportPaperFormat,
+      scaleDenominator: printScaleDenominator,
+      calibrationPresent: Boolean(scaleCalibrationShape),
+      measuredScaleDenominator: scaleMeasurement?.measuredScaleDenominator ?? null,
+    }),
+    [activeDocumentType, exportPaperFormat, printScaleDenominator, scaleCalibrationShape, scaleMeasurement],
+  );
+  const exportPaperOptions = useMemo(
+    () => paperOptionsForDocumentType(activeDocumentType),
+    [activeDocumentType],
+  );
+  const savedPlanInformation = readPlanInformation(plan);
+  const savedPlanInformationVisibility = normalizePlanInformationVisibility(
+    plan?.plan_information_visibility,
+  );
+  const missingPlanInformationCount = missingPlanInformationFields(savedPlanInformation).length;
+  const decoratePlanInformation = (template: SheetTemplateKey, blocks: SheetBlock[]) => (
+    decorateWithPlanSituation(applyPlanLegendLayout(upsertPlanInformationBlock(
+      template,
+      stripPlanSituationBlocks(blocks),
+      savedPlanInformation,
+      savedPlanInformationVisibility,
+      plan?.plan_information_layout?.[template] ?? null,
+    ), plan?.plan_legend_layout?.[template] ?? null), planSituation)
+  );
+
+  const openPlanInformationSettings = () => {
+    setPlanInformationDraft({ ...savedPlanInformation });
+    setPlanInformationVisibilityDraft({ ...savedPlanInformationVisibility });
+    setPlanInformationError("");
+    setPlanInformationModalOpen(true);
+  };
+
+  const savePlanInformation = async () => {
+    if (!plan || !canEditPlan) return;
+    const missingFields = missingPlanInformationFields(planInformationDraft);
+    if (missingFields.length) {
+      setPlanInformationError("Complétez toutes les informations obligatoires avant d’enregistrer.");
+      return;
+    }
+    setPlanInformationSaving(true);
+    setPlanInformationError("");
+    try {
+      const response = await authenticatedFetch(buildApiUrl(`/api/plans/${id}/`), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...planInformationDraft,
+          plan_information_visibility: planInformationVisibilityDraft,
+          active_sheet_template_key: sheetTemplate,
+          active_sheet_template_version_id: sheetTemplate === "none" ? "" : activeSheetTemplateVersionId,
+          active_sheet_template_name: activeSheetTemplateLabel,
+          plan_situation_config: planSituation,
+          sheet_plan_placement: sheetPlanPlacement,
+          last_sheet_template_key: lastSheetTemplateKeyForPersistence,
+          last_sheet_template_version_id: lastSheetTemplateVersionIdForPersistence,
+          last_sheet_template_name: lastSheetTemplateNameForPersistence,
+          document_type: activeDocumentType,
+          export_paper_format: exportPaperFormat,
+          print_scale_denominator: printScaleDenominator,
+          measured_scale_denominator: scaleMeasurement?.measuredScaleDenominator ?? null,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await describeApiError(response));
+      }
+      const updatedPlan = await response.json() as EvacuationPlanBackend;
+      setPlan(updatedPlan);
+      setPlanInformationModalOpen(false);
+      setSaveStatus("Informations du plan enregistrées");
+      window.setTimeout(() => setSaveStatus(""), 3000);
+    } catch (error) {
+      setPlanInformationError(
+        error instanceof Error ? error.message : "Impossible d’enregistrer les informations du plan.",
+      );
+    } finally {
+      setPlanInformationSaving(false);
+    }
+  };
+
+  // The traceability block belongs to this plan, never to the reusable
+  // template. Refresh it whenever the server-side metadata changes.
+  useEffect(() => {
+    if (!plan || sheetTemplate === "none") return;
+    setSheetBlocks((current) => {
+      if (!current.length) return current;
+      const next = upsertPlanInformationBlock(
+        sheetTemplate,
+        current,
+        readPlanInformation(plan),
+        normalizePlanInformationVisibility(plan.plan_information_visibility),
+        plan.plan_information_layout?.[sheetTemplate] ?? null,
+      );
+      return JSON.stringify(next) === JSON.stringify(current) ? current : next;
+    });
+  }, [plan, sheetTemplate]);
+
   const activeSheetSize = useMemo(() => {
     if (sheetTemplate === "none") return { width: SHEET_WIDTH, height: SHEET_HEIGHT };
     const template = SHEET_TEMPLATES[sheetTemplate];
     return { width: template.width, height: template.height };
   }, [sheetTemplate]);
 
+  const applyPlanSituationState = (
+    nextState: PlanSituationState,
+    selectedSituationBlockId?: string | null,
+  ) => {
+    if (!canEditPlan) return;
+    const normalized = normalizePlanSituation({
+      ...nextState,
+      blocks: constrainPlanSituationBlocks(
+        nextState.blocks,
+        activeSheetSize.width,
+        activeSheetSize.height,
+      ),
+    });
+    setPlanSituation(normalized);
+    setSheetBlocks((current) => decorateWithPlanSituation(
+      stripPlanSituationBlocks(current),
+      normalized,
+    ));
+    if (selectedSituationBlockId !== undefined) {
+      const selectionId = selectedSituationBlockId ? PLAN_SITUATION_FRAME_ID : null;
+      setSelectedBlockId(selectionId);
+      setSelectedSheetBlockIds(selectionId ? [selectionId] : []);
+    }
+  };
+
+  const handleSheetBlocksChange = (nextBlocks: SheetBlock[]) => {
+    if (!planSituation.enabled) {
+      setSheetBlocks(nextBlocks);
+      return;
+    }
+    const previousSituationBlocks = situationBlocksFromSheet(sheetBlocks);
+    let nextSituationBlocks = situationBlocksFromSheet(nextBlocks);
+    if (!nextSituationBlocks.some((block) => block.id === PLAN_SITUATION_FRAME_ID)) {
+      nextSituationBlocks = previousSituationBlocks;
+    }
+    nextSituationBlocks = transformSituationChildrenForFrame(
+      previousSituationBlocks,
+      nextSituationBlocks,
+    );
+    nextSituationBlocks = constrainPlanSituationBlocks(
+      nextSituationBlocks,
+      activeSheetSize.width,
+      activeSheetSize.height,
+    );
+    if (planSituation.locked) {
+      const storedLocks = new Map(planSituation.blocks.map((block) => [block.id, block.locked]));
+      nextSituationBlocks = nextSituationBlocks.map((block) => ({
+        ...block,
+        locked: storedLocks.get(block.id) ?? false,
+      }));
+    }
+    const frame = nextSituationBlocks.find((block) => block.id === PLAN_SITUATION_FRAME_ID);
+    const nextState = normalizePlanSituation({
+      ...planSituation,
+      orientation: frame?.rotation ?? planSituation.orientation,
+      blocks: nextSituationBlocks,
+    });
+    const constrainedState = {
+      ...nextState,
+      blocks: constrainPlanSituationBlocks(
+        nextState.blocks,
+        activeSheetSize.width,
+        activeSheetSize.height,
+      ),
+    };
+    setPlanSituation(constrainedState);
+    setSheetBlocks(decorateWithPlanSituation(stripPlanSituationBlocks(nextBlocks), constrainedState));
+  };
+
+  const createSituation = () => {
+    if (sheetTemplate === "none") {
+      setPlanSituationModalOpen(false);
+      setTemplateLibraryOpen(true);
+      setSaveStatus("Choisissez d’abord un template pour placer le plan de situation");
+      window.setTimeout(() => setSaveStatus(""), 3500);
+      return;
+    }
+    const next = createPlanSituation(activeSheetSize.width, activeSheetSize.height);
+    applyPlanSituationState(next, PLAN_SITUATION_FRAME_ID);
+  };
+
+  const startSituationTrace = (role: "building_outline" | "represented_zone") => {
+    if (sheetTemplate === "none") {
+      setPlanSituationModalOpen(false);
+      setTemplateLibraryOpen(true);
+      setSaveStatus("Choisissez d’abord un template pour créer le plan de situation");
+      window.setTimeout(() => setSaveStatus(""), 3500);
+      return;
+    }
+    if (!canEditPlan) return;
+    if (role === "represented_zone" && !planSituation.blocks.some((block) => block.situationRole === "building_outline")) {
+      alert("Tracez d’abord la silhouette extérieure du bâtiment.");
+      return;
+    }
+    activateInteractionMode("select");
+    setSelectedIconId(null);
+    setSelectedShapeId(null);
+    setSelectedTextId(null);
+    setSelectedOverlayId(null);
+    setSelectedBlockId(null);
+    setSelectedSheetBlockIds([]);
+    setPlanSituationTraceMode(role);
+    setShapeColor(role === "building_outline" ? "#111827" : "#6b7280");
+    setShapeStrokeWidth(role === "building_outline" ? 2 : 1);
+    setShapeTool("polygon_zone");
+    setPlanSituationModalOpen(false);
+    setSaveStatus(role === "building_outline"
+      ? "Cliquez autour du contour extérieur du bâtiment"
+      : "Cliquez autour de la zone couverte par le plan principal");
+  };
+
+  const cancelSituationTrace = () => {
+    planCanvasRef.current?.cancelActiveDrawing();
+    setPlanSituationTraceMode(null);
+    setShapeTool(null);
+    setSaveStatus("");
+    setPlanSituationModalOpen(true);
+  };
+
+  const refreshSituationVisibleArea = () => {
+    if (!canEditPlan) return;
+    if (!planSituation.blocks.some((block) => block.situationRole === "building_outline")) {
+      alert("Tracez d’abord la silhouette extérieure du bâtiment.");
+      return;
+    }
+    const visiblePlanPolygon = planCanvasRef.current?.getVisiblePlanPolygon();
+    if (!visiblePlanPolygon) {
+      alert("Affichez d’abord le plan dans un template pour calculer son champ visible.");
+      return;
+    }
+    const next = refreshPlanSituationVisibleArea(planSituation, visiblePlanPolygon);
+    if (!next) {
+      alert("La fenêtre visible du plan ne coupe pas la silhouette tracée. Vérifiez le cadrage ou retracez la silhouette.");
+      return;
+    }
+    const representedZone = next.blocks.find(
+      (block) => block.situationRole === "represented_zone",
+    );
+    applyPlanSituationState(next, representedZone?.id ?? null);
+    setPlanSituationModalOpen(false);
+    setSaveStatus("Champ visible actualisé et sélectionné en gris");
+    window.setTimeout(() => setSaveStatus(""), 3500);
+  };
+
+  const updateSituationFit = (
+    changes: Partial<Pick<PlanSituationState, "content_width_percent" | "content_height_percent" | "zone_opacity_percent">>,
+  ) => {
+    applyPlanSituationState(refitPlanSituationTraces(planSituation, changes));
+  };
+
+  const uploadSituationBackground = async (file: File) => {
+    if (!plan || !canEditPlan) return;
+    setPlanSituationBackgroundUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await authenticatedFetch(buildApiUrl(`/api/plans/${id}/situation-background/`), {
+        method: "POST",
+        body: formData,
+      });
+      if (!response.ok) throw new Error(await describeApiError(response));
+      const updatedPlan = await response.json() as EvacuationPlanBackend;
+      setPlan(updatedPlan);
+      const next = upsertPlanSituationBackground(planSituation);
+      applyPlanSituationState(next, PLAN_SITUATION_BACKGROUND_ID);
+      setSaveStatus("Fond du plan de situation importé");
+      window.setTimeout(() => setSaveStatus(""), 3000);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Impossible d’importer le fond du plan de situation.");
+    } finally {
+      setPlanSituationBackgroundUploading(false);
+    }
+  };
+
+  const useMainPlanForSituation = async () => {
+    const source = planCanvasRef.current?.getBackgroundDataUrl();
+    if (!source) {
+      alert("Le fond du plan principal n’est pas encore disponible.");
+      return;
+    }
+    const blob = await fetch(source).then((response) => response.blob());
+    await uploadSituationBackground(new File([blob], "extrait-plan-principal.png", { type: "image/png" }));
+  };
+
+  const removeSituationBackground = async () => {
+    if (!plan || !canEditPlan) return false;
+    const response = await authenticatedFetch(buildApiUrl(`/api/plans/${id}/situation-background/`), {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      alert(await describeApiError(response));
+      return false;
+    }
+    const updatedPlan = await response.json() as EvacuationPlanBackend;
+    setPlan(updatedPlan);
+    setPlanSituationBackgroundImage(null);
+    applyPlanSituationState(removePlanSituationBackground(planSituation), null);
+    return true;
+  };
+
+  const deleteSituation = async () => {
+    if (!window.confirm("Supprimer le plan de situation et tous ses éléments ?")) return;
+    if (plan?.plan_situation_background_file && !(await removeSituationBackground())) return;
+    applyPlanSituationState({
+      ...EMPTY_PLAN_SITUATION,
+      sectorial: planSituation.sectorial,
+    }, null);
+    setPlanSituationModalOpen(false);
+  };
+
+  const addSituationElement = (
+    role: "represented_zone" | "road" | "parking" | "building" | "other_building" | "text" | "arrow",
+  ) => {
+    const next = addPlanSituationElement(planSituation, role);
+    applyPlanSituationState(next, next.blocks.at(-1)?.id ?? null);
+  };
+
+  const addSituationPictogram = (type: IconType, role: PlanSituationRole = "pictogram") => {
+    const next = addPlanSituationPictogram(
+      planSituation,
+      type,
+      iconDefinitions[type]?.label || String(type),
+      role,
+    );
+    applyPlanSituationState(next, next.blocks.at(-1)?.id ?? null);
+  };
+
+  const toggleSituationTitle = () => {
+    const blocks = planSituation.blocks.map((block) => block.id === PLAN_SITUATION_FRAME_ID
+      ? {
+          ...block,
+          title: block.title ? "" : "PLAN DE SITUATION",
+          titleHeight: block.title ? 0 : 28,
+        }
+      : block);
+    applyPlanSituationState({ ...planSituation, blocks }, PLAN_SITUATION_FRAME_ID);
+  };
+
+  const orientSituationFromObserver = () => {
+    const next = orientPlanSituationFromObserver(planSituation, effectivePlanRotation);
+    if (!next) {
+      alert("Ajoutez d’abord un pictogramme « Vous êtes ici », puis réglez sa rotation.");
+      return;
+    }
+    applyPlanSituationState(next, PLAN_SITUATION_FRAME_ID);
+  };
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      if (
+        !sheetActive
+        || !scaleCalibrationShape
+        || !scaleCalibrationShape.calibration_real_distance_m
+      ) {
+        setScaleMeasurement(null);
+        return;
+      }
+      const planDistance = Math.hypot(
+        scaleCalibrationShape.width,
+        scaleCalibrationShape.height,
+      );
+      const sheetDistance = planCanvasRef.current?.getPlanDistanceInSheetUnits(planDistance);
+      if (!sheetDistance || !Number.isFinite(sheetDistance)) {
+        setScaleMeasurement(null);
+        return;
+      }
+      const paper = EXPORT_PAPER_SIZES[exportPaperFormat];
+      const physicalSheetWidthMm = activeSheetSize.width >= activeSheetSize.height
+        ? paper.widthMm
+        : paper.heightMm;
+      const printedDistanceMm = sheetDistance * physicalSheetWidthMm / activeSheetSize.width;
+      if (!Number.isFinite(printedDistanceMm) || printedDistanceMm <= 0) {
+        setScaleMeasurement(null);
+        return;
+      }
+      const measuredScaleDenominator = (
+        scaleCalibrationShape.calibration_real_distance_m * 1_000 / printedDistanceMm
+      );
+      const nextMeasurement: ScaleCalibrationMeasurement = {
+        realDistanceM: scaleCalibrationShape.calibration_real_distance_m,
+        printedDistanceMm,
+        measuredScaleDenominator,
+        declaredScaleDeviationPercent: Math.abs(
+          measuredScaleDenominator - printScaleDenominator,
+        ) / printScaleDenominator * 100,
+      };
+      setScaleMeasurement((current) => (
+        current
+        && Math.abs(current.realDistanceM - nextMeasurement.realDistanceM) < 0.000001
+        && Math.abs(current.printedDistanceMm - nextMeasurement.printedDistanceMm) < 0.001
+        && Math.abs(current.measuredScaleDenominator - nextMeasurement.measuredScaleDenominator) < 0.001
+        && Math.abs(current.declaredScaleDeviationPercent - nextMeasurement.declaredScaleDeviationPercent) < 0.001
+          ? current
+          : nextMeasurement
+      ));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    sheetActive,
+    scaleCalibrationShape,
+    activeSheetSize,
+    exportPaperFormat,
+    printScaleDenominator,
+    sheetBlocks,
+    sheetPlanPlacement,
+    mainPlanTransform,
+    effectivePlanRotation,
+    icons,
+    shapes,
+    texts,
+    planOverlays,
+  ]);
+
   /** Identity-stable so the canvas does not refit on every keystroke. */
   const sheetProp = useMemo(
     () => (sheetActive ? { ...activeSheetSize, blocks: sheetBlocks } : null),
     [sheetActive, activeSheetSize, sheetBlocks]
   );
+  useEffect(() => {
+    const source = plan?.plan_situation_background_file || "";
+    if (!source) {
+      setPlanSituationBackgroundImage(null);
+      return;
+    }
+    let cancelled = false;
+    const image = new Image();
+    image.crossOrigin = imageCrossOrigin(source);
+    image.onload = () => {
+      if (!cancelled) setPlanSituationBackgroundImage(image);
+    };
+    image.onerror = () => {
+      if (!cancelled) setPlanSituationBackgroundImage(null);
+    };
+    image.src = source;
+    return () => {
+      cancelled = true;
+    };
+  }, [plan?.plan_situation_background_file]);
+
   const resolvedSheetImages = useMemo(
-    () => ({ ...sheetLogoImages, ...sheetTemplateAssetImages }),
-    [sheetLogoImages, sheetTemplateAssetImages]
+    () => ({
+      ...sheetLogoImages,
+      ...sheetTemplateAssetImages,
+      ...projectTemplateAssetImages,
+      [PLAN_SITUATION_IMAGE_KEY]: planSituationBackgroundImage,
+    }),
+    [sheetLogoImages, sheetTemplateAssetImages, projectTemplateAssetImages, planSituationBackgroundImage]
   );
 
   const selectedBlock = useMemo(
     () => sheetBlocks.find((block) => block.id === selectedBlockId) ?? null,
     [sheetBlocks, selectedBlockId]
   );
+  const selectedPlanInformationBlock = selectedBlock?.id === PLAN_INFORMATION_BLOCK_ID;
+  const selectedPlanLegendBlock = selectedBlock?.kind === "legend";
+  const selectedPlanSituationBlock = Boolean(selectedBlock && isPlanSituationBlock(selectedBlock));
+  const selectedPlanSituationFrame = selectedBlock?.id === PLAN_SITUATION_FRAME_ID;
+  const canEditSelectedSheetBlock = Boolean(
+    selectedBlock
+    && canEditPlan
+    && (selectedPlanSituationBlock
+      ? selectedPlanSituationFrame
+      : (
+          canEditActiveSheetTemplate
+          || selectedPlanInformationBlock
+          || selectedPlanLegendBlock
+        ))
+  );
   const protectedPdfBackgroundSelected = Boolean(
     selectedBlock?.kind === "background" && selectedBlock.assetId
   );
 
   useEffect(() => {
+    const currentSelectedBlock = selectedBlockId
+      ? sheetBlocks.find((block) => block.id === selectedBlockId)
+      : null;
+    if (
+      currentSelectedBlock
+      && isPlanSituationBlock(currentSelectedBlock)
+      && currentSelectedBlock.id !== PLAN_SITUATION_FRAME_ID
+    ) {
+      setSelectedBlockId(PLAN_SITUATION_FRAME_ID);
+      setSelectedSheetBlockIds([PLAN_SITUATION_FRAME_ID]);
+      return;
+    }
     setSelectedSheetBlockIds((current) => {
       if (!selectedBlockId) return current.length ? [] : current;
       const selected = sheetBlocks.find((block) => block.id === selectedBlockId);
@@ -3288,24 +4398,46 @@ const MAX_HISTORY_STEPS = 50;
     }
     const selected = sheetBlocks.find((block) => block.id === blockId);
     if (!selected) return;
-    setSelectedBlockId(blockId);
+    const selectableId = isPlanSituationBlock(selected)
+      ? PLAN_SITUATION_FRAME_ID
+      : blockId;
+    setSelectedBlockId(selectableId);
     setSelectedSheetBlockIds((current) => {
-      if (current.includes(blockId)) return current;
+      if (current.includes(selectableId)) return current;
+      if (isPlanSituationBlock(selected)) return [PLAN_SITUATION_FRAME_ID];
       if (selected.objectGroupId) {
         return sheetBlocks
           .filter((block) => block.objectGroupId === selected.objectGroupId)
           .map((block) => block.id);
       }
-      return [blockId];
+      return [selectableId];
     });
   };
 
   const updateSelectedBlock = (patch: Partial<SheetBlock>) => {
-    if (!selectedBlockId || !canEditActiveSheetTemplate) return;
+    if (!selectedBlockId || !canEditSelectedSheetBlock) return;
     if (protectedPdfBackgroundSelected) return;
-    setSheetBlocks((blocks) =>
-      blocks.map((block) => (block.id === selectedBlockId ? { ...block, ...patch } : block))
+    handleSheetBlocksChange(sheetBlocks.map((block) => (
+      block.id === selectedBlockId ? { ...block, ...patch } : block
+    )));
+  };
+
+  const updateSelectedBlockDimension = (field: "width" | "height", value: number) => {
+    if (!selectedBlock || !Number.isFinite(value)) return;
+    if (selectedBlock.kind !== "picto" || selectedBlock.lockAspectRatio === false) {
+      updateSelectedBlock({ [field]: value });
+      return;
+    }
+
+    const currentRatio = selectedBlock.width / Math.max(1, selectedBlock.height);
+    const dimension = normalizeCanvasIconDimension(value, selectedBlock[field]);
+    const nextSize = normalizeCanvasIconSizeToAspectRatio(
+      field === "width" ? dimension : dimension * currentRatio,
+      field === "height" ? dimension : dimension / currentRatio,
+      currentRatio,
+      { width: selectedBlock.width, height: selectedBlock.height }
     );
+    updateSelectedBlock(nextSize);
   };
 
   const selectedOverlay = selectedOverlayId && selectedOverlayId !== MAIN_PLAN_ID
@@ -3340,7 +4472,7 @@ const MAX_HISTORY_STEPS = 50;
         locked: Boolean(overlay.locked),
         zIndex: overlay.z_index ?? 100,
       })),
-      ...shapes.map((shape, index) => ({
+      ...shapes.filter((shape) => !shape.is_scale_calibration).map((shape, index) => ({
         id: shape.tempId,
         kind: "shape" as const,
         label: `${shapeLabels[shape.shape_type]} ${index + 1}`,
@@ -3385,7 +4517,9 @@ const MAX_HISTORY_STEPS = 50;
         locked: Boolean(block.locked),
         // Default templates stay geometrically immutable, but their automatic
         // legend may still be hidden for the current final export.
-        visibilityEditable: block.kind === "legend",
+        visibilityEditable: block.kind === "legend" || isPlanSituationBlock(block),
+        editable: block.id === PLAN_SITUATION_FRAME_ID || block.id === PLAN_INFORMATION_BLOCK_ID || block.kind === "legend",
+        interactionProtected: isPlanSituationBlock(block) && block.id !== PLAN_SITUATION_FRAME_ID,
         // Sheet blocks are rendered bottom-to-top in array order.
         zIndex: index * 10,
       }))
@@ -3414,9 +4548,10 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const handleSelectLayer = (item: EditorLayerItem) => {
+    activateInteractionMode("select");
     clearObjectSelections();
     if (sheetActive) {
-      setSelectedBlockId(item.id);
+      selectSheetBlock(item.id);
       return;
     }
     if (item.kind === "main" || item.kind === "overlay") setSelectedOverlayId(item.id);
@@ -3429,11 +4564,17 @@ const MAX_HISTORY_STEPS = 50;
     const sheetBlock = sheetActive
       ? sheetBlocks.find((block) => block.id === item.id)
       : undefined;
-    if (sheetActive && !canEditActiveSheetTemplate && sheetBlock?.kind !== "legend") return;
+    if (sheetBlock && isPlanSituationBlock(sheetBlock) && sheetBlock.id !== PLAN_SITUATION_FRAME_ID) return;
+    if (
+      sheetActive
+      && !canEditActiveSheetTemplate
+      && sheetBlock?.kind !== "legend"
+      && !(sheetBlock && isPlanSituationBlock(sheetBlock))
+    ) return;
     const visible = !item.visible;
     if (sheetActive) {
       if (!visible && selectedBlockId === item.id) setSelectedBlockId(null);
-      setSheetBlocks((current) => current.map((block) =>
+      handleSheetBlocksChange(sheetBlocks.map((block) =>
         block.id === item.id ? { ...block, visible } : block
       ));
       return;
@@ -3479,17 +4620,35 @@ const MAX_HISTORY_STEPS = 50;
     }
     setSheetBlocks((current) => {
       const normalized = ensureSheetLegendBlock(sheetTemplate, current);
-      return defaultSheetTemplateActive
+      const templateBlocks = defaultSheetTemplateActive
         ? lockDefaultSheetBlocks(normalized)
         : normalized;
+      return applyPlanLegendLayout(
+        templateBlocks,
+        plan?.plan_legend_layout?.[sheetTemplate] ?? null,
+      );
     });
-  }, [sheetTemplate, sheetBlocks, defaultSheetTemplateActive]);
+  }, [sheetTemplate, sheetBlocks, defaultSheetTemplateActive, plan?.plan_legend_layout]);
 
   const handleToggleLayerLock = (item: EditorLayerItem) => {
-    if (sheetActive && !canEditActiveSheetTemplate) return;
+    const targetSheetBlock = sheetActive
+      ? sheetBlocks.find((block) => block.id === item.id)
+      : undefined;
+    if (
+      targetSheetBlock
+      && isPlanSituationBlock(targetSheetBlock)
+      && targetSheetBlock.id !== PLAN_SITUATION_FRAME_ID
+    ) return;
+    if (
+      sheetActive
+      && !canEditActiveSheetTemplate
+      && !targetSheetBlock?.planSpecificKind
+      && targetSheetBlock?.id !== PLAN_INFORMATION_BLOCK_ID
+      && targetSheetBlock?.kind !== "legend"
+    ) return;
     const locked = !item.locked;
     if (sheetActive) {
-      setSheetBlocks((current) => current.map((block) =>
+      handleSheetBlocksChange(sheetBlocks.map((block) =>
         block.id === item.id ? { ...block, locked } : block
       ));
       return;
@@ -3541,22 +4700,33 @@ const MAX_HISTORY_STEPS = 50;
     })));
   };
 
-  const handleReorderLayers = (topToBottomIds: string[]) => {
+  const handleReorderLayers = (topToBottomIds: string[], allowProtectedSituationMove = false) => {
     if (sheetActive) {
-      if (!canEditActiveSheetTemplate) return;
+      if (!canEditActiveSheetTemplate && !allowProtectedSituationMove) {
+        const protectedIds = new Set(
+          sheetBlocks.filter((block) => !isPlanSituationBlock(block)).map((block) => block.id)
+        );
+        const previousProtectedOrder = sheetLayerItems
+          .map((item) => item.id)
+          .filter((id) => protectedIds.has(id));
+        const nextProtectedOrder = topToBottomIds.filter((id) => protectedIds.has(id));
+        if (previousProtectedOrder.join("|") !== nextProtectedOrder.join("|")) return;
+      }
       const byId = new Map(sheetBlocks.map((block) => [block.id, block]));
       const normalizedIds = [
         ...topToBottomIds.filter((id, index) => byId.has(id) && topToBottomIds.indexOf(id) === index),
         ...sheetLayerItems.map((item) => item.id).filter((id) => !topToBottomIds.includes(id)),
       ];
-      setSheetBlocks([...normalizedIds].reverse().map((id) => byId.get(id)!).filter(Boolean));
+      handleSheetBlocksChange([...normalizedIds].reverse().map((id) => byId.get(id)!).filter(Boolean));
       return;
     }
     applyLayerOrder(topToBottomIds);
   };
 
   const handleMoveLayer = (id: string, direction: LayerMoveDirection) => {
-    if (sheetActive && !canEditActiveSheetTemplate) return;
+    const situationMove = sheetActive
+      && sheetBlocks.some((block) => block.id === id && isPlanSituationBlock(block));
+    if (sheetActive && !canEditActiveSheetTemplate && !situationMove) return;
     const bottomToTop = [...activeLayerItems].reverse();
     const currentIndex = bottomToTop.findIndex((item) => item.id === id);
     if (currentIndex < 0) return;
@@ -3565,7 +4735,7 @@ const MAX_HISTORY_STEPS = 50;
     else if (direction === "back") bottomToTop.unshift(item);
     else if (direction === "up") bottomToTop.splice(Math.min(bottomToTop.length, currentIndex + 1), 0, item);
     else bottomToTop.splice(Math.max(0, currentIndex - 1), 0, item);
-    handleReorderLayers(bottomToTop.reverse().map((layer) => layer.id));
+    handleReorderLayers(bottomToTop.reverse().map((layer) => layer.id), situationMove);
   };
 
   const cleanTargetOverlay = selectedCleanTargetId !== MAIN_PLAN_ID
@@ -3694,9 +4864,9 @@ const MAX_HISTORY_STEPS = 50;
     const boxes = [
       ...selectedMultiIcons.flatMap((icon) => {
         const boxes = [{ x: icon.x, y: icon.y, width: icon.width, height: icon.height }];
-        if (icon.anchor_x != null && icon.anchor_y != null) {
-          boxes.push({ x: icon.anchor_x - 4, y: icon.anchor_y - 4, width: 8, height: 8 });
-        }
+        canvasIconLeaderPoints(icon).forEach((point) => {
+          boxes.push({ x: point.x - 4, y: point.y - 4, width: 8, height: 8 });
+        });
         return boxes;
       }),
       ...selectedMultiShapes.map(getShapeExportBounds),
@@ -3749,15 +4919,13 @@ const MAX_HISTORY_STEPS = 50;
     const definition = iconDefinitions[icon.icon_type];
     const leaderColor = definition?.color || "#22c55e";
     const parts: string[] = [];
-    if (icon.anchor_x != null && icon.anchor_y != null) {
-      const centerX = icon.x + icon.width / 2;
-      const centerY = icon.y + icon.height / 2;
-      parts.push(`<line x1="${svgNumber(icon.anchor_x)}" y1="${svgNumber(icon.anchor_y)}" x2="${svgNumber(centerX)}" y2="${svgNumber(centerY)}" stroke="${escapeSvgAttribute(leaderColor)}" stroke-width="${svgNumber(normalizeCanvasLeaderWidth(icon.leader_width))}" stroke-linecap="round"/>`);
-      parts.push(`<circle cx="${svgNumber(icon.anchor_x)}" cy="${svgNumber(icon.anchor_y)}" r="4" fill="${escapeSvgAttribute(leaderColor)}"/>`);
-    }
-
     const centerX = icon.x + icon.width / 2;
     const centerY = icon.y + icon.height / 2;
+    canvasIconLeaderPoints(icon).forEach((point) => {
+      parts.push(`<line x1="${svgNumber(point.x)}" y1="${svgNumber(point.y)}" x2="${svgNumber(centerX)}" y2="${svgNumber(centerY)}" stroke="${escapeSvgAttribute(leaderColor)}" stroke-width="${svgNumber(normalizeCanvasLeaderWidth(icon.leader_width))}" stroke-linecap="round"/>`);
+      parts.push(`<circle cx="${svgNumber(point.x)}" cy="${svgNumber(point.y)}" r="4" fill="${escapeSvgAttribute(leaderColor)}"/>`);
+    });
+
     const flipX = icon.flip_x ? -1 : 1;
     const flipY = icon.flip_y ? -1 : 1;
     const transform = `translate(${svgNumber(centerX)} ${svgNumber(centerY)}) rotate(${svgNumber(icon.rotation || 0)}) scale(${flipX} ${flipY}) translate(${svgNumber(-icon.width / 2)} ${svgNumber(-icon.height / 2)})`;
@@ -3893,7 +5061,7 @@ const MAX_HISTORY_STEPS = 50;
     // objects drawn directly on the plan. Give the active sheet selection
     // priority in case a stale canvas selection still exists underneath it.
     if (selectedBlockId) {
-      if (!canEditActiveSheetTemplate) return false;
+      if (!canEditSelectedSheetBlock) return false;
       const selectedIds = new Set(
         selectedSheetBlockIds.length ? selectedSheetBlockIds : [selectedBlockId]
       );
@@ -3901,7 +5069,7 @@ const MAX_HISTORY_STEPS = 50;
       if (!movable) return false;
 
       historyDelayRef.current = NUDGE_HISTORY_COALESCE_MS;
-      setSheetBlocks((current) => current.map((item) =>
+      handleSheetBlocksChange(sheetBlocks.map((item) =>
         selectedIds.has(item.id) && !item.locked
           ? { ...item, x: item.x + dx, y: item.y + dy }
           : item
@@ -4012,10 +5180,12 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const handleGroupSheetSelection = () => {
-    if (!canEditActiveSheetTemplate || selectedSheetBlockIds.length < 2) return;
+    const selectedAreEditableSituationBlocks = selectedSheetBlocks.length > 0
+      && selectedSheetBlocks.every(isPlanSituationBlock);
+    if ((!canEditActiveSheetTemplate && !selectedAreEditableSituationBlocks) || selectedSheetBlockIds.length < 2) return;
     const ids = new Set(selectedSheetBlockIds);
     const groupId = sharedSheetObjectGroupId || `sheet-object-group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    setSheetBlocks((current) => current.map((block) =>
+    handleSheetBlocksChange(sheetBlocks.map((block) =>
       ids.has(block.id) ? { ...block, objectGroupId: groupId } : block
     ));
     setSaveStatus(`${selectedSheetBlockIds.length} éléments du template regroupés`);
@@ -4023,9 +5193,11 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const handleUngroupSheetSelection = () => {
-    if (!canEditActiveSheetTemplate || !selectedSheetObjectGroupIds.length) return;
+    const selectedAreEditableSituationBlocks = selectedSheetBlocks.length > 0
+      && selectedSheetBlocks.every(isPlanSituationBlock);
+    if ((!canEditActiveSheetTemplate && !selectedAreEditableSituationBlocks) || !selectedSheetObjectGroupIds.length) return;
     const groupIds = new Set(selectedSheetObjectGroupIds);
-    setSheetBlocks((current) => current.map((block) =>
+    handleSheetBlocksChange(sheetBlocks.map((block) =>
       block.objectGroupId && groupIds.has(block.objectGroupId)
         ? { ...block, objectGroupId: "" }
         : block
@@ -4035,13 +5207,19 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const handleDeleteSheetSelection = () => {
-    if (!canEditActiveSheetTemplate) return;
     const ids = new Set(selectedSheetBlockIds.length
       ? selectedSheetBlockIds
       : selectedBlockId ? [selectedBlockId] : []);
     if (!ids.size) return;
-    setSheetBlocks((current) => current.filter((block) =>
-      !ids.has(block.id) || block.locked || block.kind === "plan" || block.kind === "background"
+    const targets = sheetBlocks.filter((block) => ids.has(block.id));
+    if (!canEditActiveSheetTemplate && !targets.every(isPlanSituationBlock)) return;
+    handleSheetBlocksChange(sheetBlocks.filter((block) =>
+      !ids.has(block.id)
+      || block.locked
+      || block.kind === "plan"
+      || block.kind === "background"
+      || block.situationRole === "frame"
+      || block.situationRole === "background"
     ));
     setSelectedBlockId(null);
     setSelectedSheetBlockIds([]);
@@ -4148,7 +5326,7 @@ const MAX_HISTORY_STEPS = 50;
     selectedIcon ||
     selectedText ||
     selectedShape ||
-    selectedBlock ||
+    (selectedBlock && !selectedPlanInformationBlock && !selectedPlanSituationFrame) ||
     selectedOverlay ||
     selectedOverlayId === MAIN_PLAN_ID ||
     selectedBatBlock
@@ -4174,7 +5352,7 @@ const MAX_HISTORY_STEPS = 50;
         current.map((overlay) => overlay.tempId === selectedOverlay.tempId ? { ...overlay, locked } : overlay)
       );
     } else if (selectedBlock) {
-      if (!canEditActiveSheetTemplate || protectedPdfBackgroundSelected) return;
+      if (!canEditSelectedSheetBlock || protectedPdfBackgroundSelected) return;
       updateSelectedBlock({ locked });
     } else if (selectedIcon) {
       setIcons((current) =>
@@ -4265,11 +5443,7 @@ const MAX_HISTORY_STEPS = 50;
 
   const importOverlayFile = async (file: File) => {
     if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
-      const pdfjs = await import("pdfjs-dist");
-      pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-        "pdfjs-dist/build/pdf.worker.min.mjs",
-        import.meta.url
-      ).toString();
+      const pdfjs = await loadPdfJs();
       const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
       const pageCount = Math.min(pdf.numPages, 20);
       const pages: Array<{ url: string; width: number; height: number; label: string }> = [];
@@ -4452,10 +5626,15 @@ const MAX_HISTORY_STEPS = 50;
     allowDefaultEdits = canEditDefaultTemplates
   ) => {
     const writableVersions = allowDefaultEdits
-      ? versions
-      : versions.filter((version) => isPersonalSheetTemplateVersionId(version.id));
+      ? versions.filter((version) => !version.owner || version.owner === user?.id)
+      : versions.filter((version) => isWritableSheetTemplateVersion(version, user?.id));
+    const dedupedVersionsMap = new Map<string, StoredSheetTemplateVersion>();
+    writableVersions.forEach((v) => {
+      dedupedVersionsMap.set(v.id, v);
+    });
+    const uniqueWritableVersions = Array.from(dedupedVersionsMap.values());
     pendingTemplateServerSyncRef.current = JSON.parse(
-      JSON.stringify(writableVersions)
+      JSON.stringify(uniqueWritableVersions)
     ) as StoredSheetTemplateVersion[];
     if (templateServerSyncRunningRef.current) return;
 
@@ -4488,9 +5667,9 @@ const MAX_HISTORY_STEPS = 50;
 
   const writeStoredSheetTemplateVersions = (versions: StoredSheetTemplateVersion[]) => {
     const writableVersions = canEditDefaultTemplates
-      ? versions
-      : versions.filter((version) => isPersonalSheetTemplateVersionId(version.id));
-    cacheSheetTemplateVersions(writableVersions);
+      ? versions.filter((version) => !version.owner || version.owner === user?.id)
+      : versions.filter((version) => isWritableSheetTemplateVersion(version, user?.id));
+    cacheSheetTemplateVersions(versions);
     syncSheetTemplateVersionsToServer(writableVersions);
   };
 
@@ -4746,9 +5925,17 @@ const MAX_HISTORY_STEPS = 50;
           (version) => version.id === `draft:${sheetTemplate}`
         );
         if (importedDraft) {
-          setSheetBlocks(cloneSheetBlocks(importedDraft.blocks));
+          setSheetBlocks(decoratePlanInformation(
+            importedDraft.template,
+            cloneSheetBlocks(importedDraft.blocks),
+          ));
           setSheetPlanPlacement({ ...importedDraft.planPlacement });
           setActiveSheetTemplateVersionId(importedDraft.id);
+          setLastSheetTemplateSelection({
+            key: importedDraft.template,
+            versionId: importedDraft.id,
+            name: importedDraft.name,
+          });
           window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
         }
       }
@@ -4787,7 +5974,7 @@ const MAX_HISTORY_STEPS = 50;
             ? {
                 ...version,
                 template,
-                blocks: cloneSheetBlocks(blocks),
+                blocks: cloneSheetBlocks(reusableSheetBlocks(blocks)),
                 planPlacement: { ...placement },
                 updatedAt: now,
               }
@@ -4802,7 +5989,7 @@ const MAX_HISTORY_STEPS = 50;
       id: draftId,
       template,
       name: `Dernière modification - ${SHEET_TEMPLATES[template].label}`,
-      blocks: cloneSheetBlocks(blocks),
+      blocks: cloneSheetBlocks(reusableSheetBlocks(blocks)),
       planPlacement: { ...placement },
       createdAt: existing?.createdAt || now,
       updatedAt: now,
@@ -4814,6 +6001,11 @@ const MAX_HISTORY_STEPS = 50;
     writeStoredSheetTemplateVersions(nextVersions);
     if (!activeSheetTemplateVersionId || activeSheetTemplateVersionId.startsWith("draft:")) {
       setActiveSheetTemplateVersionId(draftId);
+      setLastSheetTemplateSelection({
+        key: template,
+        versionId: draftId,
+        name: SHEET_TEMPLATES[template].label,
+      });
     }
   };
 
@@ -4845,9 +6037,7 @@ const MAX_HISTORY_STEPS = 50;
       if (cancelled) return;
       setCanEditDefaultTemplates(allowDefaultEdits);
       setTemplatePermissionLoaded(true);
-      const localVersions = readStoredSheetTemplateVersions().filter(
-        (version) => allowDefaultEdits || isPersonalSheetTemplateVersionId(version.id)
-      );
+      const localVersions = readStoredSheetTemplateVersions();
       cacheSheetTemplateVersions(localVersions);
 
       try {
@@ -4871,9 +6061,7 @@ const MAX_HISTORY_STEPS = 50;
 
         // Re-read just before merging: the user may have edited a template
         // while the server request was in flight.
-        const currentLocalVersions = readStoredSheetTemplateVersions().filter(
-          (version) => allowDefaultEdits || isPersonalSheetTemplateVersionId(version.id)
-        );
+        const currentLocalVersions = readStoredSheetTemplateVersions();
         const mergedById = new Map(currentLocalVersions.map((version) => [version.id, version]));
         serverVersions.forEach((serverVersion) => {
           const localVersion = mergedById.get(serverVersion.id);
@@ -4893,10 +6081,15 @@ const MAX_HISTORY_STEPS = 50;
         cacheSheetTemplateVersions(mergedVersions);
 
         const canonical = (versions: StoredSheetTemplateVersion[]) => JSON.stringify(
-          [...versions].sort((left, right) => left.id.localeCompare(right.id))
+          [...versions].sort((left, right) =>
+            `${left.owner ?? user?.id ?? 0}:${left.id}`.localeCompare(`${right.owner ?? user?.id ?? 0}:${right.id}`)
+          )
         );
         if (canonical(mergedVersions) !== canonical(serverVersions)) {
-          syncSheetTemplateVersionsToServer(mergedVersions, allowDefaultEdits);
+          syncSheetTemplateVersionsToServer(
+            mergedVersions.filter((version) => !version.owner || version.owner === user?.id),
+            allowDefaultEdits
+          );
         }
       } catch (error) {
         // Offline/server failure: the local cache remains fully usable and will
@@ -5032,18 +6225,82 @@ const MAX_HISTORY_STEPS = 50;
         : `version:${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       template: sheetTemplate,
       name: name.trim(),
-      blocks: cloneSheetBlocks(sheetBlocks),
+      blocks: cloneSheetBlocks(reusableSheetBlocks(sheetBlocks)),
       planPlacement: { ...sheetPlanPlacement },
       createdAt: now,
       updatedAt: now,
     };
     writeStoredSheetTemplateVersions([...versions, version]);
     setActiveSheetTemplateVersionId(version.id);
+    setLastSheetTemplateSelection({
+      key: sheetTemplate,
+      versionId: version.id,
+      name: version.name,
+    });
     setSaveStatus("Version du template enregistrée");
     window.setTimeout(() => setSaveStatus(""), 2500);
   };
 
-  const applyStoredSheetTemplateVersion = (versionId: string) => {
+  const publishCurrentTemplateAsDefault = async () => {
+    if (sheetTemplate === "none" || !sheetBlocks.length) return;
+    if (!canEditDefaultTemplates) {
+      alert("Seul un administrateur autorisé peut modifier les templates par défaut officiels.");
+      return;
+    }
+    const templateLabel = SHEET_TEMPLATES[sheetTemplate]?.label || sheetTemplate;
+    const confirmed = window.confirm(
+      `Voulez-vous enregistrer définitivement ce design comme nouveau template officiel par défaut pour "${templateLabel}" ?\n\nCette modification sera appliquée à vie pour TOUS les utilisateurs du studio.`
+    );
+    if (!confirmed) return;
+
+    try {
+      setSaveStatus("Enregistrement du template par défaut...");
+      const response = await authenticatedFetch(buildApiUrl("/api/plans/publish-default/"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          template: sheetTemplate,
+          blocks: cloneSheetBlocks(reusableSheetBlocks(sheetBlocks)),
+          planPlacement: { ...sheetPlanPlacement },
+        }),
+      });
+      if (!response.ok) throw new Error(await describeApiError(response));
+
+      // Update baseline in local cache so reset buttons reflect the new official default
+      const now = new Date().toISOString();
+      const baselineId = `baseline-builtin:${sheetTemplate}`;
+      const versions = readStoredSheetTemplateVersions();
+      const updatedBaseline: StoredSheetTemplateVersion = {
+        id: baselineId,
+        template: sheetTemplate,
+        name: `${templateLabel} — design par défaut`,
+        blocks: lockDefaultSheetBlocks(cloneSheetBlocks(reusableSheetBlocks(sheetBlocks))),
+        planPlacement: { ...sheetPlanPlacement },
+        createdAt: now,
+        updatedAt: now,
+      };
+      const nextVersions = [
+        ...versions.filter((v) => v.id !== baselineId),
+        updatedBaseline,
+      ];
+      writeStoredSheetTemplateVersions(nextVersions);
+
+      setSaveStatus("Template officiel par défaut mis à jour pour tous les utilisateurs !");
+      window.setTimeout(() => setSaveStatus(""), 4000);
+    } catch (error) {
+      console.error("Erreur lors de l'enregistrement du template par défaut:", error);
+      alert(`Erreur: ${error instanceof Error ? error.message : String(error)}`);
+      setSaveStatus("Échec de l'enregistrement du template");
+      window.setTimeout(() => setSaveStatus(""), 3000);
+    }
+  };
+
+  const applyStoredSheetTemplateVersion = (
+    versionId: string,
+    options: { preserveExportSettings?: boolean; preservePlanPlacement?: boolean } = {},
+  ) => {
     if (!versionId) {
       setActiveSheetTemplateVersionId("");
       return;
@@ -5051,15 +6308,23 @@ const MAX_HISTORY_STEPS = 50;
     const version = readStoredSheetTemplateVersions().find((item) => item.id === versionId);
     if (!version) return;
     if (!isPersonalSheetTemplateVersionId(version.id) && !canEditDefaultTemplates) return;
+    const templateChanged = version.template !== sheetTemplate;
     saveTemplateDraft();
     setSheetTemplate(version.template);
-    const templateConfig = SHEET_TEMPLATES[version.template];
-    if ("paper" in templateConfig) {
-      setExportPaperFormat(templateConfig.paper as ExportPaperFormat);
+    if (templateChanged && !options.preserveExportSettings) {
+      setExportPaperFormat(recommendedPaperForTemplate(version.template));
+      setPrintScaleDenominator(RECOMMENDED_SCALE_DENOMINATOR);
     }
-    setSheetBlocks(cloneSheetBlocks(version.blocks));
-    setSheetPlanPlacement({ ...version.planPlacement });
+    setSheetBlocks(decoratePlanInformation(version.template, cloneSheetBlocks(version.blocks)));
+    if (!options.preservePlanPlacement) {
+      setSheetPlanPlacement({ ...version.planPlacement });
+    }
     setActiveSheetTemplateVersionId(version.id);
+    setLastSheetTemplateSelection({
+      key: version.template,
+      versionId: version.id,
+      name: version.name,
+    });
     setAreaSelectionMode(false);
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
     setSelectedBlockId(null);
@@ -5073,14 +6338,28 @@ const MAX_HISTORY_STEPS = 50;
     const versions = readStoredSheetTemplateVersions().filter((version) => version.id !== activeSheetTemplateVersionId);
     writeStoredSheetTemplateVersions(versions);
     setActiveSheetTemplateVersionId("");
+    if (sheetTemplate !== "none") {
+      setLastSheetTemplateSelection({
+        key: sheetTemplate,
+        versionId: "",
+        name: SHEET_TEMPLATES[sheetTemplate].label,
+      });
+    }
     setSaveStatus("Version du template supprimée");
     window.setTimeout(() => setSaveStatus(""), 2500);
   };
 
   const applySheetTemplate = (
     template: SheetTemplateKey | "none",
-    options: { reset?: boolean; skipSave?: boolean; latestBuiltin?: boolean } = {}
+    options: {
+      reset?: boolean;
+      skipSave?: boolean;
+      latestBuiltin?: boolean;
+      preserveExportSettings?: boolean;
+      preservePlanPlacement?: boolean;
+    } = {}
   ) => {
+    const templateChanged = template !== sheetTemplate;
     if (!options.skipSave) saveTemplateDraft();
     setSheetTemplate(template);
     setExportOfficialFond("none");
@@ -5093,8 +6372,14 @@ const MAX_HISTORY_STEPS = 50;
       return;
     }
     const templateConfig = SHEET_TEMPLATES[template];
-    if ("paper" in templateConfig) {
-      setExportPaperFormat(templateConfig.paper as ExportPaperFormat);
+    setLastSheetTemplateSelection({
+      key: template,
+      versionId: "",
+      name: templateConfig.label,
+    });
+    if ((templateChanged || options.reset) && !options.preserveExportSettings) {
+      setExportPaperFormat(recommendedPaperForTemplate(template));
+      setPrintScaleDenominator(RECOMMENDED_SCALE_DENOMINATOR);
     }
     let defaultBlocks = createSheetBlocks(template, {
       // A title the user typed is carried over; an untouched preset is not, so
@@ -5239,31 +6524,104 @@ const MAX_HISTORY_STEPS = 50;
         (version) => version.id !== savedDraft.id
       );
       writeStoredSheetTemplateVersions([...versions, backup, upgradedDraft]);
-      setSheetBlocks(cloneSheetBlocks(upgradedDraft.blocks));
-      setSheetPlanPlacement({ ...upgradedDraft.planPlacement });
+      setSheetBlocks(decoratePlanInformation(template, cloneSheetBlocks(upgradedDraft.blocks)));
+      if (!options.preservePlanPlacement) {
+        setSheetPlanPlacement({ ...upgradedDraft.planPlacement });
+      }
       setActiveSheetTemplateVersionId(upgradedDraft.id);
+      setLastSheetTemplateSelection({
+        key: template,
+        versionId: upgradedDraft.id,
+        name: templateConfig.label,
+      });
       setSaveStatus(templateUpgrade.message);
       window.setTimeout(() => setSaveStatus(""), 4000);
       window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
       return;
     }
     if (savedDraft) {
-      setSheetBlocks(cloneSheetBlocks(savedDraft.blocks));
-      setSheetPlanPlacement({ ...savedDraft.planPlacement });
+      setSheetBlocks(decoratePlanInformation(template, cloneSheetBlocks(savedDraft.blocks)));
+      if (!options.preservePlanPlacement) {
+        setSheetPlanPlacement({ ...savedDraft.planPlacement });
+      }
       setActiveSheetTemplateVersionId(savedDraft.id);
+      setLastSheetTemplateSelection({
+        key: template,
+        versionId: savedDraft.id,
+        name: templateConfig.label,
+      });
       window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
       return;
     }
-    setSheetBlocks(defaultBlocks);
-    setSheetPlanPlacement(defaultPlacement);
+    setSheetBlocks(decoratePlanInformation(template, defaultBlocks));
+    if (!options.preservePlanPlacement) {
+      setSheetPlanPlacement(defaultPlacement);
+    }
     // Frame the whole page as soon as it appears.
     window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
   };
 
-  // Reopen each project with the exact sheet it last used. Custom templates
-  // are resolved only after the account template library has loaded; if a
-  // custom version was deleted (or a built-in edit permission was revoked),
-  // the corresponding protected built-in sheet remains a safe fallback.
+  const applyPlanOwnedTemplateSnapshot = (template: SheetTemplateKey) => {
+    const snapshot = plan?.template_snapshot;
+    if (
+      !snapshot
+      || snapshot.templateKey !== template
+      || !Array.isArray(snapshot.blocks)
+      || !snapshot.blocks.length
+    ) return false;
+
+    setSheetTemplate(template);
+    setSheetBlocks(decoratePlanInformation(template, cloneSheetBlocks(snapshot.blocks)));
+    setSheetPlanPlacement(normalizeSheetPlanPlacement(
+      plan?.sheet_plan_placement || snapshot.planPlacement,
+    ));
+    setActiveSheetTemplateVersionId(snapshot.versionId || "");
+    setLastSheetTemplateSelection({
+      key: template,
+      versionId: snapshot.versionId || "",
+      name: snapshot.name || SHEET_TEMPLATES[template].label,
+    });
+    window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
+    return true;
+  };
+
+  const showRememberedSheetTemplate = () => {
+    if (sheetTemplate !== "none") return;
+    if (!lastSheetTemplateSelection) {
+      setTemplateLibraryOpen(true);
+      return;
+    }
+
+    if (applyPlanOwnedTemplateSnapshot(lastSheetTemplateSelection.key)) return;
+
+    const savedVersion = lastSheetTemplateSelection.versionId
+      ? readStoredSheetTemplateVersions().find(
+          (version) => version.id === lastSheetTemplateSelection.versionId,
+        )
+      : undefined;
+    if (
+      savedVersion
+      && (isPersonalSheetTemplateVersionId(savedVersion.id) || canEditDefaultTemplates)
+    ) {
+      applyStoredSheetTemplateVersion(savedVersion.id, {
+        preserveExportSettings: true,
+        preservePlanPlacement: true,
+      });
+      return;
+    }
+
+    // A deleted personal version still has a safe built-in template family to
+    // fall back to, so the Template button never becomes a dead end.
+    applySheetTemplate(lastSheetTemplateSelection.key, {
+      reset: true,
+      latestBuiltin: true,
+      preserveExportSettings: true,
+      preservePlanPlacement: true,
+    });
+  };
+
+  // Restore the current display mode and independently load the last real
+  // template chosen for this plan. Saving in bare-plan mode must not erase it.
   useEffect(() => {
     if (
       !plan
@@ -5275,30 +6633,50 @@ const MAX_HISTORY_STEPS = 50;
     }
 
     rememberedTemplatePlanIdRef.current = plan.id;
-    const rememberedKey = plan.active_sheet_template_key || "none";
-    const rememberedVersionId = plan.active_sheet_template_version_id || "";
-    const validTemplate = rememberedKey !== "none"
+    const activeKey = plan.active_sheet_template_key || "none";
+    const activeVersionId = plan.active_sheet_template_version_id || "";
+    const rememberedKey = plan.last_sheet_template_key
+      || (activeKey !== "none" ? activeKey : "none");
+    const rememberedVersionId = plan.last_sheet_template_version_id
+      || (activeKey !== "none" ? activeVersionId : "");
+    const validRememberedTemplate = rememberedKey !== "none"
       && Object.prototype.hasOwnProperty.call(SHEET_TEMPLATES, rememberedKey);
+    setLastSheetTemplateSelection(validRememberedTemplate ? {
+      key: rememberedKey as SheetTemplateKey,
+      versionId: rememberedVersionId,
+      name: plan.last_sheet_template_name
+        || plan.active_sheet_template_name
+        || SHEET_TEMPLATES[rememberedKey as SheetTemplateKey].label,
+    } : null);
 
-    if (!validTemplate) {
+    const validActiveTemplate = activeKey !== "none"
+      && Object.prototype.hasOwnProperty.call(SHEET_TEMPLATES, activeKey);
+
+    if (!validActiveTemplate) {
       applySheetTemplate("none", { skipSave: true });
       setRememberedTemplateReady(true);
       return;
     }
 
-    const savedVersion = rememberedVersionId
-      ? readStoredSheetTemplateVersions().find((version) => version.id === rememberedVersionId)
+    if (applyPlanOwnedTemplateSnapshot(activeKey as SheetTemplateKey)) {
+      setRememberedTemplateReady(true);
+      return;
+    }
+
+    const savedVersion = activeVersionId
+      ? readStoredSheetTemplateVersions().find((version) => version.id === activeVersionId)
       : undefined;
     if (
       savedVersion
       && (isPersonalSheetTemplateVersionId(savedVersion.id) || canEditDefaultTemplates)
     ) {
-      applyStoredSheetTemplateVersion(savedVersion.id);
+      applyStoredSheetTemplateVersion(savedVersion.id, { preserveExportSettings: true });
     } else {
-      applySheetTemplate(rememberedKey as SheetTemplateKey, {
+      applySheetTemplate(activeKey as SheetTemplateKey, {
         reset: true,
         skipSave: true,
         latestBuiltin: true,
+        preserveExportSettings: true,
       });
     }
     setRememberedTemplateReady(true);
@@ -5310,10 +6688,29 @@ const MAX_HISTORY_STEPS = 50;
     storedSheetTemplateVersions,
   ]);
 
+  // Recadrage propre au plan : le template pose d'abord son cadrage par défaut,
+  // puis ce réglage enregistré reprend le dessus une seule fois au chargement.
+  useEffect(() => {
+    if (
+      !plan
+      || sheetTemplate === "none"
+      || !rememberedTemplateReady
+      || loadedSheetPlanPlacementPlanIdRef.current === plan.id
+    ) return;
+    loadedSheetPlanPlacementPlanIdRef.current = plan.id;
+    setSheetPlanPlacement(normalizeSheetPlanPlacement(plan.sheet_plan_placement));
+  }, [plan, sheetTemplate, rememberedTemplateReady]);
+
   const markRememberedTemplateAsSaved = (selection: {
     active_sheet_template_key: string;
     active_sheet_template_version_id: string;
     active_sheet_template_name: string;
+    last_sheet_template_key: string;
+    last_sheet_template_version_id: string;
+    last_sheet_template_name: string;
+    document_type: PlanDocumentType;
+    export_paper_format: ExportPaperFormat;
+    print_scale_denominator: number;
   }) => {
     setSavedSnapshot((current) => {
       if (!current) return current;
@@ -5324,6 +6721,9 @@ const MAX_HISTORY_STEPS = 50;
           sheetTemplate: selection.active_sheet_template_key,
           activeSheetTemplateVersionId: selection.active_sheet_template_version_id,
           activeSheetTemplateName: selection.active_sheet_template_name,
+          documentType: selection.document_type,
+          exportPaperFormat: selection.export_paper_format,
+          printScaleDenominator: selection.print_scale_denominator,
         });
       } catch {
         return current;
@@ -5332,6 +6732,7 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const syncPlanTemplateSelectionToServer = async () => {
+    if (!canEditPlan) return;
     if (planTemplateSelectionSyncRunningRef.current) return;
     planTemplateSelectionSyncRunningRef.current = true;
     try {
@@ -5367,15 +6768,35 @@ const MAX_HISTORY_STEPS = 50;
   // the final sheet associated with this plan.
   useEffect(() => {
     if (!plan || !rememberedTemplateReady) return;
+    if (!canEditPlan) return;
+    // A template may be previewed immediately in the studio, but it only
+    // becomes the plan's remembered final sheet once its required metadata is
+    // complete. The information modal saves both atomically.
+    if (sheetTemplate !== "none" && missingPlanInformationCount > 0) return;
+    // A calibrated plan must be persisted with the measurement calculated for
+    // its new template geometry. The full Save action sends both atomically.
+    if (scaleCalibrationShape) return;
     const selection = {
       active_sheet_template_key: sheetTemplate,
       active_sheet_template_version_id: sheetTemplate === "none" ? "" : activeSheetTemplateVersionId,
       active_sheet_template_name: sheetTemplate === "none" ? "Plan seul" : activeSheetTemplateLabel,
+      last_sheet_template_key: lastSheetTemplateKeyForPersistence,
+      last_sheet_template_version_id: lastSheetTemplateVersionIdForPersistence,
+      last_sheet_template_name: lastSheetTemplateNameForPersistence,
+      document_type: activeDocumentType,
+      export_paper_format: exportPaperFormat,
+      print_scale_denominator: printScaleDenominator,
     };
     if (
       plan.active_sheet_template_key === selection.active_sheet_template_key
       && (plan.active_sheet_template_version_id || "") === selection.active_sheet_template_version_id
       && (plan.active_sheet_template_name || "Plan seul") === selection.active_sheet_template_name
+      && (plan.last_sheet_template_key || "none") === selection.last_sheet_template_key
+      && (plan.last_sheet_template_version_id || "") === selection.last_sheet_template_version_id
+      && (plan.last_sheet_template_name || "") === selection.last_sheet_template_name
+      && (plan.document_type || "") === selection.document_type
+      && (plan.export_paper_format || "a3") === selection.export_paper_format
+      && (plan.print_scale_denominator || RECOMMENDED_SCALE_DENOMINATOR) === selection.print_scale_denominator
     ) {
       return;
     }
@@ -5387,6 +6808,12 @@ const MAX_HISTORY_STEPS = 50;
     sheetTemplate,
     activeSheetTemplateVersionId,
     activeSheetTemplateLabel,
+    lastSheetTemplateKeyForPersistence,
+    lastSheetTemplateVersionIdForPersistence,
+    lastSheetTemplateNameForPersistence,
+    canEditPlan,
+    missingPlanInformationCount,
+    scaleCalibrationShape,
   ]);
 
   const createCustomTemplateIds = () => {
@@ -5454,11 +6881,7 @@ const MAX_HISTORY_STEPS = 50;
 
     const uploadedAssetIds: string[] = [];
     try {
-      const pdfjs = await import("pdfjs-dist");
-      pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-        "pdfjs-dist/build/pdf.worker.min.mjs",
-        import.meta.url
-      ).toString();
+      const pdfjs = await loadPdfJs();
       const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
       if (!pdf.numPages) throw new Error("Le PDF ne contient aucune page.");
       const pageCount = Math.min(pdf.numPages, availablePages);
@@ -5573,7 +6996,10 @@ const MAX_HISTORY_STEPS = 50;
 
       writeStoredSheetTemplateVersions([...currentVersions, ...importedVersions]);
       const firstCustom = importedVersions.find((version) => version.id.startsWith("custom:"));
-      if (firstCustom) applyStoredSheetTemplateVersion(firstCustom.id);
+      if (firstCustom) {
+        applyStoredSheetTemplateVersion(firstCustom.id);
+        openPlanInformationSettings();
+      }
       setTemplateLibraryOpen(false);
       setSaveStatus(
         `${pageCount} page${pageCount > 1 ? "s" : ""} PDF importée${pageCount > 1 ? "s" : ""} comme template personnel`
@@ -5623,6 +7049,7 @@ const MAX_HISTORY_STEPS = 50;
     ]);
     applyStoredSheetTemplateVersion(custom.id);
     setTemplateLibraryOpen(false);
+    openPlanInformationSettings();
     setSaveStatus(`Template « ${name} » créé`);
     window.setTimeout(() => setSaveStatus(""), 3000);
   };
@@ -5669,6 +7096,7 @@ const MAX_HISTORY_STEPS = 50;
     if (item.kind === "custom") applyStoredSheetTemplateVersion(item.id);
     else applySheetTemplate(item.template, { reset: true, latestBuiltin: true });
     setTemplateLibraryOpen(false);
+    openPlanInformationSettings();
   };
 
   const handleDeleteCustomSheetTemplate = (item: SheetTemplateLibraryItem) => {
@@ -5725,7 +7153,7 @@ const MAX_HISTORY_STEPS = 50;
       writeStoredSheetTemplateVersions(versions.map((version) =>
         version.id === restored.id ? restored : version
       ));
-      setSheetBlocks(cloneSheetBlocks(restored.blocks));
+      setSheetBlocks(decoratePlanInformation(restored.template, cloneSheetBlocks(restored.blocks)));
       setSheetPlanPlacement({ ...restored.planPlacement });
       setSelectedBlockId(null);
       setSelectedSheetBlockIds([]);
@@ -5944,16 +7372,26 @@ const MAX_HISTORY_STEPS = 50;
     };
   }, [sheetActive, sheetPictoTypesKey, iconDefinitions]);
 
-  const sheetLegendEntries: SheetLegendEntry[] = useMemo(
+  const allSheetLegendEntries: SheetLegendEntry[] = useMemo(
     () =>
-      usedIconTypes.map((type) => ({
-        type,
+      usedIconTypesKey.split("|").filter(Boolean).map((type) => ({
+        type: type as IconType,
         label: iconDefinitions[type]?.label || String(type),
         image: sheetLegendImages[type] ?? null
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [usedIconTypesKey, iconDefinitions, sheetLegendImages]
   );
+  const sheetLegendEntries = useMemo(
+    () => allSheetLegendEntries.filter((entry) => !hiddenLegendIconTypes.includes(String(entry.type))),
+    [allSheetLegendEntries, hiddenLegendIconTypes],
+  );
+
+  const setLegendEntryVisible = (iconType: string, visible: boolean) => {
+    setHiddenLegendIconTypes((current) => visible
+      ? current.filter((type) => type !== iconType)
+      : Array.from(new Set([...current, iconType])));
+  };
 
   /** A pictogram dropped on the page rather than on the drawing. */
   const handlePlaceSheetIcon = (
@@ -6073,12 +7511,31 @@ const MAX_HISTORY_STEPS = 50;
       if (!Number.isFinite(Number(value))) return;
       const currentDimension = selectedIcon?.[field] ?? defaultIconSize[field];
       const dimension = normalizeCanvasIconDimension(value, currentDimension);
-      setDefaultIconSize((currentSize) => ({
-        ...currentSize,
-        [field]: dimension,
-      }));
+      const currentWidth = selectedIcon?.width ?? defaultIconSize.width;
+      const currentHeight = selectedIcon?.height ?? defaultIconSize.height;
+      if (selectedIcon?.lock_aspect_ratio === false) {
+        setDefaultIconSize((currentSize) => ({ ...currentSize, [field]: dimension }));
+        setIcons((currentIcons) => currentIcons.map((icon) => (
+          icon.tempId === selectedIconId
+          || (resizeSameTypeIcons && icon.icon_type === selectedIcon.icon_type)
+            ? { ...icon, [field]: dimension }
+            : icon
+        )));
+        return;
+      }
+      const currentRatio = currentWidth / Math.max(1, currentHeight);
+      const nextSize = normalizeCanvasIconSizeToAspectRatio(
+        field === "width" ? dimension : dimension * currentRatio,
+        field === "height" ? dimension : dimension / currentRatio,
+        currentRatio,
+        { width: currentWidth, height: currentHeight }
+      );
+      setDefaultIconSize(nextSize);
       setIcons((currentIcons) => currentIcons.map((icon) => (
-        icon.tempId === selectedIconId ? { ...icon, [field]: dimension } : icon
+        icon.tempId === selectedIconId
+        || (resizeSameTypeIcons && icon.icon_type === selectedIcon?.icon_type)
+          ? { ...icon, ...nextSize }
+          : icon
       )));
       return;
     }
@@ -6115,20 +7572,25 @@ const MAX_HISTORY_STEPS = 50;
 
   const handleOffsetIcon = () => {
     if (!selectedIcon) return;
-
-    const anchorX = selectedIcon.x + selectedIcon.width / 2;
-    const anchorY = selectedIcon.y + selectedIcon.height / 2;
+    const existingPoints = canvasIconLeaderPoints(selectedIcon);
+    const lastPoint = existingPoints[existingPoints.length - 1];
+    const point = {
+      id: `leader-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      x: lastPoint ? lastPoint.x + 24 : selectedIcon.x + selectedIcon.width / 2,
+      y: lastPoint ? lastPoint.y + 24 : selectedIcon.y + selectedIcon.height / 2,
+    };
 
     setIcons((currentIcons) =>
       currentIcons.map((icon) =>
         icon.tempId === selectedIcon.tempId
           ? {
               ...icon,
-              anchor_x: anchorX,
-              anchor_y: anchorY,
-              // Move the symbol clear of its anchor so the leader is visible at once.
-              x: icon.x + OFFSET_STEP,
-              y: icon.y - OFFSET_STEP
+              anchor_x: null,
+              anchor_y: null,
+              leader_points: [...existingPoints, point],
+              // Only the first déport moves the symbol clear of its true position.
+              x: existingPoints.length ? icon.x : icon.x + OFFSET_STEP,
+              y: existingPoints.length ? icon.y : icon.y - OFFSET_STEP,
             }
           : icon
       )
@@ -6136,10 +7598,9 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const handleClearIconOffset = () => {
-    if (!selectedIcon || selectedIcon.anchor_x == null || selectedIcon.anchor_y == null) return;
-
-    const anchorX = selectedIcon.anchor_x;
-    const anchorY = selectedIcon.anchor_y;
+    if (!selectedIcon) return;
+    const firstPoint = canvasIconLeaderPoints(selectedIcon)[0];
+    if (!firstPoint) return;
 
     setIcons((currentIcons) =>
       currentIcons.map((icon) =>
@@ -6147,14 +7608,27 @@ const MAX_HISTORY_STEPS = 50;
           ? {
               ...icon,
               // Put the pictogram back on the equipment it was pointing at.
-              x: anchorX - icon.width / 2,
-              y: anchorY - icon.height / 2,
+              x: firstPoint.x - icon.width / 2,
+              y: firstPoint.y - icon.height / 2,
               anchor_x: null,
-              anchor_y: null
+              anchor_y: null,
+              leader_points: [],
             }
           : icon
       )
     );
+  };
+
+  const handleRemoveIconLeaderPoint = (pointId: string) => {
+    if (!selectedIcon) return;
+    setIcons((currentIcons) => currentIcons.map((icon) => icon.tempId === selectedIcon.tempId
+      ? {
+          ...icon,
+          anchor_x: null,
+          anchor_y: null,
+          leader_points: canvasIconLeaderPoints(icon).filter((point) => point.id !== pointId),
+        }
+      : icon));
   };
 
   // ── Icon clipboard ────────────────────────────────────────────────────────
@@ -6210,7 +7684,9 @@ const MAX_HISTORY_STEPS = 50;
     const maxY = Math.max(0, activeSheetSize.height - copied.height);
     return {
       ...copied,
-      id: `sheet-copy-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      id: isPlanSituationBlock(source)
+        ? `plan-situation:${source.situationRole || "pictogram"}:${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+        : `sheet-copy-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       label: source.label.endsWith(" (copie)") ? source.label : `${source.label} (copie)`,
       x: Math.max(0, Math.min(maxX, source.x + offset)),
       y: Math.max(0, Math.min(maxY, source.y + offset)),
@@ -6221,9 +7697,15 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const placeSheetBlockCopy = (source: SheetBlock, offset = 16) => {
-    if (!sheetActive || !canEditActiveSheetTemplate || !isCopyableSheetBlock(source)) return false;
+    const situationCopy = isPlanSituationBlock(source);
+    if (
+      !sheetActive
+      || (!canEditActiveSheetTemplate && !situationCopy)
+      || (situationCopy && !planSituation.enabled)
+      || !isCopyableSheetBlock(source)
+    ) return false;
     const pasted = makeSheetBlockCopy(source, offset);
-    setSheetBlocks((blocks) => [...blocks, pasted]);
+    handleSheetBlocksChange([...sheetBlocks, pasted]);
     setSelectedIconId(null);
     setSelectedShapeId(null);
     setSelectedTextId(null);
@@ -6231,10 +7713,7 @@ const MAX_HISTORY_STEPS = 50;
     setSelectedBatBlock(false);
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
     setSelectedBlockId(pasted.id);
-    setMode("select");
-    setPlacementIconType(null);
-    setPlacementText(false);
-    setShapeTool(null);
+    activateInteractionMode("select");
     setSaveStatus("Objet collé dans la feuille");
     window.setTimeout(() => setSaveStatus(""), 1800);
     return true;
@@ -6278,6 +7757,7 @@ const MAX_HISTORY_STEPS = 50;
           label: selectedIcon.label,
           anchor_x: selectedIcon.anchor_x ?? null,
           anchor_y: selectedIcon.anchor_y ?? null,
+          leader_points: canvasIconLeaderPoints(selectedIcon),
           leader_width: normalizeCanvasLeaderWidth(selectedIcon.leader_width),
           framed: selectedIcon.framed ?? false,
           flip_x: selectedIcon.flip_x ?? false,
@@ -6310,6 +7790,7 @@ const MAX_HISTORY_STEPS = 50;
       label: source.label ?? "",
       anchor_x: source.anchor_x ?? null,
       anchor_y: source.anchor_y ?? null,
+      leader_points: Array.isArray(source.leader_points) ? source.leader_points : [],
       leader_width: normalizeCanvasLeaderWidth(source.leader_width),
       framed: source.framed ?? false,
       flip_x: source.flip_x ?? false,
@@ -6321,7 +7802,7 @@ const MAX_HISTORY_STEPS = 50;
 
     setIcons((currentIcons) => [...currentIcons, pasted]);
     setSelectedIconId(pasted.tempId);
-    setMode("select");
+    activateInteractionMode("select");
   };
 
   const handleDuplicateIcon = () => {
@@ -6835,11 +8316,7 @@ const MAX_HISTORY_STEPS = 50;
     const cached = officialFondCacheRef.current.get(cacheKey);
     if (cached) return cached;
 
-    const pdfjs = await import("pdfjs-dist");
-    pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-      "pdfjs-dist/build/pdf.worker.min.mjs",
-      import.meta.url
-    ).toString();
+    const pdfjs = await loadPdfJs();
     const pdf = await pdfjs.getDocument({ url: fond.file }).promise;
     const page = await pdf.getPage(1);
     const baseViewport = page.getViewport({ scale: 1 });
@@ -6944,7 +8421,7 @@ const MAX_HISTORY_STEPS = 50;
     const trimmedPlan = await getTrimmedPlanImage(pixelRatio, silent);
     if (!trimmedPlan) return null;
     const legendImages = await Promise.all(
-      usedIconTypes.map(async (type) => {
+      visibleLegendIconTypes.map(async (type) => {
         const src = await buildIconPreviewSource(iconDefinitions[type]);
         if (!src) return null;
 
@@ -8935,6 +10412,13 @@ const MAX_HISTORY_STEPS = 50;
     format: "png" | "jpeg" | "pdf",
     quality: ExportQuality = exportQuality,
   ) => {
+    if (sheetActive && missingPlanInformationCount > 0) {
+      openPlanInformationSettings();
+      setPlanInformationError(
+        "Complétez et enregistrez les informations obligatoires avant d’exporter ce template.",
+      );
+      return;
+    }
     const stage = getStageInstance();
     if (!stage) return;
 
@@ -8967,7 +10451,11 @@ const MAX_HISTORY_STEPS = 50;
       if (!dataUrl) return;
 
       const suffix = sheetActive ? sheetTemplate : "plan";
-      const filename = `${plan?.title || "plan"}_${suffix}`;
+      const planReference = formatPlanReference(
+        plan?.plan_number || "",
+        plan?.revision_index || "",
+      ).replace(/[^a-zA-Z0-9_-]+/g, "-");
+      const filename = `${plan?.title || "plan"}_${suffix}${planReference ? `_${planReference}` : ""}`;
 
       if (format === "png" || format === "jpeg") {
         const downloadDataUrl = format === "jpeg"
@@ -9051,6 +10539,21 @@ const MAX_HISTORY_STEPS = 50;
     } finally {
       setSheetExporting(false);
     }
+  };
+
+  const requestStudioExport = (
+    format: "png" | "jpeg" | "pdf",
+    quality: ExportQuality,
+  ) => {
+    const action = async () => {
+      await exportStudio(format, quality);
+    };
+    if (hasUnsavedChanges()) {
+      setPendingExportAction(() => action);
+      setExportSaveConfirmOpen(true);
+      return;
+    }
+    void action();
   };
 
   if (loading) {
@@ -9295,14 +10798,78 @@ const MAX_HISTORY_STEPS = 50;
             <div className="flex items-center gap-1 rounded bg-black/25 px-1.5 py-0.5">
               <Eye className="h-3.5 w-3.5 text-neutral-400" />
               <span className="text-[10px] font-semibold text-neutral-400">Affichage :</span>
+              <div className="flex items-center rounded bg-black/30 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => applySheetTemplate("none")}
+                  className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                    sheetTemplate === "none"
+                      ? "bg-sky-500/25 text-sky-200"
+                      : "text-neutral-400 hover:bg-white/10 hover:text-white"
+                  }`}
+                  title="Afficher uniquement le plan sans oublier le dernier template choisi"
+                >
+                  Plan seul
+                </button>
+                <button
+                  type="button"
+                  onClick={showRememberedSheetTemplate}
+                  className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                    sheetTemplate !== "none"
+                      ? "bg-sky-500/25 text-sky-200"
+                      : "text-neutral-400 hover:bg-white/10 hover:text-white"
+                  }`}
+                  title={lastSheetTemplateSelection
+                    ? `Réafficher directement : ${lastSheetTemplateSelection.name}`
+                    : "Choisir le premier template de ce plan"}
+                >
+                  Template
+                </button>
+              </div>
               <button
                 type="button"
                 onClick={() => setTemplateLibraryOpen(true)}
-                title="Ouvrir la bibliothèque avec le nom et l’aperçu de chaque template"
-                className="flex max-w-52 cursor-pointer items-center gap-1.5 rounded bg-white/[0.04] px-2 py-1 text-[11px] font-semibold text-neutral-200 transition-colors hover:bg-white/10 hover:text-white"
+                title="Ouvrir la bibliothèque pour choisir un autre template"
+                className="flex cursor-pointer items-center gap-1.5 rounded bg-white/[0.04] px-2 py-1 text-[10px] font-semibold text-neutral-200 transition-colors hover:bg-white/10 hover:text-white"
               >
                 <Library className="h-3.5 w-3.5 shrink-0 text-brand-orange" />
-                <span className="truncate">{activeSheetTemplateLabel}</span>
+                <span>{lastSheetTemplateSelection ? "Changer de template" : "Choisir un template"}</span>
+              </button>
+              {sheetActive && (
+                <button
+                  type="button"
+                  onClick={openPlanInformationSettings}
+                  title="Modifier les informations obligatoires et leur visibilité sur la planche"
+                  className={`flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[10px] font-semibold transition-colors ${
+                    missingPlanInformationCount > 0
+                      ? "bg-amber-500/15 text-amber-200 hover:bg-amber-500/25"
+                      : "bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25"
+                  }`}
+                >
+                  <Settings className="h-3.5 w-3.5" />
+                  <span>Informations du plan</span>
+                  {missingPlanInformationCount > 0 ? (
+                    <span className="rounded bg-amber-400/20 px-1 text-[9px] font-bold">
+                      {missingPlanInformationCount}
+                    </span>
+                  ) : (
+                    <Check className="h-3 w-3" />
+                  )}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setPlanSituationModalOpen(true)}
+                title="Créer ou modifier le plan de situation propre à ce plan"
+                className={`flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[10px] font-semibold transition-colors ${
+                  planSituation.enabled
+                    ? "bg-sky-500/20 text-sky-200 hover:bg-sky-500/30"
+                    : "bg-white/[0.04] text-neutral-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <Waypoints className="h-3.5 w-3.5" />
+                <span>Plan de situation</span>
+                {planSituation.enabled && <Check className="h-3 w-3 text-emerald-300" />}
               </button>
               {defaultSheetTemplateActive && (
                 <span
@@ -9319,6 +10886,17 @@ const MAX_HISTORY_STEPS = 50;
                   {canEditDefaultTemplates ? "Modification autorisée" : "Par défaut protégé"}
                 </span>
               )}
+              {defaultSheetTemplateActive && canEditDefaultTemplates && (
+                <button
+                  type="button"
+                  onClick={publishCurrentTemplateAsDefault}
+                  title="Enregistrer définitivement comme nouveau template officiel par défaut pour TOUS les utilisateurs"
+                  className="flex cursor-pointer items-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/20 px-2 py-1 text-[10px] font-bold text-emerald-300 shadow-sm transition-colors hover:bg-emerald-500/30 hover:text-white"
+                >
+                  <Save className="h-3 w-3" />
+                  <span>Enregistrer par défaut (tous)</span>
+                </button>
+              )}
               {sheetActive && (
                 <button
                   type="button"
@@ -9329,79 +10907,6 @@ const MAX_HISTORY_STEPS = 50;
                   <RefreshCw className="h-3 w-3" />
                 </button>
               )}
-              {sheetActive && (
-                <>
-                  <select
-                    value={activeSheetTemplateVersionId.startsWith("custom:") ? "" : activeSheetTemplateVersionId}
-                    onChange={(event) => applyStoredSheetTemplateVersion(event.target.value)}
-                    title="Charger une version enregistrée de ce template"
-                    className="max-w-40 cursor-pointer rounded bg-transparent px-1 py-0.5 text-[11px] font-semibold text-neutral-200 outline-none hover:bg-white/10"
-                  >
-                    <option value="" className="bg-[#2d2d30]">Versions</option>
-                    {currentSheetTemplateVersions.map((version) => (
-                      <option key={version.id} value={version.id} className="bg-[#2d2d30]">
-                        {version.id.startsWith("draft:") ? "Dernière modif" : version.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={saveCurrentSheetTemplateVersion}
-                    disabled={!personalSheetTemplateActive && !canEditDefaultTemplates}
-                    title={!personalSheetTemplateActive && !canEditDefaultTemplates
-                      ? "Autorisation administrateur requise pour enregistrer une version du template par défaut"
-                      : "Enregistrer cette mise en page comme une nouvelle version"}
-                    className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
-                  >
-                    <Save className="h-3 w-3" />
-                  </button>
-                  {activeSheetTemplateVersionId.startsWith("version:") && (
-                    <button
-                      type="button"
-                      onClick={deleteCurrentSheetTemplateVersion}
-                      title="Supprimer la version sélectionnée"
-                      className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-500 transition-colors hover:bg-red-500/15 hover:text-red-300"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  )}
-                  <input
-                    ref={templateTransferInputRef}
-                    type="file"
-                    accept="application/json,.json"
-                    onChange={importPortableSheetTemplates}
-                    className="hidden"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void exportPortableSheetTemplates()}
-                    disabled={templateTransferBusy}
-                    title="Exporter les templates locaux avec leurs pictogrammes dans un fichier JSON"
-                    className="flex cursor-pointer items-center justify-center gap-1 rounded px-1.5 py-1 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-wait disabled:opacity-40"
-                  >
-                    {templateTransferBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
-                    <span>Exporter</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => templateTransferInputRef.current?.click()}
-                    disabled={templateTransferBusy}
-                    title="Importer sur ce serveur un fichier de templates préparé en local"
-                    className="flex cursor-pointer items-center justify-center gap-1 rounded px-1.5 py-1 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-wait disabled:opacity-40"
-                  >
-                    <FileUp className="h-3 w-3" />
-                    <span>Importer</span>
-                  </button>
-                </>
-              )}
-              <button
-                type="button"
-                onClick={openSheetSettings}
-                title="Réglages de la feuille : nom du site et titre"
-                className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
-              >
-                <Settings className="h-3 w-3" />
-              </button>
             </div>
 
             <button
@@ -9441,11 +10946,20 @@ const MAX_HISTORY_STEPS = 50;
 
             {/* One export, for both modes: it always captures the studio. */}
             <ExportButtons
-              onExport={(format, quality) => void exportStudio(format, quality)}
+              onExport={requestStudioExport}
               exporting={sheetExporting}
               paperFormat={exportPaperFormat}
-              paperOptions={EXPORT_PAPER_OPTIONS}
-              onPaperFormatChange={(key) => setExportPaperFormat(key as ExportPaperFormat)}
+              paperOptions={exportPaperOptions}
+              onPaperFormatChange={setExportPaperFormat}
+              scaleDenominator={printScaleDenominator}
+              onScaleDenominatorChange={setPrintScaleDenominator}
+              documentTypeLabel={documentTypeLabel(activeDocumentType)}
+              compliance={exportCompliance}
+              scaleMeasurement={scaleMeasurement}
+              canCalibrate={sheetActive && canEditPlan}
+              onStartScaleCalibration={startScaleCalibration}
+              onClearScaleCalibration={clearScaleCalibration}
+              onAdjustToDeclaredScale={adjustPlanToDeclaredScale}
               quality={exportQuality}
               qualityOptions={EXPORT_QUALITY_OPTIONS}
               onQualityChange={setExportQuality}
@@ -9637,12 +11151,12 @@ const MAX_HISTORY_STEPS = 50;
               <button
                 type="button"
                 disabled={Boolean(
-                  selectedBlock && (!canEditActiveSheetTemplate || protectedPdfBackgroundSelected)
+                  selectedBlock && (!canEditSelectedSheetBlock || protectedPdfBackgroundSelected)
                 )}
                 onClick={toggleSelectedObjectLock}
                 title={protectedPdfBackgroundSelected
                   ? "Le fond PDF reste verrouillé pour protéger la mise en page"
-                  : selectedBlock && !canEditActiveSheetTemplate
+                  : selectedBlock && !canEditSelectedSheetBlock
                     ? "Déverrouillage interdit : autorisation administrateur requise"
                   : selectedObjectLocked
                     ? "Déverrouiller l’objet sélectionné"
@@ -9782,7 +11296,7 @@ const MAX_HISTORY_STEPS = 50;
                   onAddIcon={handleAddIcon}
                   activeIconType={placementIconType}
                   onCancelPlacement={() => setPlacementIconType(null)}
-                  iconDefinitions={availableIconDefinitions}
+                  iconDefinitions={iconDefinitions}
                   onAddSvg={handleAddSvgPictogram}
                   onDeleteSvg={handleDeleteSvgPictogram}
                   onRenameSvg={handleRenameSvgPictogram}
@@ -9821,6 +11335,57 @@ const MAX_HISTORY_STEPS = 50;
                 : { flex: "1 1 0%", minWidth: 0, overflow: "hidden" }
             }
           >
+            {scaleCalibrationCaptureActive && (
+              <div className="pointer-events-none absolute left-1/2 top-3 z-40 -translate-x-1/2">
+                <div className="pointer-events-auto flex items-center gap-3 rounded-xl border border-sky-400/30 bg-sky-950/95 px-4 py-2 text-xs text-sky-100 shadow-xl">
+                  <Ruler className="h-4 w-4 text-sky-300" />
+                  <span>Glissez entre deux points de distance réelle connue sur le plan.</span>
+                  <button
+                    type="button"
+                    onClick={cancelScaleCalibrationCapture}
+                    className="rounded px-2 py-1 font-semibold text-sky-300 hover:bg-white/10 hover:text-white"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              </div>
+            )}
+            {planSituationTraceMode && (
+              <div className="pointer-events-none absolute left-1/2 top-3 z-40 w-[min(92%,720px)] -translate-x-1/2">
+                <div className="pointer-events-auto flex flex-wrap items-center gap-3 rounded-xl border border-sky-400/30 bg-sky-950/95 px-4 py-2 text-xs text-sky-100 shadow-xl">
+                  <div className="flex shrink-0 overflow-hidden rounded-lg border border-sky-400/30 bg-black/20">
+                    <button
+                      type="button"
+                      onClick={() => setMode("select")}
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 font-semibold ${mode !== "pan" ? "bg-sky-600 text-white" : "text-sky-200 hover:bg-white/10"}`}
+                    >
+                      <Pencil className="h-3.5 w-3.5" /> Tracer
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMode("pan")}
+                      className={`flex items-center gap-1.5 border-l border-sky-400/30 px-2.5 py-1.5 font-semibold ${mode === "pan" ? "bg-sky-600 text-white" : "text-sky-200 hover:bg-white/10"}`}
+                    >
+                      <Hand className="h-3.5 w-3.5" /> Déplacer / zoomer
+                    </button>
+                  </div>
+                  <span className="min-w-0 flex-1">
+                    {mode === "pan"
+                      ? "Glissez pour déplacer le plan. Utilisez la molette ou le pincement pour zoomer, puis revenez à Tracer."
+                      : planSituationTraceMode === "building_outline"
+                      ? "Cliquez sur les angles du contour extérieur. Double-cliquez, cliquez le premier point ou appuyez sur Entrée pour fermer."
+                      : "Tracez la partie du bâtiment couverte par ce plan, puis fermez le polygone."}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={cancelSituationTrace}
+                    className="shrink-0 rounded px-2 py-1 font-semibold text-sky-300 hover:bg-white/10 hover:text-white"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              </div>
+            )}
             {cleaning ? (
               <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-[#1b1b1d]">
                 <Loader2 className="h-9 w-9 animate-spin text-emerald-500" />
@@ -9836,6 +11401,11 @@ const MAX_HISTORY_STEPS = 50;
                   selectedIconId={selectedIconId}
                   planRotation={effectivePlanRotation}
                   onSelectIcon={(iconId) => {
+                    if (scaleCalibrationCaptureActive) {
+                      setSelectedIconId(null);
+                      return;
+                    }
+                    if (iconId) activateInteractionMode("select");
                     setSelectedIconId(iconId);
                     if (iconId) {
                       setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
@@ -9847,8 +11417,18 @@ const MAX_HISTORY_STEPS = 50;
                     }
                   }}
                   sheet={sheetProp}
-                  sheetEditingEnabled={canEditActiveSheetTemplate}
-                  onSheetBlocksChange={canEditActiveSheetTemplate ? setSheetBlocks : undefined}
+                  sheetEditingEnabled={canEditSheetCanvas}
+                  isSheetBlockEditable={(block) => Boolean(
+                    canEditPlan
+                    && (isPlanSituationBlock(block)
+                      ? block.id === PLAN_SITUATION_FRAME_ID
+                      : (
+                          canEditActiveSheetTemplate
+                          || block.id === PLAN_INFORMATION_BLOCK_ID
+                          || block.kind === "legend"
+                        ))
+                  )}
+                  onSheetBlocksChange={canEditSheetCanvas ? handleSheetBlocksChange : undefined}
                   selectedBlockId={selectedBlockId}
                   selectedBlockIds={selectedSheetBlockIds}
                   onSelectBlock={(blockId) => {
@@ -9859,9 +11439,13 @@ const MAX_HISTORY_STEPS = 50;
                     }
                   }}
                   onSelectBlocks={(blockIds) => {
-                    setSelectedSheetBlockIds(blockIds);
-                    setSelectedBlockId(blockIds.at(-1) ?? null);
-                    if (blockIds.length) {
+                    const normalizedBlockIds = Array.from(new Set(blockIds.map((blockId) => {
+                      const block = sheetBlocks.find((candidate) => candidate.id === blockId);
+                      return block && isPlanSituationBlock(block) ? PLAN_SITUATION_FRAME_ID : blockId;
+                    })));
+                    setSelectedSheetBlockIds(normalizedBlockIds);
+                    setSelectedBlockId(normalizedBlockIds.at(-1) ?? null);
+                    if (normalizedBlockIds.length) {
                       setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
                       setSelectedBatBlock(false);
                       setSelectedIconId(null);
@@ -9875,10 +11459,12 @@ const MAX_HISTORY_STEPS = 50;
                   sheetPictoImages={sheetPictoImages}
                   onPlaceSheetIcon={canEditActiveSheetTemplate ? handlePlaceSheetIcon : undefined}
                   onPlaceSheetText={canEditActiveSheetTemplate ? handlePlaceSheetText : undefined}
-                  onPlaceSheetShape={canEditActiveSheetTemplate ? handlePlaceSheetShape : undefined}
+                  onPlaceSheetShape={canEditActiveSheetTemplate && !scaleCalibrationCaptureActive && !planSituationTraceMode ? handlePlaceSheetShape : undefined}
                   planReframeMode={sheetReframeMode}
                   planPlacement={sheetPlanPlacement}
-                  onPlanPlacementChange={canEditActiveSheetTemplate ? setSheetPlanPlacement : undefined}
+                  onPlanPlacementChange={canEditPlan
+                    ? (placement) => setSheetPlanPlacement(normalizeSheetPlanPlacement(placement))
+                    : undefined}
                   mainPlanTransform={mainPlanTransform}
                   onMainPlanTransformChange={setMainPlanTransform}
                   mainPlanLocked={mainPlanLocked}
@@ -9929,9 +11515,13 @@ const MAX_HISTORY_STEPS = 50;
                   eraseStrokeTarget={eraseStrokeTarget}
                   onEraseStrokesChange={setEraseStrokeCount}
                   shapes={shapes}
-                  onShapesChange={setShapes}
+                  onShapesChange={handleShapesChange}
                   selectedShapeId={selectedShapeId}
                   onSelectShape={(shapeId) => {
+                    if (scaleCalibrationCaptureActive || planSituationTraceMode) {
+                      setSelectedShapeId(null);
+                      return;
+                    }
                     setSelectedShapeId(shapeId);
                     if (shapeId) {
                       const clickedShape = shapes.find((shape) => shape.tempId === shapeId);
@@ -9991,13 +11581,72 @@ const MAX_HISTORY_STEPS = 50;
                   <p className="text-[10px] text-neutral-500">
                     {selectedBlock.kind === "picto"
                       ? "Pictogramme libre · glissez-le où vous voulez sur la feuille"
+                      : selectedPlanSituationFrame
+                        ? "Cadre extérieur · agrandissez-le sans déformer son contenu"
                       : selectedBlock.kind === "plan"
                         ? "Fenêtre du plan · glissez pour la déplacer, poignées pour la redimensionner"
                         : "Bloc de la feuille · glissez à la souris, double-cliquez pour écrire dessus"}
                   </p>
                 </div>
 
-                {!canEditActiveSheetTemplate ? (
+                {selectedPlanLegendBlock && (
+                  <div className="border-b border-black/40 p-3">
+                    <div className="mb-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-400">
+                        Éléments de la légende
+                      </p>
+                      <p className="mt-1 text-[10px] leading-relaxed text-neutral-500">
+                        Retirer une ligne ne supprime jamais le pictogramme placé sur le plan.
+                      </p>
+                    </div>
+                    {allSheetLegendEntries.length === 0 ? (
+                      <p className="rounded border border-white/10 bg-black/15 p-2 text-[10px] text-neutral-500">
+                        Aucun pictogramme placé.
+                      </p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {allSheetLegendEntries.map((entry) => {
+                          const iconType = String(entry.type);
+                          const visible = !hiddenLegendIconTypes.includes(iconType);
+                          return (
+                            <div key={iconType} className="flex items-center gap-2 rounded border border-white/10 bg-black/15 px-2 py-1.5">
+                              {entry.image ? (
+                                <img src={entry.image.src} alt="" className="h-5 w-5 shrink-0 object-contain" />
+                              ) : (
+                                <div className="h-5 w-5 shrink-0 rounded bg-white/5" />
+                              )}
+                              <span className={`min-w-0 flex-1 truncate text-[10px] ${visible ? "text-neutral-300" : "text-neutral-600 line-through"}`}>
+                                {entry.label}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setLegendEntryVisible(iconType, !visible)}
+                                title={visible ? "Retirer de la légende" : "Remettre dans la légende"}
+                                className={`rounded p-1 transition ${visible ? "text-neutral-500 hover:bg-red-500/10 hover:text-red-300" : "text-emerald-500 hover:bg-emerald-500/10 hover:text-emerald-300"}`}
+                              >
+                                {visible ? <Trash2 className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {(selectedPlanInformationBlock || selectedPlanLegendBlock) && !canEditActiveSheetTemplate ? (
+                  <div className="m-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3">
+                    <div className="flex items-center gap-2 text-emerald-200">
+                      <Unlock className="h-4 w-4 shrink-0" />
+                      <p className="text-[11px] font-bold">
+                        {selectedPlanLegendBlock ? "Légende libre sur le plan" : "Fiche libre sur le plan"}
+                      </p>
+                    </div>
+                    <p className="mt-2 text-[10px] leading-relaxed text-neutral-300">
+                      Glissez {selectedPlanLegendBlock ? "cette légende" : "cette fiche"} pour la déplacer. Utilisez ses poignées pour ajuster sa largeur et sa hauteur. Sa position sera conservée à la sauvegarde.
+                    </p>
+                  </div>
+                ) : !canEditActiveSheetTemplate && !selectedPlanSituationBlock && !selectedPlanLegendBlock && selectedBlock.kind !== "plan" ? (
                   <div className="m-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
                     <div className="flex items-center gap-2 text-amber-200">
                       <Lock className="h-4 w-4 shrink-0" />
@@ -10024,6 +11673,41 @@ const MAX_HISTORY_STEPS = 50;
                     <p className="mt-2 text-[10px] leading-relaxed text-neutral-300">
                       Cette page occupe toujours toute la feuille et ne peut pas être déplacée, redimensionnée, masquée, supprimée ou déverrouillée. Modifiez la zone principale du plan placée au-dessus.
                     </p>
+                  </div>
+                ) : selectedPlanSituationFrame ? (
+                  <div className="space-y-3 p-3">
+                    <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3">
+                      <p className="text-[11px] font-bold text-sky-200">Cadre du plan de situation</p>
+                      <p className="mt-2 text-[10px] leading-relaxed text-neutral-300">
+                        Glissez le cadre pour déplacer tout le plan de situation. Utilisez les poignées bleues du contour pour l’agrandir : les éléments intérieurs gardent leur taille et leur position.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {([
+                        { key: "width" as const, label: "Largeur" },
+                        { key: "height" as const, label: "Hauteur" },
+                      ]).map((field) => (
+                        <label key={field.key} className="block">
+                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                            {field.label}
+                          </span>
+                          <input
+                            type="number"
+                            min={40}
+                            value={Math.round(selectedBlock[field.key])}
+                            onChange={(event) => updateSelectedBlockDimension(field.key, Number(event.target.value))}
+                            className="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] text-neutral-100 outline-none focus:border-sky-500"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPlanSituationModalOpen(true)}
+                      className="w-full rounded-lg bg-sky-600 px-3 py-2 text-[11px] font-bold text-white hover:bg-sky-500"
+                    >
+                      Ajouter parking ou point de rassemblement
+                    </button>
                   </div>
                 ) : (
                 <div className="space-y-3 p-3">
@@ -10065,7 +11749,8 @@ const MAX_HISTORY_STEPS = 50;
                           Glissez le plan pour déplacer sa fenêtre sur la feuille. Maintenez{" "}
                           <kbd className="rounded bg-white/10 px-1 font-semibold text-neutral-200">Alt</kbd> en
                           glissant — ou activez le bouton ci-dessous — pour recadrer le plan à
-                          l&apos;intérieur du cadre.
+                          l&apos;intérieur du cadre. En mode recadrage, placez la souris sur une zone
+                          précise et utilisez la molette pour zoomer autour de cette zone.
                         </p>
                       </div>
                       <button
@@ -10082,12 +11767,13 @@ const MAX_HISTORY_STEPS = 50;
                       <div>
                         <div className="mb-1 flex justify-between text-[10px] text-neutral-400">
                           <span>Zoom du plan</span>
-                          <span>{sheetPlanPlacement.scale}%</span>
+                          <span>{Number(sheetPlanPlacement.scale.toFixed(2))}%</span>
                         </div>
                         <input
                           type="range"
                           min={20}
-                          max={300}
+                          max={600}
+                          step={0.01}
                           value={sheetPlanPlacement.scale}
                           onChange={(event) =>
                             setSheetPlanPlacement((placement) => ({
@@ -10110,6 +11796,34 @@ const MAX_HISTORY_STEPS = 50;
 
                   {selectedBlock.kind === "picto" && (
                     <div className="rounded border border-sky-500/25 bg-sky-500/[0.07] p-2.5">
+                      <button
+                        type="button"
+                        onClick={() => updateSelectedBlock({
+                          lockAspectRatio: selectedBlock.lockAspectRatio === false
+                        })}
+                        className={`mb-3 flex w-full items-center gap-2 rounded border px-2 py-2 text-left transition-colors ${
+                          selectedBlock.lockAspectRatio !== false
+                            ? "border-emerald-500/35 bg-emerald-500/15 text-emerald-200"
+                            : "border-amber-500/35 bg-amber-500/10 text-amber-200"
+                        }`}
+                        title="Autoriser ou empêcher la déformation du pictogramme"
+                      >
+                        {selectedBlock.lockAspectRatio !== false
+                          ? <Lock className="h-3.5 w-3.5 shrink-0" />
+                          : <Unlock className="h-3.5 w-3.5 shrink-0" />}
+                        <span className="min-w-0">
+                          <span className="block text-[10px] font-semibold">
+                            {selectedBlock.lockAspectRatio !== false
+                              ? "Proportions verrouillées"
+                              : "Déformation autorisée"}
+                          </span>
+                          <span className="mt-0.5 block text-[9px] text-neutral-400">
+                            {selectedBlock.lockAspectRatio !== false
+                              ? "La largeur et la hauteur restent liées."
+                              : "La largeur et la hauteur sont indépendantes."}
+                          </span>
+                        </span>
+                      </button>
                       <span className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.12em] text-sky-300">
                         Miroir du pictogramme
                       </span>
@@ -10386,7 +12100,7 @@ const MAX_HISTORY_STEPS = 50;
                             type="button"
                             onClick={() => updateSelectedBlock({ color: swatch.value })}
                             className={`h-6 w-6 cursor-pointer rounded border transition-transform hover:scale-110 ${
-                              selectedBlock.color?.toLowerCase() === swatch.value
+                              selectedBlock.color?.toLowerCase() === swatch.value.toLowerCase()
                                 ? "border-white ring-2 ring-sky-400"
                                 : "border-black/50"
                             }`}
@@ -10402,7 +12116,7 @@ const MAX_HISTORY_STEPS = 50;
                             nonStandardIconColorOpen || Boolean(
                               selectedBlock.color
                               && !ICON_COLOR_SWATCHES.some(
-                                (swatch) => swatch.value === selectedBlock.color?.toLowerCase()
+                                (swatch) => swatch.value.toLowerCase() === selectedBlock.color?.toLowerCase()
                               )
                             )
                               ? "border-amber-400 bg-amber-400/15 text-amber-300"
@@ -10415,7 +12129,7 @@ const MAX_HISTORY_STEPS = 50;
                       {(nonStandardIconColorOpen || Boolean(
                         selectedBlock.color
                         && !ICON_COLOR_SWATCHES.some(
-                          (swatch) => swatch.value === selectedBlock.color?.toLowerCase()
+                          (swatch) => swatch.value.toLowerCase() === selectedBlock.color?.toLowerCase()
                         )
                       )) && (
                         <div className="mt-2 rounded-lg border border-amber-400/30 bg-amber-400/[0.07] p-2">
@@ -10457,7 +12171,7 @@ const MAX_HISTORY_STEPS = 50;
                                 type="button"
                                 onClick={() => updateSelectedBlock({ color: swatch.value })}
                                 className={`h-6 w-6 rounded border transition-transform hover:scale-110 ${
-                                  selectedBlock.color?.toLowerCase() === swatch.value
+                                  selectedBlock.color?.toLowerCase() === swatch.value.toLowerCase()
                                     ? "border-white ring-2 ring-amber-400"
                                     : "border-black/50"
                                 }`}
@@ -10518,7 +12232,9 @@ const MAX_HISTORY_STEPS = 50;
                         <input
                           type="number"
                           value={Math.round(selectedBlock[field.key])}
-                          onChange={(event) => updateSelectedBlock({ [field.key]: Number(event.target.value) })}
+                          onChange={(event) => field.key === "width" || field.key === "height"
+                            ? updateSelectedBlockDimension(field.key, Number(event.target.value))
+                            : updateSelectedBlock({ [field.key]: Number(event.target.value) })}
                           className="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] text-neutral-100 outline-none focus:border-emerald-500"
                         />
                       </label>
@@ -10844,6 +12560,74 @@ const MAX_HISTORY_STEPS = 50;
                     <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
                       Transformation
                     </span>
+                    <div className="mb-2 rounded border border-violet-500/25 bg-violet-500/[0.07] p-2">
+                      <span className="mb-1.5 block text-[9px] font-semibold uppercase tracking-[0.12em] text-violet-300">
+                        Portée du redimensionnement
+                      </span>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setResizeSameTypeIcons(false)}
+                          className={`rounded border px-2 py-1.5 text-[9px] font-semibold transition-colors ${
+                            !resizeSameTypeIcons
+                              ? "border-violet-400 bg-violet-500/25 text-violet-100"
+                              : "border-white/10 bg-black/20 text-neutral-400 hover:bg-white/10"
+                          }`}
+                        >
+                          Ce pictogramme
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setResizeSameTypeIcons(true)}
+                          disabled={sameTypeIconCount < 2}
+                          className={`flex items-center justify-center gap-1 rounded border px-2 py-1.5 text-[9px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                            resizeSameTypeIcons
+                              ? "border-violet-400 bg-violet-500/25 text-violet-100"
+                              : "border-white/10 bg-black/20 text-neutral-400 hover:bg-white/10"
+                          }`}
+                          title={sameTypeIconCount < 2
+                            ? "Il n’existe qu’un seul pictogramme de ce type"
+                            : `Redimensionner les ${sameTypeIconCount} pictogrammes de ce type`}
+                        >
+                          <Layers3 className="h-3 w-3" />
+                          Tous ({sameTypeIconCount})
+                        </button>
+                      </div>
+                      <p className="mt-1.5 text-[9px] leading-relaxed text-neutral-500">
+                        {resizeSameTypeIcons && sameTypeIconCount > 1
+                          ? `Largeur et hauteur appliquées aux ${sameTypeIconCount} exemplaires de ce type.`
+                          : "Largeur et hauteur appliquées uniquement à l’élément sélectionné."}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleUpdateSelectedIcon(
+                        "lock_aspect_ratio",
+                        selectedIcon.lock_aspect_ratio === false
+                      )}
+                      className={`mb-2 flex w-full items-center gap-2 rounded border px-2 py-2 text-left transition-colors ${
+                        selectedIcon.lock_aspect_ratio !== false
+                          ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200"
+                          : "border-amber-500/35 bg-amber-500/10 text-amber-200"
+                      }`}
+                      title="Autoriser ou empêcher la déformation du pictogramme"
+                    >
+                      {selectedIcon.lock_aspect_ratio !== false
+                        ? <Lock className="h-3.5 w-3.5 shrink-0" />
+                        : <Unlock className="h-3.5 w-3.5 shrink-0" />}
+                      <span className="min-w-0">
+                        <span className="block text-[10px] font-semibold">
+                          {selectedIcon.lock_aspect_ratio !== false
+                            ? "Proportions verrouillées"
+                            : "Déformation autorisée"}
+                        </span>
+                        <span className="mt-0.5 block text-[9px] text-neutral-500">
+                          {selectedIcon.lock_aspect_ratio !== false
+                            ? "Par défaut · largeur et hauteur liées"
+                            : "Largeur et hauteur indépendantes"}
+                        </span>
+                      </span>
+                    </button>
                     <div className="grid grid-cols-2 gap-2">
                       <label className="flex items-center gap-1.5 rounded border border-black/50 bg-[#1b1b1d] px-2 py-1.5">
                         <span className="text-[10px] font-medium text-neutral-500">L</span>
@@ -10969,7 +12753,7 @@ const MAX_HISTORY_STEPS = 50;
                           type="button"
                           onClick={() => handleUpdateSelectedIcon("color", swatch.value)}
                           className={`h-6 w-6 cursor-pointer rounded border transition-transform hover:scale-110 ${
-                            selectedIcon.color?.toLowerCase() === swatch.value
+                            selectedIcon.color?.toLowerCase() === swatch.value.toLowerCase()
                               ? "border-white ring-2 ring-sky-400"
                               : "border-black/50"
                           }`}
@@ -10985,7 +12769,7 @@ const MAX_HISTORY_STEPS = 50;
                           nonStandardIconColorOpen || Boolean(
                             selectedIcon.color
                             && !ICON_COLOR_SWATCHES.some(
-                              (swatch) => swatch.value === selectedIcon.color?.toLowerCase()
+                              (swatch) => swatch.value.toLowerCase() === selectedIcon.color?.toLowerCase()
                             )
                           )
                             ? "border-amber-400 bg-amber-400/15 text-amber-300"
@@ -10998,7 +12782,7 @@ const MAX_HISTORY_STEPS = 50;
                     {(nonStandardIconColorOpen || Boolean(
                       selectedIcon.color
                       && !ICON_COLOR_SWATCHES.some(
-                        (swatch) => swatch.value === selectedIcon.color?.toLowerCase()
+                        (swatch) => swatch.value.toLowerCase() === selectedIcon.color?.toLowerCase()
                       )
                     )) && (
                       <div className="mt-2 rounded-lg border border-amber-400/30 bg-amber-400/[0.07] p-2">
@@ -11041,7 +12825,7 @@ const MAX_HISTORY_STEPS = 50;
                               type="button"
                               onClick={() => handleUpdateSelectedIcon("color", swatch.value)}
                               className={`h-6 w-6 rounded border transition-transform hover:scale-110 ${
-                                selectedIcon.color?.toLowerCase() === swatch.value
+                                selectedIcon.color?.toLowerCase() === swatch.value.toLowerCase()
                                   ? "border-white ring-2 ring-amber-400"
                                   : "border-black/50"
                               }`}
@@ -11063,22 +12847,37 @@ const MAX_HISTORY_STEPS = 50;
                     <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
                       Déport
                     </span>
-                    {selectedIcon.anchor_x == null ? (
-                      <button
-                        onClick={handleOffsetIcon}
-                        title="Laisser un point à l'emplacement réel et déplacer le pictogramme"
-                        className="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
-                      >
-                        <Anchor className="h-3.5 w-3.5" />
-                        Déporter le pictogramme
-                      </button>
-                    ) : (
+                    <button
+                      onClick={handleOffsetIcon}
+                      disabled={selectedIconLeaderPoints.length >= 32}
+                      title="Ajouter un emplacement réel relié à ce pictogramme"
+                      className="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
+                    >
+                      <Anchor className="h-3.5 w-3.5" />
+                      {selectedIconLeaderPoints.length ? "Ajouter un autre déport" : "Déporter le pictogramme"}
+                    </button>
+                    {selectedIconLeaderPoints.length > 0 && (
                       <>
-                        <p className="mb-2 text-[10px] leading-relaxed text-neutral-500">
-                          Point à X {Math.round(selectedIcon.anchor_x)} · Y{" "}
-                          {Math.round(selectedIcon.anchor_y ?? 0)}. Faites glisser le point sur
-                          le plan pour corriger l&apos;emplacement réel.
+                        <p className="my-2 text-[10px] leading-relaxed text-neutral-500">
+                          Faites glisser chaque point sur le plan vers son emplacement réel.
                         </p>
+                        <div className="mb-2 space-y-1">
+                          {selectedIconLeaderPoints.map((point, index) => (
+                            <div key={point.id} className="flex items-center justify-between rounded border border-white/10 bg-black/15 px-2 py-1.5">
+                              <span className="text-[10px] tabular-nums text-neutral-400">
+                                Point {index + 1} · X {Math.round(point.x)} · Y {Math.round(point.y)}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveIconLeaderPoint(point.id)}
+                                title={`Supprimer le point ${index + 1}`}
+                                className="rounded p-1 text-neutral-500 transition hover:bg-red-500/10 hover:text-red-300"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
                         <div className="mb-2 rounded border border-white/10 bg-white/[0.03] p-2">
                           <div className="mb-1.5 flex items-center justify-between">
                             <label
@@ -11114,11 +12913,11 @@ const MAX_HISTORY_STEPS = 50;
                         </div>
                         <button
                           onClick={handleClearIconOffset}
-                          title="Ramener le pictogramme sur son point"
+                          title="Supprimer tous les déports et ramener le pictogramme sur le premier point"
                           className="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
                         >
                           <Undo2 className="h-3.5 w-3.5" />
-                          Supprimer le déport
+                          Supprimer tous les déports
                         </button>
                       </>
                     )}
@@ -11692,25 +13491,29 @@ const MAX_HISTORY_STEPS = 50;
                     >
                       <button
                         type="button"
-                        onClick={() => setSelectedBlockId(block.id)}
+                        onClick={() => selectSheetBlock(block.id)}
                         className="min-w-0 flex-1 truncate text-left text-[11px] text-neutral-300 transition-colors hover:text-white"
                       >
                         {block.label}
                       </button>
                       <button
                         type="button"
-                        disabled={!canEditActiveSheetTemplate && block.kind !== "legend"}
+                        disabled={
+                          (isPlanSituationBlock(block) && block.id !== PLAN_SITUATION_FRAME_ID)
+                          || (!canEditActiveSheetTemplate && block.kind !== "legend" && !isPlanSituationBlock(block))
+                        }
                         onClick={() => {
-                          if (!canEditActiveSheetTemplate && block.kind !== "legend") return;
-                          setSheetBlocks((blocks) =>
-                            blocks.map((item) =>
-                              item.id === block.id ? { ...item, visible: !item.visible } : item
-                            )
-                          );
+                          if (isPlanSituationBlock(block) && block.id !== PLAN_SITUATION_FRAME_ID) return;
+                          if (!canEditActiveSheetTemplate && block.kind !== "legend" && !isPlanSituationBlock(block)) return;
+                          handleSheetBlocksChange(sheetBlocks.map((item) =>
+                            item.id === block.id ? { ...item, visible: !item.visible } : item
+                          ));
                         }}
-                        title={!canEditActiveSheetTemplate && block.kind !== "legend"
-                          ? "Template par défaut verrouillé"
-                          : block.visible ? "Masquer ce bloc" : "Afficher ce bloc"}
+                        title={isPlanSituationBlock(block) && block.id !== PLAN_SITUATION_FRAME_ID
+                          ? "Élément intérieur protégé"
+                          : !canEditActiveSheetTemplate && block.kind !== "legend" && !isPlanSituationBlock(block)
+                            ? "Template par défaut verrouillé"
+                            : block.visible ? "Masquer ce bloc" : "Afficher ce bloc"}
                         className={`shrink-0 rounded p-1 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35 ${
                           block.visible ? "text-emerald-400" : "text-neutral-600"
                         }`}
@@ -11771,13 +13574,11 @@ const MAX_HISTORY_STEPS = 50;
               zoom={zoom}
               onZoomChange={setZoom}
               mode={mode}
-              onModeChange={(nextMode) => {
-                if (nextMode === "erase") {
-                  setShapeTool(null);
-                  setAreaSelectionMode(false);
-                }
-                setMode(nextMode);
-              }}
+              onModeChange={planSituationTraceMode
+                ? (nextMode) => {
+                    if (nextMode === "select" || nextMode === "pan") setMode(nextMode);
+                  }
+                : activateInteractionMode}
               onFitToView={() => setFitSignal((signal) => signal + 1)}
             />
 
@@ -11797,10 +13598,9 @@ const MAX_HISTORY_STEPS = 50;
                 <button
                   key={kind}
                   onClick={() => {
-                    setShapeTool((current) => (current === kind ? null : kind));
-                    setMode("select");
-                    setPlacementIconType(null);
-                    setPlacementText(false);
+                    const nextShapeTool = shapeTool === kind ? null : kind;
+                    activateInteractionMode("select");
+                    setShapeTool(nextShapeTool);
                   }}
                   title={kind === "polyline"
                     ? `${label} — Maj trace à 0°/90°; cliquez le dernier point, Entrée ou double-clic pour terminer; la plume reste active pour la ligne suivante`
@@ -13868,6 +15668,62 @@ const MAX_HISTORY_STEPS = 50;
           onImportPdf={handleImportPdfSheetTemplate}
           onDelete={handleDeleteCustomSheetTemplate}
           images={resolvedSheetImages}
+        />
+
+        <PlanSituationModal
+          open={planSituationModalOpen}
+          state={planSituation}
+          documentType={activeDocumentType}
+          iconDefinitions={iconDefinitions}
+          backgroundPresent={Boolean(plan?.plan_situation_background_file)}
+          uploading={planSituationBackgroundUploading}
+          canEdit={canEditPlan}
+          onClose={() => setPlanSituationModalOpen(false)}
+          onCreate={createSituation}
+          onStateChange={applyPlanSituationState}
+          onToggleTitle={toggleSituationTitle}
+          onUpload={(file) => void uploadSituationBackground(file)}
+          onUseMainPlan={() => void useMainPlanForSituation()}
+          onRemoveBackground={() => void removeSituationBackground()}
+          onTraceOutline={() => startSituationTrace("building_outline")}
+          onRefreshVisibleArea={refreshSituationVisibleArea}
+          onTraceZone={() => startSituationTrace("represented_zone")}
+          onFitChange={updateSituationFit}
+          onAddElement={addSituationElement}
+          onAddPictogram={addSituationPictogram}
+          onSetOrientation={(angle) => applyPlanSituationState(
+            setPlanSituationOrientation(planSituation, angle, "manual"),
+            PLAN_SITUATION_FRAME_ID,
+          )}
+          onOrientFromObserver={orientSituationFromObserver}
+          onDelete={() => void deleteSituation()}
+        />
+
+        <PlanInformationModal
+          open={planInformationModalOpen}
+          templateName={activeSheetTemplateLabel}
+          values={planInformationDraft}
+          visibility={planInformationVisibilityDraft}
+          onValuesChange={setPlanInformationDraft}
+          onVisibilityChange={setPlanInformationVisibilityDraft}
+          onSave={() => void savePlanInformation()}
+          onClose={() => {
+            if (planInformationSaving) return;
+            setPlanInformationModalOpen(false);
+            setPlanInformationError("");
+          }}
+          saving={planInformationSaving}
+          error={planInformationError}
+          canEdit={canEditPlan}
+        />
+
+        <ScaleCalibrationModal
+          open={scaleCalibrationModalOpen}
+          initialDistanceM={scaleCalibrationDraftShapeId
+            ? null
+            : scaleCalibrationShape?.calibration_real_distance_m}
+          onSave={saveScaleCalibration}
+          onCancel={cancelScaleCalibrationDistance}
         />
 
         <WatermarkModal

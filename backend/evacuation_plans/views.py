@@ -1,10 +1,10 @@
 import os
+import json
 import base64
 import binascii
 import copy
 import io
 import re
-import xml.etree.ElementTree as ET
 import cv2
 import logging
 import threading
@@ -18,6 +18,7 @@ from django.db import close_old_connections, transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.core.files.base import ContentFile
+from django.http import FileResponse
 from rest_framework import viewsets, permissions, status, generics
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
@@ -30,7 +31,9 @@ from .models import (
     GrokCleaningJob,
     PlanCleaningHistory,
     PlanIcon,
+    PlanFolder,
     PlanOverlay,
+    PlanProjectRevision,
     PlanShape,
     PlanText,
     SheetTemplateAsset,
@@ -38,6 +41,7 @@ from .models import (
     UserXaiSettings,
     WorkspaceInvitation,
     WorkspaceMembership,
+    accessible_library_owner_ids,
     accessible_plan_owner_ids,
     hash_invitation_token,
     restrict_plans_to,
@@ -49,6 +53,18 @@ from .media_access import (
     clear_media_session_cookie,
     set_media_session_cookie,
 )
+from .pictogram_catalogs import (
+    PICTOGRAM_CATALOGS,
+    catalogue_icon_type,
+    catalogue_metadata,
+    humanize_pictogram_label,
+)
+from .pictogram_security import (
+    MAX_PICTOGRAM_SVG_BYTES,
+    sanitize_pictogram_svg_file,
+    validate_and_sanitize_pictogram_svg,
+)
+from .plan_compliance import automatic_plan_number
 from .throttles import AiRateThrottle, LoginRateThrottle, UploadRateThrottle
 from .upload_validation import (
     UploadRejected,
@@ -66,6 +82,10 @@ from .serializers import (
     UserRegistrationSerializer,
     UserSerializer,
     EvacuationPlanSerializer,
+    DuplicatePlanSerializer,
+    PlanProjectRevisionSerializer,
+    ProjectImportSerializer,
+    PlanFolderSerializer,
     PlanIconSerializer,
     PlanOverlaySerializer,
     PlanShapeSerializer,
@@ -88,37 +108,19 @@ from .serializers import (
     WorkspaceInvitationSerializer,
     WorkspaceMembershipSerializer,
 )
+from .project_archives import (
+    ProjectArchiveError,
+    build_project_zip,
+    capture_project_revision,
+    clone_project_resources,
+    import_project_zip,
+    restore_project_revision,
+    verify_project_integrity,
+)
 
-PLAN_PICTOGRAM_DIRS = ('plan_picto', 'nf_x-picto')
+PLAN_LEGACY_CUSTOM_PICTOGRAM_DIR = 'plan_picto'
+PLAN_USER_PICTOGRAM_ROOT = 'user_pictograms'
 PLAN_PICTOGRAM_EXTENSIONS = {'.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif'}
-MAX_PICTOGRAM_SVG_BYTES = 250 * 1024
-# Rejected outright: their presence is never an accident, so a file carrying
-# one is refused rather than quietly repaired.
-SVG_DANGEROUS_TAGS = {
-    'script', 'foreignobject', 'iframe', 'object', 'embed', 'image', 'audio',
-    'video', 'canvas', 'a', 'animate', 'animatemotion', 'animatetransform', 'set',
-    'handler', 'listener', 'discard',
-}
-
-# Everything the pictogram library actually draws with, plus the descriptive
-# elements design tools emit. Measured over the 86 SVG files shipped with the
-# application, which between them use only the first sixteen.
-SVG_ALLOWED_TAGS = {
-    'svg', 'g', 'defs', 'style', 'title', 'desc',
-    'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon',
-    'text', 'tspan', 'textpath',
-    'lineargradient', 'radialgradient', 'stop',
-    'clippath', 'mask', 'pattern', 'symbol', 'use', 'marker',
-    'switch', 'metadata',
-}
-
-# Elements outside both lists are dropped instead of rejecting the file: an
-# Illustrator or Inkscape export carries editor-specific tags that are inert
-# but unpredictable, and refusing them would block legitimate pictograms.
-SVG_UNKNOWN_ELEMENT_LIMIT = 5000
-
-# Blocked inside a `style` attribute or element: legacy engines execute them.
-SVG_DANGEROUS_CSS = ('javascript:', 'expression(', '@import', '-moz-binding', 'behavior:')
 logger = logging.getLogger(__name__)
 # Piste d'audit : qui a fait quoi. Voir evacuation_plans/signals.py.
 audit = logging.getLogger('evacstudio.audit')
@@ -204,98 +206,6 @@ def build_plan_pictogram_url(request, relative_path):
     return build_protected_media_url(request, media_path)
 
 
-def _svg_local_name(value):
-    return value.rsplit('}', 1)[-1].lower()
-
-
-def validate_and_sanitize_pictogram_svg(svg_bytes):
-    """Return a safe SVG with a valid viewBox or a user-facing validation error."""
-    if not svg_bytes:
-        return None, "Le fichier SVG est vide."
-    if len(svg_bytes) > MAX_PICTOGRAM_SVG_BYTES:
-        return None, "Le SVG dépasse la taille maximale de 250 Ko."
-
-    try:
-        source = svg_bytes.decode('utf-8-sig')
-    except UnicodeDecodeError:
-        return None, "Le SVG doit être encodé en UTF-8."
-
-    lowered = source.lower()
-    if '<!doctype' in lowered or '<!entity' in lowered:
-        return None, "Les déclarations DOCTYPE et ENTITY ne sont pas autorisées."
-
-    try:
-        root = ET.fromstring(source)
-    except ET.ParseError:
-        return None, "Le contenu n'est pas un SVG valide."
-
-    if _svg_local_name(root.tag) != 'svg':
-        return None, "Le document doit commencer par un élément <svg>."
-
-    view_box = root.attrib.get('viewBox') or root.attrib.get('viewbox')
-    if not view_box:
-        return None, 'Le SVG doit contenir un viewBox, par exemple "0 0 170 170".'
-    try:
-        values = [float(part) for part in re.split(r'[\s,]+', view_box.strip()) if part]
-    except ValueError:
-        values = []
-    if len(values) != 4 or values[2] <= 0 or values[3] <= 0:
-        return None, "Le viewBox du SVG est invalide."
-
-    # Two passes: reject anything openly hostile, then turn merely unknown
-    # containers into inert SVG groups. Removing an unknown wrapper outright
-    # would also remove every legitimate path nested inside it, which is common
-    # in exports produced by CAD and vector-design applications.
-    unknown_elements = []
-
-    for element in root.iter():
-        tag = _svg_local_name(element.tag)
-        if tag in SVG_DANGEROUS_TAGS:
-            return None, f"L'élément SVG <{tag}> n'est pas autorisé."
-
-        if tag == 'style' and element.text:
-            css = element.text.lower()
-            if any(pattern in css for pattern in SVG_DANGEROUS_CSS):
-                return None, "Les styles SVG ne peuvent pas charger de contenu externe."
-            # `url(#gradient)` points inside the same document and is how design
-            # tools express gradients; only outward references are refused, the
-            # same rule the attributes below already follow.
-            for url_target in re.findall(r'url\(([^)]*)\)', css):
-                if not url_target.strip(' \"\'').startswith('#'):
-                    return None, "Les styles SVG ne peuvent pas charger de contenu externe."
-
-        for attribute, value in list(element.attrib.items()):
-            attribute_name = _svg_local_name(attribute)
-            value_lower = str(value).strip().lower()
-            if attribute_name.startswith('on'):
-                return None, "Les événements JavaScript ne sont pas autorisés dans un SVG."
-            if attribute_name in {'href', 'src'} and value_lower and not value_lower.startswith('#'):
-                return None, "Les liens et images externes ne sont pas autorisés dans un SVG."
-            if 'javascript:' in value_lower or 'data:text/html' in value_lower:
-                return None, "Le SVG contient une valeur potentiellement dangereuse."
-            if attribute_name == 'style' and any(pattern in value_lower for pattern in SVG_DANGEROUS_CSS):
-                return None, "Le SVG contient un style potentiellement dangereux."
-            for url_target in re.findall(r'url\(([^)]+)\)', value_lower):
-                if not url_target.strip(' \"\'').startswith('#'):
-                    return None, "Les ressources externes ne sont pas autorisées dans un SVG."
-
-        # Unknown elements cannot keep their original semantics, but their
-        # already-validated SVG descendants and presentation attributes should
-        # survive. They are converted to the safe, allow-listed <g> container.
-        if element is not root and tag not in SVG_ALLOWED_TAGS:
-            unknown_elements.append(element)
-
-    if len(unknown_elements) > SVG_UNKNOWN_ELEMENT_LIMIT:
-        return None, "Le SVG contient trop d'éléments non pris en charge."
-
-    for element in unknown_elements:
-        element.tag = '{http://www.w3.org/2000/svg}g'
-
-    ET.register_namespace('', 'http://www.w3.org/2000/svg')
-    sanitized = ET.tostring(root, encoding='utf-8', xml_declaration=True)
-    return sanitized, None
-
-
 def normalize_pictogram_name(value):
     name = os.path.basename(str(value or '')).rsplit('.', 1)[0]
     name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', ' ', name)
@@ -305,22 +215,350 @@ def normalize_pictogram_name(value):
     return name[:80].strip()
 
 
-def serialize_plan_pictogram(request, directory, filename):
+def user_pictogram_directory(user_id, standard=None, category=None):
+    directory = f'{PLAN_USER_PICTOGRAM_ROOT}/{int(user_id)}'
+    if standard and category:
+        directory = f'{directory}/{standard}/{category}'
+    return directory
+
+
+def user_pictogram_owner_id(directory):
+    parts = str(directory or '').split('/')
+    if len(parts) < 2 or parts[0] != PLAN_USER_PICTOGRAM_ROOT:
+        return None
+    try:
+        return int(parts[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_user_pictogram_file(request, requested_filename):
+    requested_path = str(requested_filename or '').replace('\\', '/').strip('/')
+    owner_ids = accessible_plan_owner_ids(request.user, editable_only=True)
+    if not owner_ids:
+        return None, None, None
+
+    ordered_owner_ids = [request.user.id, *sorted(owner_id for owner_id in owner_ids if owner_id != request.user.id)]
+    candidate_directories = [user_pictogram_directory(owner_id) for owner_id in ordered_owner_ids]
+    if '/' in requested_path:
+        path_parts = requested_path.split('/')
+        if any(part in {'', '.', '..'} for part in path_parts):
+            return None, None, None
+        directory, filename = requested_path.rsplit('/', 1)
+        candidate_directories = [
+            owner_directory
+            for owner_directory in candidate_directories
+            if directory == owner_directory or directory.startswith(f'{owner_directory}/')
+        ]
+        search_directories = [directory] if candidate_directories else []
+    else:
+        filename = os.path.basename(requested_path)
+        search_directories = []
+        for owner_directory in candidate_directories:
+            owner_root = os.path.join(settings.MEDIA_ROOT, owner_directory)
+            if not os.path.isdir(owner_root):
+                continue
+            for current_root, child_directories, _filenames in os.walk(owner_root, followlinks=False):
+                child_directories[:] = [
+                    child for child in child_directories
+                    if not os.path.islink(os.path.join(current_root, child))
+                ]
+                search_directories.append(
+                    os.path.relpath(current_root, settings.MEDIA_ROOT).replace(os.sep, '/')
+                )
+
+    if not filename or filename != os.path.basename(filename) or not filename.lower().endswith('.svg'):
+        return None, None, None
+
+    for directory in search_directories:
+        root = os.path.join(settings.MEDIA_ROOT, directory)
+        if not os.path.isdir(root):
+            continue
+        stored_filename = next(
+            (item for item in os.listdir(root) if item.casefold() == filename.casefold()),
+            None,
+        )
+        if stored_filename:
+            return directory, root, stored_filename
+    return None, None, None
+
+
+def serialize_plan_pictogram(
+    request,
+    directory,
+    filename,
+    *,
+    deletable=False,
+    icon_type=None,
+    label=None,
+    standard='general',
+    standard_label='Bibliothèque générale',
+    category='uncategorized',
+    category_label='Non classés',
+    subcategory='',
+    subcategory_label='',
+):
     name, _extension = os.path.splitext(filename)
     relative_path = os.path.join(directory, filename)
     return {
-        'type': name,
-        'label': name,
-        'file_name': filename,
+        'type': icon_type or name,
+        'label': label or name,
+        'file_name': '/'.join(relative_path.split(os.sep)),
         'url': build_plan_pictogram_url(request, relative_path),
-        'deletable': directory == PLAN_PICTOGRAM_DIRS[0] and filename.lower().endswith('.svg'),
+        'deletable': bool(deletable and filename.lower().endswith('.svg')),
+        'standard': standard,
+        'standard_label': standard_label,
+        'category': category,
+        'category_label': category_label,
+        'subcategory': subcategory,
+        'subcategory_label': subcategory_label,
     }
+
+
+def flat_pictogram_metadata(directory):
+    if directory.startswith(f'{PLAN_USER_PICTOGRAM_ROOT}/'):
+        return {
+            'standard': 'general',
+            'standard_label': 'Personnels et généraux',
+            'category': 'personal',
+            'category_label': 'Pictogrammes personnels',
+        }
+    return {
+        'standard': 'other',
+        'standard_label': 'Autres',
+        'category': '99-historique',
+        'category_label': 'Imports historiques',
+    }
+
+
+def selected_catalogue_metadata(standard, category):
+    """Validate an import destination and return its public filter metadata."""
+    catalogue = PICTOGRAM_CATALOGS.get(str(standard or ''))
+    category_key = str(category or '')
+    if not catalogue or not category_key:
+        return None
+
+    root_category = catalogue['root_category']
+    if category_key == root_category['key']:
+        category_label = root_category['label']
+    else:
+        category_label = catalogue['categories'].get(category_key)
+    if not category_label:
+        return None
+
+    return {
+        'standard': str(standard),
+        'standard_label': catalogue['label'],
+        'category': category_key,
+        'category_label': category_label,
+        'subcategory': '',
+        'subcategory_label': '',
+    }
+
+
+def user_pictogram_metadata(relative_path):
+    """Read a user SVG classification from <standard>/<category>/<file>."""
+    parts = str(relative_path or '').replace('\\', '/').strip('/').split('/')
+    if len(parts) == 3:
+        selected = selected_catalogue_metadata(parts[0], parts[1])
+        if selected:
+            return selected
+    return flat_pictogram_metadata(f'{PLAN_USER_PICTOGRAM_ROOT}/0')
+
+
+def serialize_user_pictogram(request, directory, filename, *, deletable):
+    owner_id = user_pictogram_owner_id(directory)
+    if owner_id is None:
+        metadata = flat_pictogram_metadata(directory)
+    else:
+        owner_directory = user_pictogram_directory(owner_id)
+        relative_path = os.path.relpath(
+            os.path.join(directory, filename),
+            owner_directory,
+        ).replace(os.sep, '/')
+        metadata = user_pictogram_metadata(relative_path)
+    return serialize_plan_pictogram(
+        request,
+        directory,
+        filename,
+        deletable=deletable,
+        **metadata,
+    )
+
+
+def user_pictogram_name_exists(owner_ids, name, excluded_media_path=None):
+    normalized_name = str(name or '').casefold()
+    excluded = str(excluded_media_path or '').replace('\\', '/').strip('/')
+    for owner_id in owner_ids:
+        owner_directory = user_pictogram_directory(owner_id)
+        owner_root = os.path.join(settings.MEDIA_ROOT, owner_directory)
+        if not os.path.isdir(owner_root):
+            continue
+        for current_root, child_directories, filenames in os.walk(owner_root, followlinks=False):
+            child_directories[:] = [
+                child for child in child_directories
+                if not os.path.islink(os.path.join(current_root, child))
+            ]
+            for filename in filenames:
+                media_path = os.path.relpath(
+                    os.path.join(current_root, filename),
+                    settings.MEDIA_ROOT,
+                ).replace(os.sep, '/')
+                if (
+                    media_path != excluded
+                    and os.path.splitext(filename)[0].casefold() == normalized_name
+                ):
+                    return True
+    return False
+
+
+def registered_catalogue_contains_name(name):
+    """Return whether a bundled catalogue already owns this display name."""
+    normalized_name = str(name or '').casefold()
+    for catalogue in PICTOGRAM_CATALOGS.values():
+        catalogue_root = os.path.join(
+            settings.MEDIA_ROOT,
+            str(catalogue['directory']).strip('/'),
+        )
+        if not os.path.isdir(catalogue_root):
+            continue
+        for current_root, child_directories, filenames in os.walk(catalogue_root, followlinks=False):
+            child_directories[:] = [
+                child for child in child_directories
+                if not os.path.islink(os.path.join(current_root, child))
+            ]
+            if any(
+                filename.lower().endswith('.svg')
+                and os.path.splitext(filename)[0].casefold() == normalized_name
+                for filename in filenames
+            ):
+                return True
+    return False
+
+
+def append_user_pictograms(request, pictograms, seen_types, owner_ids, editable_owner_ids):
+    """Recursively expose classified and legacy user-created pictograms."""
+    for owner_id in owner_ids:
+        owner_directory = user_pictogram_directory(owner_id)
+        owner_root = os.path.join(settings.MEDIA_ROOT, owner_directory)
+        if not os.path.isdir(owner_root):
+            continue
+
+        for current_root, child_directories, filenames in os.walk(owner_root, followlinks=False):
+            child_directories[:] = sorted(
+                (
+                    child for child in child_directories
+                    if not os.path.islink(os.path.join(current_root, child))
+                ),
+                key=str.casefold,
+            )
+            for filename in sorted(filenames, key=str.casefold):
+                absolute_path = os.path.join(current_root, filename)
+                name, extension = os.path.splitext(filename)
+                normalized_type = name.casefold()
+                if (
+                    os.path.islink(absolute_path)
+                    or not os.path.isfile(absolute_path)
+                    or extension.lower() not in PLAN_PICTOGRAM_EXTENSIONS
+                    or normalized_type in seen_types
+                ):
+                    continue
+
+                relative_user_path = os.path.relpath(
+                    absolute_path,
+                    owner_root,
+                ).replace(os.sep, '/')
+                media_directory = os.path.relpath(
+                    current_root,
+                    settings.MEDIA_ROOT,
+                ).replace(os.sep, '/')
+                seen_types.add(normalized_type)
+                pictograms.append(serialize_plan_pictogram(
+                    request,
+                    media_directory,
+                    filename,
+                    deletable=owner_id in editable_owner_ids,
+                    **user_pictogram_metadata(relative_user_path),
+                ))
+
+
+def append_registered_catalogues(request, pictograms, seen_types):
+    """Recursively expose safe SVGs from every configured standard catalogue."""
+    for catalogue_key, catalogue in PICTOGRAM_CATALOGS.items():
+        catalogue_directory = str(catalogue['directory']).strip('/')
+        catalogue_root = os.path.join(settings.MEDIA_ROOT, catalogue_directory)
+        if not os.path.isdir(catalogue_root):
+            continue
+
+        for current_root, child_directories, filenames in os.walk(catalogue_root, followlinks=False):
+            child_directories[:] = sorted(
+                (
+                    name for name in child_directories
+                    if not os.path.islink(os.path.join(current_root, name))
+                ),
+                key=str.casefold,
+            )
+            for filename in sorted(filenames, key=str.casefold):
+                absolute_path = os.path.join(current_root, filename)
+                if (
+                    os.path.islink(absolute_path)
+                    or not os.path.isfile(absolute_path)
+                    or not filename.lower().endswith('.svg')
+                ):
+                    continue
+
+                _sanitized, validation_error = sanitize_pictogram_svg_file(absolute_path)
+                if validation_error:
+                    logger.warning(
+                        'pictogram_catalog.svg_rejected catalogue=%s file=%s reason=%s',
+                        catalogue_key,
+                        os.path.relpath(absolute_path, catalogue_root),
+                        validation_error,
+                    )
+                    continue
+
+                relative_catalogue_path = os.path.relpath(
+                    absolute_path,
+                    catalogue_root,
+                ).replace(os.sep, '/')
+                icon_type = catalogue_icon_type(catalogue_key, relative_catalogue_path)
+                normalized_type = icon_type.casefold()
+                if normalized_type in seen_types:
+                    continue
+
+                relative_media_path = os.path.join(catalogue_directory, relative_catalogue_path)
+                media_directory, media_filename = os.path.split(relative_media_path)
+                metadata = catalogue_metadata(catalogue_key, relative_catalogue_path)
+                seen_types.add(normalized_type)
+                pictograms.append(serialize_plan_pictogram(
+                    request,
+                    media_directory,
+                    media_filename,
+                    icon_type=icon_type,
+                    label=humanize_pictogram_label(os.path.splitext(media_filename)[0]),
+                    **metadata,
+                ))
 
 
 def list_plan_pictograms(request):
     pictograms = []
-    seen_names = set()
-    for directory in PLAN_PICTOGRAM_DIRS:
+    seen_types = set()
+    owner_ids = accessible_library_owner_ids(request.user)
+    editable_owner_ids = accessible_plan_owner_ids(request.user, editable_only=True)
+    ordered_owner_ids = [request.user.id, *sorted(owner_id for owner_id in owner_ids if owner_id != request.user.id)]
+    append_user_pictograms(
+        request,
+        pictograms,
+        seen_types,
+        ordered_owner_ids,
+        editable_owner_ids,
+    )
+    # Keep reading the old upload folder for installations that still contain
+    # user-created SVGs there. Bundled artwork now lives exclusively in the
+    # registered, structured catalogues appended below.
+    directories = [(PLAN_LEGACY_CUSTOM_PICTOGRAM_DIR, False, None)]
+
+    for directory, deletable, allowed_names in directories:
         root = os.path.join(settings.MEDIA_ROOT, directory)
         if not os.path.isdir(root):
             continue
@@ -328,18 +566,78 @@ def list_plan_pictograms(request):
         for filename in sorted(os.listdir(root), key=str.casefold):
             path = os.path.join(root, filename)
             name, extension = os.path.splitext(filename)
-            normalized_name = name.casefold()
+            icon_type = name
+            normalized_type = icon_type.casefold()
             if (
                 not os.path.isfile(path)
                 or extension.lower() not in PLAN_PICTOGRAM_EXTENSIONS
-                or normalized_name in seen_names
+                or normalized_type in seen_types
+                or (allowed_names is not None and name not in allowed_names)
             ):
                 continue
 
-            seen_names.add(normalized_name)
-            pictograms.append(serialize_plan_pictogram(request, directory, filename))
+            seen_types.add(normalized_type)
+            pictograms.append(serialize_plan_pictogram(
+                request,
+                directory,
+                filename,
+                deletable=deletable,
+                **flat_pictogram_metadata(directory),
+            ))
+
+    append_registered_catalogues(request, pictograms, seen_types)
 
     return pictograms
+
+
+def project_pictogram_capture_inputs(request):
+    """Return trusted catalogue paths plus the metadata needed by a snapshot."""
+    catalog = list_plan_pictograms(request)
+    sources = [
+        {**item, 'icon_type': item.get('type')}
+        for item in catalog
+        if item.get('type')
+    ]
+    allowed_paths = {
+        str(item.get('file_name') or '').replace('\\', '/').strip('/')
+        for item in sources
+        if item.get('file_name')
+    }
+    return sources, allowed_paths
+
+
+def freeze_template_versions_for_projects(request, versions):
+    """Detach affected plans from reusable templates before library deletion."""
+    versions = list(versions)
+    if not versions:
+        return
+    sources, allowed_paths = project_pictogram_capture_inputs(request)
+    plan_owner_ids = accessible_library_owner_ids(request.user)
+    for version in versions:
+        affected_plans = EvacuationPlan.objects.filter(
+            user_id__in=plan_owner_ids,
+        ).filter(
+            Q(active_sheet_template_version_id=version.version_id)
+            | Q(last_sheet_template_version_id=version.version_id)
+        ).distinct()
+        for plan in affected_plans:
+            snapshot = plan.template_snapshot if isinstance(plan.template_snapshot, dict) else {}
+            if snapshot.get('versionId') != version.version_id:
+                plan.template_snapshot = {
+                    'schemaVersion': 1,
+                    'templateKey': version.template_key,
+                    'versionId': version.version_id,
+                    'name': version.name,
+                    'blocks': version.blocks,
+                    'planPlacement': version.plan_placement,
+                }
+                plan.save(update_fields=['template_snapshot', 'updated_at'])
+            capture_project_revision(
+                plan,
+                actor=request.user,
+                pictogram_sources=sources,
+                allowed_media_paths=allowed_paths,
+            )
 
 
 def flatten_on_white(img):
@@ -950,10 +1248,25 @@ class WorkspaceEditPermission(permissions.BasePermission):
     def has_object_permission(self, request, view, obj):
         if request.method in permissions.SAFE_METHODS:
             return True
+        if isinstance(obj, PlanFolder):
+            return obj.user_id in accessible_plan_owner_ids(request.user, editable_only=True)
         plan = obj if isinstance(obj, EvacuationPlan) else getattr(obj, 'plan', None)
         if plan is None:
             return True
         return user_can_edit_plan(request.user, plan)
+
+
+class PlanFolderViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated, WorkspaceEditPermission]
+    serializer_class = PlanFolderSerializer
+
+    def get_queryset(self):
+        return PlanFolder.objects.filter(
+            user_id__in=accessible_plan_owner_ids(self.request.user)
+        ).select_related('user')
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
 
 
 class EvacuationPlanViewSet(viewsets.ModelViewSet):
@@ -973,19 +1286,167 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         # Only the owner and explicitly invited workspace members may reach a
         # plan. `restrict_plans_to` keeps that decision in one place.
-        return restrict_plans_to(EvacuationPlan.objects.all(), self.request.user)
+        queryset = restrict_plans_to(
+            EvacuationPlan.objects.select_related('folder'),
+            self.request.user,
+        )
+        if self.action == 'list':
+            archived = str(self.request.query_params.get('archived', '')).lower()
+            return queryset.filter(
+                archived_at__isnull=archived not in {'1', 'true', 'yes'},
+            )
+        if self.action in {
+            'restore_archived', 'project_export', 'project_integrity',
+            'project_revisions', 'restore_project_snapshot',
+        }:
+            return queryset
+        return queryset.filter(archived_at__isnull=True)
 
     def perform_create(self, serializer):
         # A new plan always lands in the creator's own list, never in a list
         # they merely have access to. Multipart forms treat a missing checkbox
         # as False, so explicitly show the newly imported main plan instead of
         # relying on the model's True default.
-        serializer.save(user=self.request.user, main_plan_visible=True)
+        plan = serializer.save(user=self.request.user, main_plan_visible=True)
+        updates = []
+        if not plan.plan_number:
+            plan.plan_number = automatic_plan_number(plan.pk)
+            updates.append('plan_number')
+        if not plan.revision_index:
+            plan.revision_index = 'A'
+            updates.append('revision_index')
+        if updates:
+            plan.save(update_fields=updates)
+        capture_project_revision(
+            plan,
+            actor=self.request.user,
+            reason=PlanProjectRevision.REASON_BOOTSTRAP,
+        )
+
+    def perform_update(self, serializer):
+        plan = serializer.save()
+        sources, allowed_paths = project_pictogram_capture_inputs(self.request)
+        capture_project_revision(
+            plan,
+            actor=self.request.user,
+            pictogram_sources=sources,
+            allowed_media_paths=allowed_paths,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        """Archive a project; normal application flows never destroy its data."""
+        plan = self.get_object()
+        with transaction.atomic():
+            plan.archived_at = timezone.now()
+            plan.save(update_fields=['archived_at', 'updated_at'])
+            capture_project_revision(
+                plan,
+                actor=request.user,
+                reason=PlanProjectRevision.REASON_ARCHIVE,
+            )
+        audit.warning(
+            "plan.archived plan_id=%s owner_id=%s actor_id=%s",
+            plan.pk, plan.user_id, request.user.id,
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'], url_path='restore-archived')
+    def restore_archived(self, request, pk=None):
+        plan = self.get_object()
+        if plan.archived_at is not None:
+            plan.archived_at = None
+            plan.save(update_fields=['archived_at', 'updated_at'])
+            sources, allowed_paths = project_pictogram_capture_inputs(request)
+            capture_project_revision(
+                plan,
+                actor=request.user,
+                reason=PlanProjectRevision.REASON_RESTORE,
+                pictogram_sources=sources,
+                allowed_media_paths=allowed_paths,
+            )
+        return Response(self.get_serializer(plan).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='project-snapshot')
+    def project_snapshot(self, request, pk=None):
+        plan = self.get_object()
+        sources, allowed_paths = project_pictogram_capture_inputs(request)
+        revision = capture_project_revision(
+            plan,
+            actor=request.user,
+            pictogram_sources=sources,
+            allowed_media_paths=allowed_paths,
+        )
+        return Response(
+            PlanProjectRevisionSerializer(revision).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=['get'], url_path='project-integrity')
+    def project_integrity(self, request, pk=None):
+        return Response(verify_project_integrity(self.get_object()))
+
+    @action(detail=True, methods=['get'], url_path='project-revisions')
+    def project_revisions(self, request, pk=None):
+        revisions = self.get_object().project_revisions.select_related('created_by')
+        return Response(PlanProjectRevisionSerializer(revisions, many=True).data)
+
+    @action(
+        detail=True,
+        methods=['post'],
+        url_path=r'project-revisions/(?P<revision_number>[0-9]+)/restore',
+    )
+    def restore_project_snapshot(self, request, pk=None, revision_number=None):
+        plan = self.get_object()
+        revision = plan.project_revisions.filter(revision_number=revision_number).first()
+        if revision is None:
+            return Response(
+                {'detail': "Cette révision n’existe pas."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            restored = restore_project_revision(plan, revision, actor=request.user)
+        except ProjectArchiveError as error:
+            return Response({'detail': str(error)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(PlanProjectRevisionSerializer(restored).data)
+
+    @action(detail=True, methods=['get'], url_path='project-export')
+    def project_export(self, request, pk=None):
+        plan = self.get_object()
+        output = build_project_zip(plan)
+        safe_title = re.sub(r'[^A-Za-z0-9._-]+', '-', plan.title).strip('-') or 'projet'
+        return FileResponse(
+            output,
+            as_attachment=True,
+            filename=f'{safe_title}.evacstudio.zip',
+            content_type='application/zip',
+        )
+
+    @action(
+        detail=False,
+        methods=['post'],
+        url_path='project-import',
+        throttle_classes=[UploadRateThrottle],
+    )
+    def project_import(self, request):
+        serializer = ProjectImportSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            plan = import_project_zip(
+                serializer.validated_data['archive'],
+                owner=request.user,
+                title=serializer.validated_data.get('title', ''),
+            )
+        except ProjectArchiveError as error:
+            return Response({'detail': str(error)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(plan).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'], url_path='duplicate')
     def duplicate(self, request, pk=None):
         """Create a fully independent copy of a plan in the caller's workspace."""
         source_plan = self.get_object()
+        duplicate_options = DuplicatePlanSerializer(data=request.data)
+        duplicate_options.is_valid(raise_exception=True)
+        requested_title = duplicate_options.validated_data.get('title')
 
         def available_copy_title():
             number = 1
@@ -998,6 +1459,7 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 number += 1
 
         created_files = []
+        pictogram_sources, allowed_media_paths = project_pictogram_capture_inputs(request)
 
         def remember_file(field_file):
             if field_file and field_file.name:
@@ -1005,22 +1467,37 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
 
         try:
             with transaction.atomic():
+                capture_project_revision(
+                    source_plan,
+                    actor=request.user,
+                    pictogram_sources=pictogram_sources,
+                    allowed_media_paths=allowed_media_paths,
+                )
                 plan_values = clone_model_values(source_plan, {
-                    'id', 'user', 'title', 'background_file', 'cleaned_background_file',
+                    'id', 'user', 'folder', 'title', 'background_file', 'cleaned_background_file',
+                    'plan_situation_background_file', 'project_uuid', 'archived_at',
+                    'plan_number', 'revision_index',
                     'created_at', 'updated_at',
                 })
                 duplicated_plan = EvacuationPlan(
                     user=request.user,
-                    title=available_copy_title(),
+                    folder=source_plan.folder if source_plan.user_id == request.user.id else None,
+                    title=requested_title or available_copy_title(),
                     **plan_values,
                 )
                 duplicated_plan.background_file = clone_stored_file(source_plan.background_file)
                 duplicated_plan.cleaned_background_file = clone_stored_file(
                     source_plan.cleaned_background_file
                 )
+                duplicated_plan.plan_situation_background_file = clone_stored_file(
+                    source_plan.plan_situation_background_file
+                )
                 duplicated_plan.save()
+                duplicated_plan.plan_number = automatic_plan_number(duplicated_plan.pk)
+                duplicated_plan.save(update_fields=['plan_number'])
                 remember_file(duplicated_plan.background_file)
                 remember_file(duplicated_plan.cleaned_background_file)
+                remember_file(duplicated_plan.plan_situation_background_file)
 
                 for model, related_rows in (
                     (PlanIcon, source_plan.icons.all()),
@@ -1064,6 +1541,12 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                     duplicated_history.image_file = clone_stored_file(history.image_file)
                     duplicated_history.save()
                     remember_file(duplicated_history.image_file)
+
+                clone_project_resources(
+                    source_plan,
+                    duplicated_plan,
+                    actor=request.user,
+                )
         except Exception:
             # SQL rollback does not remove files already written to storage.
             for storage, name in reversed(created_files):
@@ -1076,11 +1559,84 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    @action(
+        detail=True,
+        methods=['post', 'delete'],
+        url_path='situation-background',
+        throttle_classes=[UploadRateThrottle],
+    )
+    def situation_background(self, request, pk=None):
+        """Store or remove the inset background independently from the main plan."""
+        plan = self.get_object()
+        field = plan._meta.get_field('plan_situation_background_file')
+        storage = field.storage
+        old_name = plan.plan_situation_background_file.name or ''
+
+        if request.method == 'DELETE':
+            sources, allowed_paths = project_pictogram_capture_inputs(request)
+            capture_project_revision(
+                plan,
+                actor=request.user,
+                pictogram_sources=sources,
+                allowed_media_paths=allowed_paths,
+            )
+            plan.plan_situation_background_file = None
+            plan.save(update_fields=['plan_situation_background_file', 'updated_at'])
+            capture_project_revision(
+                plan,
+                actor=request.user,
+                pictogram_sources=sources,
+                allowed_media_paths=allowed_paths,
+            )
+            if old_name:
+                transaction.on_commit(
+                    lambda name=old_name: storage.delete(name) if storage.exists(name) else None
+                )
+            return Response(self.get_serializer(plan).data)
+
+        upload = request.FILES.get('file')
+        extension = os.path.splitext(getattr(upload, 'name', '') or '')[1].lower()
+        if extension not in {'.png', '.jpg', '.jpeg', '.svg'}:
+            return Response(
+                {'file': 'Formats acceptés : PNG, JPG, JPEG ou SVG.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            detected_type = validate_background_upload(upload)
+            if detected_type != 'image':
+                raise UploadRejected('Le fond du plan de situation doit être une image.')
+        except UploadRejected as rejected:
+            return Response({'file': str(rejected)}, status=status.HTTP_400_BAD_REQUEST)
+
+        upload.name = safe_upload_name(upload.name, fallback='plan-situation')
+        new_name = ''
+        try:
+            plan.plan_situation_background_file.save(upload.name, upload, save=False)
+            new_name = plan.plan_situation_background_file.name
+            plan.save(update_fields=['plan_situation_background_file', 'updated_at'])
+        except Exception:
+            if new_name and storage.exists(new_name):
+                storage.delete(new_name)
+            raise
+        if old_name and old_name != new_name:
+            transaction.on_commit(
+                lambda name=old_name: storage.delete(name) if storage.exists(name) else None
+            )
+        sources, allowed_paths = project_pictogram_capture_inputs(request)
+        capture_project_revision(
+            plan,
+            actor=request.user,
+            pictogram_sources=sources,
+            allowed_media_paths=allowed_paths,
+        )
+        return Response(self.get_serializer(plan).data)
+
     @action(detail=False, methods=['get', 'put'], url_path='sheet-templates')
     def sheet_templates(self, request):
         """Read or replace the authenticated user's reusable sheet layouts."""
         can_edit_defaults = user_can_edit_default_templates(request.user)
-        visible_versions = SheetTemplateVersion.objects.filter(user=request.user)
+        owner_ids = accessible_library_owner_ids(request.user)
+        visible_versions = SheetTemplateVersion.objects.filter(user_id__in=owner_ids)
         if not can_edit_defaults:
             visible_versions = visible_versions.filter(
                 Q(version_id__startswith='custom:')
@@ -1088,7 +1644,11 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
             )
 
         if request.method == 'GET':
-            return Response(SheetTemplateVersionSerializer(visible_versions, many=True).data)
+            deduped = {}
+            for v in visible_versions.order_by('source_updated_at', 'updated_at'):
+                if v.version_id not in deduped or v.user_id == request.user.id:
+                    deduped[v.version_id] = v
+            return Response(SheetTemplateVersionSerializer(list(deduped.values()), many=True).data)
 
         serializer = SheetTemplateSyncSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1110,6 +1670,14 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         version_ids = [version['version_id'] for version in submitted]
 
         with transaction.atomic():
+            versions_to_replace = SheetTemplateVersion.objects.filter(user=request.user)
+            if not can_edit_defaults:
+                versions_to_replace = versions_to_replace.filter(
+                    Q(version_id__startswith='custom:')
+                    | Q(version_id__startswith='baseline:')
+                )
+            versions_to_delete = list(versions_to_replace.exclude(version_id__in=version_ids))
+            freeze_template_versions_for_projects(request, versions_to_delete)
             for version in submitted:
                 version_id = version.pop('version_id')
                 SheetTemplateVersion.objects.update_or_create(
@@ -1117,13 +1685,9 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                     version_id=version_id,
                     defaults=version,
                 )
-            versions_to_replace = SheetTemplateVersion.objects.filter(user=request.user)
-            if not can_edit_defaults:
-                versions_to_replace = versions_to_replace.filter(
-                    Q(version_id__startswith='custom:')
-                    | Q(version_id__startswith='baseline:')
-                )
-            versions_to_replace.exclude(version_id__in=version_ids).delete()
+            SheetTemplateVersion.objects.filter(
+                pk__in=[version.pk for version in versions_to_delete]
+            ).delete()
 
         versions = SheetTemplateVersion.objects.filter(user=request.user)
         if not can_edit_defaults:
@@ -1141,6 +1705,87 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
             'can_edit_default_templates': user_can_edit_default_templates(request.user),
         })
 
+    @action(detail=False, methods=['post'], url_path='publish-default')
+    def publish_default(self, request):
+        """Publish an edited template as the official built-in default for all users."""
+        if not user_can_edit_default_templates(request.user):
+            return Response(
+                {'detail': "Seul un administrateur autorisé peut modifier les templates par défaut officiels."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        template_key = request.data.get('template')
+        blocks = request.data.get('blocks')
+        plan_placement = request.data.get('planPlacement', {})
+
+        if not template_key or not isinstance(blocks, list):
+            return Response(
+                {'detail': "Paramètres template et blocks requis."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        states_path = os.path.join(
+            os.path.dirname(settings.BASE_DIR),
+            'frontend',
+            'src',
+            'lib',
+            'finalSheetTemplateStates.json',
+        )
+        if not os.path.exists(states_path):
+            return Response(
+                {'detail': "Fichier finalSheetTemplateStates.json introuvable."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        try:
+            with open(states_path, 'r', encoding='utf-8') as f:
+                states_data = json.load(f)
+
+            if 'templates' not in states_data:
+                states_data['templates'] = {}
+
+            states_data['templates'][template_key] = {
+                'blocks': blocks,
+                'planPlacement': plan_placement,
+            }
+
+            with open(states_path, 'w', encoding='utf-8') as f:
+                json.dump(states_data, f, indent=2, ensure_ascii=False)
+                f.write('\n')
+
+            now = timezone.now()
+            baseline_id = f"baseline-builtin:{template_key}"
+            SheetTemplateVersion.objects.filter(version_id=baseline_id).update(
+                blocks=blocks,
+                plan_placement=plan_placement,
+                source_updated_at=now,
+            )
+
+            # Also update the user's active baseline/draft so it matches the published default
+            SheetTemplateVersion.objects.update_or_create(
+                user=request.user,
+                version_id=baseline_id,
+                defaults={
+                    'template_key': template_key,
+                    'name': f"{template_key} — design par défaut",
+                    'blocks': blocks,
+                    'plan_placement': plan_placement,
+                    'source_created_at': now,
+                    'source_updated_at': now,
+                },
+            )
+
+            return Response({
+                'success': True,
+                'message': f"Le template {template_key} a été enregistré comme template officiel par défaut pour tous les utilisateurs.",
+                'template': template_key,
+            })
+        except Exception as e:
+            return Response(
+                {'detail': f"Erreur lors de l'enregistrement du template par défaut: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
     @action(
         detail=False,
         methods=['get', 'post', 'delete'],
@@ -1150,11 +1795,14 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
     def sheet_template_assets(self, request):
         """Store rasterized PDF pages used by personal sheet templates."""
 
-        assets = SheetTemplateAsset.objects.filter(user=request.user)
+        visible_assets = SheetTemplateAsset.objects.filter(
+            user_id__in=accessible_library_owner_ids(request.user)
+        )
+        own_assets = SheetTemplateAsset.objects.filter(user=request.user)
         if request.method == 'GET':
             return Response(
                 SheetTemplateAssetSerializer(
-                    assets,
+                    visible_assets,
                     many=True,
                     context={'request': request},
                 ).data
@@ -1163,12 +1811,28 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         if request.method == 'DELETE':
             asset_id = request.query_params.get('id', '')
             try:
-                asset = assets.get(asset_id=asset_id)
+                asset = own_assets.get(asset_id=asset_id)
             except (SheetTemplateAsset.DoesNotExist, ValueError):
                 return Response(
                     {'detail': "Le fond de template est introuvable."},
                     status=status.HTTP_404_NOT_FOUND,
                 )
+            asset_key = str(asset.asset_id)
+
+            def uses_asset(value):
+                if isinstance(value, dict):
+                    return value.get('assetId') == asset_key or any(
+                        uses_asset(child) for child in value.values()
+                    )
+                if isinstance(value, list):
+                    return any(uses_asset(child) for child in value)
+                return False
+
+            affected_versions = [
+                version for version in SheetTemplateVersion.objects.filter(user=request.user)
+                if uses_asset(version.blocks)
+            ]
+            freeze_template_versions_for_projects(request, affected_versions)
             asset.delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -1227,35 +1891,17 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         if request.method == 'GET':
             return Response(list_plan_pictograms(request), status=status.HTTP_200_OK)
 
-        custom_directory = PLAN_PICTOGRAM_DIRS[0]
-        custom_root = os.path.join(settings.MEDIA_ROOT, custom_directory)
-
         if request.method == 'PATCH':
-            requested_filename = request.data.get('file_name', '')
-            filename = os.path.basename(requested_filename)
+            requested_filename = str(request.data.get('file_name', '') or '')
+            directory, root, stored_filename = resolve_user_pictogram_file(request, requested_filename)
             new_name = normalize_pictogram_name(request.data.get('name'))
-            if (
-                not filename
-                or filename != requested_filename
-                or not filename.lower().endswith('.svg')
-                or not new_name
-            ):
+            if not requested_filename or not new_name:
                 return Response(
                     {"error": "Le fichier ou le nouveau nom du SVG est invalide."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            if not os.path.isdir(custom_root):
-                return Response(
-                    {"error": "Ce pictogramme SVG personnalisé n'existe pas."},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-
-            stored_filename = next(
-                (item for item in os.listdir(custom_root) if item.casefold() == filename.casefold()),
-                None,
-            )
-            if not stored_filename:
+            if not directory or not root or not stored_filename:
                 return Response(
                     {"error": "Ce pictogramme SVG personnalisé n'existe pas."},
                     status=status.HTTP_404_NOT_FOUND,
@@ -1265,26 +1911,22 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
             new_filename = f'{new_name}.svg'
             if new_filename == stored_filename:
                 return Response(
-                    serialize_plan_pictogram(request, custom_directory, stored_filename),
+                    serialize_user_pictogram(
+                        request,
+                        directory,
+                        stored_filename,
+                        deletable=True,
+                    ),
                     status=status.HTTP_200_OK,
                 )
 
-            name_already_exists = any(
-                os.path.isdir(library_root)
-                and any(
-                    os.path.splitext(existing)[0].casefold() == new_name.casefold()
-                    and not (
-                        library_directory == custom_directory
-                        and existing == stored_filename
-                    )
-                    for existing in os.listdir(library_root)
-                )
-                for library_directory, library_root in (
-                    (
-                        directory,
-                        os.path.join(settings.MEDIA_ROOT, directory),
-                    )
-                    for directory in PLAN_PICTOGRAM_DIRS
+            source_media_path = f'{directory}/{stored_filename}'
+            name_already_exists = (
+                registered_catalogue_contains_name(new_name)
+                or user_pictogram_name_exists(
+                    accessible_library_owner_ids(request.user),
+                    new_name,
+                    excluded_media_path=source_media_path,
                 )
             )
             if name_already_exists:
@@ -1293,14 +1935,19 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_409_CONFLICT,
                 )
 
-            source_path = os.path.join(custom_root, stored_filename)
-            target_path = os.path.join(custom_root, new_filename)
+            source_path = os.path.join(root, stored_filename)
+            target_path = os.path.join(root, new_filename)
             file_was_renamed = False
+            target_owner_id = user_pictogram_owner_id(directory)
+            editable_owner_ids = [target_owner_id] if target_owner_id else accessible_plan_owner_ids(request.user, editable_only=True)
             try:
                 os.rename(source_path, target_path)
                 file_was_renamed = True
                 with transaction.atomic():
-                    PlanIcon.objects.filter(icon_type=old_name).update(icon_type=new_name)
+                    PlanIcon.objects.filter(
+                        plan__user_id__in=editable_owner_ids,
+                        icon_type=old_name,
+                    ).update(icon_type=new_name)
             except Exception:
                 if file_was_renamed and os.path.exists(target_path) and not os.path.exists(source_path):
                     try:
@@ -1314,47 +1961,62 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 )
 
             return Response(
-                serialize_plan_pictogram(request, custom_directory, new_filename),
+                serialize_user_pictogram(
+                    request,
+                    directory,
+                    new_filename,
+                    deletable=True,
+                ),
                 status=status.HTTP_200_OK,
             )
 
         if request.method == 'DELETE':
             requested_filename = request.query_params.get('file_name', '')
-            filename = os.path.basename(requested_filename)
-            if (
-                not filename
-                or filename != requested_filename
-                or not filename.lower().endswith('.svg')
-            ):
+            directory, root, stored_filename = resolve_user_pictogram_file(request, requested_filename)
+            if not requested_filename:
                 return Response(
                     {"error": "Le nom du fichier SVG à supprimer est invalide."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            if not os.path.isdir(custom_root):
-                return Response(
-                    {"error": "Ce pictogramme SVG personnalisé n'existe pas."},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-
-            stored_filename = next(
-                (item for item in os.listdir(custom_root) if item.casefold() == filename.casefold()),
-                None,
-            )
-            if not stored_filename:
+            if not directory or not root or not stored_filename:
                 return Response(
                     {"error": "Ce pictogramme SVG personnalisé n'existe pas."},
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
             icon_type = os.path.splitext(stored_filename)[0]
-            if PlanIcon.objects.filter(icon_type=icon_type).exists():
-                return Response(
-                    {"error": "Ce pictogramme est utilisé dans un ou plusieurs plans et ne peut pas être supprimé."},
-                    status=status.HTTP_409_CONFLICT,
-                )
+            target_owner_id = user_pictogram_owner_id(directory)
+            owner_ids_to_check = [target_owner_id] if target_owner_id else accessible_plan_owner_ids(request.user)
+            affected_plans = EvacuationPlan.objects.filter(
+                user_id__in=owner_ids_to_check,
+                icons__icon_type=icon_type,
+            ).distinct()
 
-            target_path = os.path.join(custom_root, stored_filename)
+            # The reusable library item may be deleted only after every using
+            # project owns an immutable copy of its bytes.
+            if affected_plans.exists():
+                sources, allowed_paths = project_pictogram_capture_inputs(request)
+                try:
+                    with transaction.atomic():
+                        for affected_plan in affected_plans:
+                            capture_project_revision(
+                                affected_plan,
+                                actor=request.user,
+                                pictogram_sources=sources,
+                                allowed_media_paths=allowed_paths,
+                            )
+                except (OSError, ProjectArchiveError):
+                    logger.exception(
+                        "pictogram_delete.snapshot_failed",
+                        extra={"user_id": request.user.id, "file": stored_filename},
+                    )
+                    return Response(
+                        {"error": "Le pictogramme n’a pas été supprimé car sa copie de sécurité a échoué."},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
+
+            target_path = os.path.join(root, stored_filename)
             if not os.path.isfile(target_path):
                 return Response(
                     {"error": "Ce pictogramme SVG personnalisé n'existe pas."},
@@ -1372,9 +2034,6 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                     {"error": "Le pictogramme n'a pas pu être supprimé."},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
-
-            # Bibliothèque partagée : une suppression affecte toute l'entreprise,
-            # elle est donc tracée avec son auteur.
             audit.warning(
                 "pictogram.deleted user_id=%s file=%s", request.user.id, stored_filename
             )
@@ -1389,6 +2048,30 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 {"error": "Indiquez un nom pour le pictogramme."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        requested_standard = str(request.data.get('standard') or '')
+        requested_category = str(request.data.get('category') or '')
+        if requested_standard or requested_category:
+            destination_metadata = selected_catalogue_metadata(
+                requested_standard,
+                requested_category,
+            )
+            if destination_metadata is None:
+                return Response(
+                    {"error": "La norme ou la catégorie de destination est invalide."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            custom_directory = user_pictogram_directory(
+                request.user.id,
+                requested_standard,
+                requested_category,
+            )
+        else:
+            destination_metadata = flat_pictogram_metadata(
+                user_pictogram_directory(request.user.id)
+            )
+            custom_directory = user_pictogram_directory(request.user.id)
+        custom_root = os.path.join(settings.MEDIA_ROOT, custom_directory)
 
         if upload is not None:
             if not upload.name.lower().endswith('.svg'):
@@ -1420,15 +2103,11 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         directory, root = custom_directory, custom_root
         os.makedirs(root, exist_ok=True)
         filename = f'{name}.svg'
-        name_already_exists = any(
-            os.path.isdir(library_root)
-            and any(
-                os.path.splitext(existing)[0].casefold() == name.casefold()
-                for existing in os.listdir(library_root)
-            )
-            for library_root in (
-                os.path.join(settings.MEDIA_ROOT, library_directory)
-                for library_directory in PLAN_PICTOGRAM_DIRS
+        name_already_exists = (
+            registered_catalogue_contains_name(name)
+            or user_pictogram_name_exists(
+                accessible_library_owner_ids(request.user),
+                name,
             )
         )
         if name_already_exists:
@@ -1454,7 +2133,13 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
             )
 
         return Response(
-            serialize_plan_pictogram(request, directory, filename),
+            serialize_plan_pictogram(
+                request,
+                directory,
+                filename,
+                deletable=True,
+                **destination_metadata,
+            ),
             status=status.HTTP_201_CREATED,
         )
 
@@ -2054,6 +2739,50 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
 
+        settings_data = payload['plan_settings']
+        catalog_sources, allowed_media_paths = project_pictogram_capture_inputs(request)
+        submitted_sources = settings_data.get('pictogram_sources', [])
+        source_by_type = {
+            str(item.get('icon_type') or item.get('type')): item
+            for item in catalog_sources
+            if item.get('icon_type') or item.get('type')
+        }
+        source_by_type.update({
+            str(item.get('icon_type')): item
+            for item in submitted_sources
+            if item.get('icon_type')
+        })
+        project_sources = list(source_by_type.values())
+        requested_template_key = payload['plan_settings'].get(
+            'active_sheet_template_key',
+            plan.active_sheet_template_key,
+        )
+        if requested_template_key != 'none':
+            required_information = {
+                'establishment_name': plan.establishment_name,
+                'building_name': plan.building_name,
+                'floor_name': plan.floor_name,
+                'plan_number': plan.plan_number,
+                'design_date': plan.design_date,
+                'designer': plan.designer,
+                'revision_index': plan.revision_index,
+            }
+            missing_information = [
+                field for field, value in required_information.items()
+                if value is None or (isinstance(value, str) and not value.strip())
+            ]
+            if missing_information:
+                return Response(
+                    {
+                        "error": (
+                            "Complétez les informations obligatoires du plan dans le studio "
+                            "avant d’enregistrer ce template."
+                        ),
+                        "missing_fields": missing_information,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         existing_overlays = {overlay.pk: overlay for overlay in plan.overlays.all()}
         prepared_overlays = []
         used_overlay_ids = set()
@@ -2192,6 +2921,43 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 plan.main_plan_group_id = settings_data.get('main_plan_group_id', '')
                 plan.main_plan_grouping_enabled = settings_data.get('main_plan_grouping_enabled', False)
                 plan.watermark_config = dict(settings_data.get('watermark', {}))
+                plan.document_type = settings_data.get('document_type', plan.document_type)
+                plan.export_paper_format = settings_data.get(
+                    'export_paper_format',
+                    plan.export_paper_format,
+                )
+                plan.print_scale_denominator = settings_data.get(
+                    'print_scale_denominator',
+                    plan.print_scale_denominator,
+                )
+                plan.measured_scale_denominator = settings_data.get(
+                    'measured_scale_denominator',
+                    None,
+                )
+                plan.plan_information_layout = dict(settings_data.get(
+                    'plan_information_layout',
+                    plan.plan_information_layout,
+                ))
+                plan.plan_legend_layout = dict(settings_data.get(
+                    'plan_legend_layout',
+                    plan.plan_legend_layout,
+                ))
+                plan.legend_hidden_icon_types = list(settings_data.get(
+                    'legend_hidden_icon_types',
+                    plan.legend_hidden_icon_types,
+                ))
+                plan.plan_situation_config = dict(settings_data.get(
+                    'plan_situation_config',
+                    plan.plan_situation_config,
+                ))
+                plan.sheet_plan_placement = dict(settings_data.get(
+                    'sheet_plan_placement',
+                    plan.sheet_plan_placement,
+                ))
+                plan.template_snapshot = dict(settings_data.get(
+                    'template_snapshot',
+                    plan.template_snapshot,
+                ))
                 plan.active_sheet_template_key = settings_data.get(
                     'active_sheet_template_key',
                     plan.active_sheet_template_key,
@@ -2204,14 +2970,45 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                     'active_sheet_template_name',
                     plan.active_sheet_template_name,
                 )
+                if plan.active_sheet_template_key != 'none':
+                    plan.last_sheet_template_key = plan.active_sheet_template_key
+                    plan.last_sheet_template_version_id = plan.active_sheet_template_version_id
+                    plan.last_sheet_template_name = plan.active_sheet_template_name
+                else:
+                    plan.last_sheet_template_key = settings_data.get(
+                        'last_sheet_template_key',
+                        plan.last_sheet_template_key,
+                    )
+                    plan.last_sheet_template_version_id = settings_data.get(
+                        'last_sheet_template_version_id',
+                        plan.last_sheet_template_version_id,
+                    )
+                    plan.last_sheet_template_name = settings_data.get(
+                        'last_sheet_template_name',
+                        plan.last_sheet_template_name,
+                    )
                 plan.save(update_fields=[
                     'main_plan_x', 'main_plan_y', 'main_plan_width', 'main_plan_height',
                     'main_plan_locked', 'main_plan_visible', 'main_plan_z_index',
                     'main_plan_group_id', 'main_plan_grouping_enabled',
-                    'watermark_config', 'active_sheet_template_key',
+                    'watermark_config', 'document_type', 'export_paper_format',
+                    'print_scale_denominator', 'measured_scale_denominator',
+                    'plan_information_layout', 'plan_legend_layout',
+                    'legend_hidden_icon_types', 'plan_situation_config',
+                    'sheet_plan_placement', 'template_snapshot',
+                    'active_sheet_template_key',
                     'active_sheet_template_version_id', 'active_sheet_template_name',
+                    'last_sheet_template_key', 'last_sheet_template_version_id',
+                    'last_sheet_template_name',
                     'updated_at',
                 ])
+
+                capture_project_revision(
+                    plan,
+                    actor=request.user,
+                    pictogram_sources=project_sources,
+                    allowed_media_paths=allowed_media_paths,
+                )
 
                 live_file_names = set(
                     plan.overlays.exclude(image_file='').values_list('image_file', flat=True)

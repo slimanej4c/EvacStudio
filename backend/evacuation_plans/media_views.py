@@ -20,6 +20,8 @@ from .media_access import (
     normalize_media_path,
 )
 from .models import user_can_access_media_path
+from .pictogram_catalogs import is_registered_catalogue_svg_path
+from .pictogram_security import sanitize_pictogram_svg_file
 from .throttles import ProtectedMediaRateThrottle
 
 logger = logging.getLogger(__name__)
@@ -73,16 +75,35 @@ class ProtectedMediaView(APIView):
         if not os.path.isfile(absolute_path):
             raise Http404
 
+        sanitized_catalogue_svg = None
+        if is_registered_catalogue_svg_path(relative_path):
+            sanitized_catalogue_svg, validation_error = sanitize_pictogram_svg_file(absolute_path)
+            if validation_error:
+                logger.warning(
+                    "media.catalogue_svg_rejected path=%s reason=%s",
+                    relative_path,
+                    validation_error,
+                )
+                raise Http404
+
         content_type = (
             mimetypes.guess_type(relative_path)[0] or 'application/octet-stream'
         )
-        # Uploaded SVG files are sanitised before storage, and the bundled
-        # pictogram library is trusted application data. Keep everything else as
-        # inert bytes so arbitrary uploads cannot become same-origin documents.
+        # Uploaded SVG files are sanitised before storage. Registered catalogue
+        # SVGs are re-sanitised below when served. Keep everything else as inert
+        # bytes so arbitrary uploads cannot become same-origin documents.
         if content_type not in SAFE_INLINE_CONTENT_TYPES:
             content_type = 'application/octet-stream'
 
-        if getattr(settings, 'MEDIA_USE_X_ACCEL_REDIRECT', False):
+        if sanitized_catalogue_svg is not None:
+            # Catalogue files are always served from the sanitized bytes. This
+            # keeps a future folder addition safe even when its URL is guessed
+            # directly instead of first discovered through the API.
+            response = HttpResponse(
+                sanitized_catalogue_svg,
+                content_type='image/svg+xml',
+            )
+        elif getattr(settings, 'MEDIA_USE_X_ACCEL_REDIRECT', False):
             # Nginx sert le fichier depuis une `location internal`, donc
             # inatteignable directement. Django garde la décision, sans lire
             # le fichier ni occuper un worker pendant le transfert.
@@ -97,6 +118,10 @@ class ProtectedMediaView(APIView):
             response = FileResponse(open(absolute_path, 'rb'), content_type=content_type)
 
         response['X-Content-Type-Options'] = 'nosniff'
+        if content_type == 'image/svg+xml':
+            response['Content-Security-Policy'] = (
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+            )
         if content_type == 'application/octet-stream':
             filename = os.path.basename(relative_path)
             response['Content-Disposition'] = f'attachment; filename="{filename}"'

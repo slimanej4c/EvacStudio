@@ -9,6 +9,8 @@ import { FileCode2, Loader2, Pencil, Plus, Search, Trash2, Type, Upload, X } fro
 export interface AddSvgPictogramInput {
   name: string;
   svg: string;
+  standardKey: string;
+  categoryKey: string;
 }
 
 interface IconToolbarProps {
@@ -38,6 +40,11 @@ const EMPTY_SVG_TEMPLATE = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 const MAX_SVG_BYTES = 250 * 1024;
 
 const iconLabelCollator = new Intl.Collator("fr", { sensitivity: "base", numeric: true });
+const catalogueLabelCollator = new Intl.Collator("fr", { sensitivity: "base", numeric: true });
+
+const DEFAULT_PICTOGRAM_STANDARD = "nfx08070";
+const DEFAULT_PICTOGRAM_CATEGORY = "01-evacuation";
+const ALL_PICTOGRAM_FILTERS = "all";
 
 const normalizeIconLabel = (value: string) =>
   value
@@ -46,6 +53,12 @@ const normalizeIconLabel = (value: string) =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+
+const iconStandardKey = (icon: SafetyIconDefinition) => icon.standardKey || "general";
+const iconStandardLabel = (icon: SafetyIconDefinition) =>
+  icon.standardLabel || (iconStandardKey(icon) === "general" ? "Personnels et généraux" : iconStandardKey(icon));
+const iconCategoryKey = (icon: SafetyIconDefinition) => icon.categoryKey || "uncategorized";
+const iconCategoryLabel = (icon: SafetyIconDefinition) => icon.categoryLabel || "Non classés";
 
 /** Frequently placed safety signs stay pinned above the full library. */
 const frequentIconRank = (icon: SafetyIconDefinition) => {
@@ -73,9 +86,13 @@ export default function IconToolbar({
   onRenameSvg,
 }: IconToolbarProps) {
   const [search, setSearch] = useState("");
+  const [selectedStandard, setSelectedStandard] = useState(DEFAULT_PICTOGRAM_STANDARD);
+  const [selectedCategory, setSelectedCategory] = useState(ALL_PICTOGRAM_FILTERS);
   const [svgModalOpen, setSvgModalOpen] = useState(false);
   const [svgName, setSvgName] = useState("");
   const [svgCode, setSvgCode] = useState(EMPTY_SVG_TEMPLATE);
+  const [svgStandard, setSvgStandard] = useState(DEFAULT_PICTOGRAM_STANDARD);
+  const [svgCategory, setSvgCategory] = useState(DEFAULT_PICTOGRAM_CATEGORY);
   const [svgSaving, setSvgSaving] = useState(false);
   const [svgError, setSvgError] = useState("");
   const [deletingIconType, setDeletingIconType] = useState<IconType | null>(null);
@@ -83,16 +100,117 @@ export default function IconToolbar({
   const [libraryError, setLibraryError] = useState("");
   const svgFileInputRef = useRef<HTMLInputElement>(null);
 
+  const allIcons = useMemo(() => Object.values(iconDefinitions), [iconDefinitions]);
+
+  const standardOptions = useMemo(() => {
+    const standards = new Map<string, { key: string; label: string; count: number }>();
+    allIcons.forEach((icon) => {
+      const key = iconStandardKey(icon);
+      const current = standards.get(key);
+      standards.set(key, {
+        key,
+        label: iconStandardLabel(icon),
+        count: (current?.count || 0) + 1,
+      });
+    });
+    return [...standards.values()].sort((left, right) => {
+      if (left.key === right.key) return 0;
+      if (left.key === DEFAULT_PICTOGRAM_STANDARD) return -1;
+      if (right.key === DEFAULT_PICTOGRAM_STANDARD) return 1;
+      if (left.key === "general") return 1;
+      if (right.key === "general") return -1;
+      return catalogueLabelCollator.compare(left.label, right.label);
+    });
+  }, [allIcons]);
+
+  const categoriesByStandard = useMemo(() => {
+    const grouped = new Map<string, Array<{ key: string; label: string }>>();
+    allIcons.forEach((icon) => {
+      const standardKey = iconStandardKey(icon);
+      if (standardKey === "general") return;
+      const category = {
+        key: iconCategoryKey(icon),
+        label: iconCategoryLabel(icon),
+      };
+      const current = grouped.get(standardKey) || [];
+      if (!current.some((item) => item.key === category.key)) current.push(category);
+      grouped.set(standardKey, current);
+    });
+    grouped.forEach((categories) => categories.sort((left, right) => {
+      const keyOrder = catalogueLabelCollator.compare(left.key, right.key);
+      return keyOrder || catalogueLabelCollator.compare(left.label, right.label);
+    }));
+    return grouped;
+  }, [allIcons]);
+
+  const importStandardOptions = standardOptions.filter((option) => option.key !== "general");
+  const importCategoryOptions = categoriesByStandard.get(svgStandard) || [];
+
+  const effectiveStandard = standardOptions.some((option) => option.key === selectedStandard)
+    ? selectedStandard
+    : ALL_PICTOGRAM_FILTERS;
+
+  const categoryOptions = useMemo(() => {
+    const categories = new Map<string, { key: string; label: string; count: number }>();
+    allIcons
+      .filter((icon) => effectiveStandard === ALL_PICTOGRAM_FILTERS || iconStandardKey(icon) === effectiveStandard)
+      .forEach((icon) => {
+        const key = iconCategoryKey(icon);
+        const current = categories.get(key);
+        categories.set(key, {
+          key,
+          label: iconCategoryLabel(icon),
+          count: (current?.count || 0) + 1,
+        });
+      });
+    return [...categories.values()].sort((left, right) => {
+      const keyOrder = catalogueLabelCollator.compare(left.key, right.key);
+      return keyOrder || catalogueLabelCollator.compare(left.label, right.label);
+    });
+  }, [allIcons, effectiveStandard]);
+
+  const effectiveCategory = categoryOptions.some((option) => option.key === selectedCategory)
+    ? selectedCategory
+    : ALL_PICTOGRAM_FILTERS;
+
   const iconsList = useMemo(() => {
     const normalizedSearch = normalizeIconLabel(search);
-    return Object.values(iconDefinitions)
-      .filter((icon) => normalizeIconLabel(icon.label).includes(normalizedSearch))
+    return allIcons
+      .filter((icon) =>
+        (effectiveStandard === ALL_PICTOGRAM_FILTERS || iconStandardKey(icon) === effectiveStandard)
+        && (effectiveCategory === ALL_PICTOGRAM_FILTERS || iconCategoryKey(icon) === effectiveCategory)
+        && normalizeIconLabel(`${icon.label} ${icon.subcategoryLabel || ""}`).includes(normalizedSearch)
+      )
       .sort((left, right) => {
         const rankDifference = frequentIconRank(left) - frequentIconRank(right);
         return rankDifference || iconLabelCollator.compare(left.label, right.label);
       });
-  }, [iconDefinitions, search]);
+  }, [allIcons, effectiveCategory, effectiveStandard, search]);
   const activeLibraryIcon = activeIconType ? iconDefinitions[activeIconType] : null;
+
+  const openSvgModal = () => {
+    const requestedStandard = (
+      effectiveStandard !== ALL_PICTOGRAM_FILTERS
+      && effectiveStandard !== "general"
+      && categoriesByStandard.has(effectiveStandard)
+    )
+      ? effectiveStandard
+      : categoriesByStandard.has(DEFAULT_PICTOGRAM_STANDARD)
+        ? DEFAULT_PICTOGRAM_STANDARD
+        : importStandardOptions[0]?.key || "";
+    const requestedCategories = categoriesByStandard.get(requestedStandard) || [];
+    const requestedCategory = (
+      effectiveCategory !== ALL_PICTOGRAM_FILTERS
+      && requestedCategories.some((category) => category.key === effectiveCategory)
+    )
+      ? effectiveCategory
+      : requestedCategories.some((category) => category.key === DEFAULT_PICTOGRAM_CATEGORY)
+        ? DEFAULT_PICTOGRAM_CATEGORY
+        : requestedCategories[0]?.key || "";
+    setSvgStandard(requestedStandard);
+    setSvgCategory(requestedCategory);
+    setSvgModalOpen(true);
+  };
 
   const closeSvgModal = () => {
     if (svgSaving) return;
@@ -137,12 +255,23 @@ export default function IconToolbar({
       setSvgError("Importez un SVG ou collez son code.");
       return;
     }
+    if (!svgStandard || !svgCategory) {
+      setSvgError("Choisissez une norme et une catégorie de destination.");
+      return;
+    }
 
     setSvgSaving(true);
     setSvgError("");
     try {
-      await onAddSvg({ name: svgName.trim(), svg: svgCode });
+      await onAddSvg({
+        name: svgName.trim(),
+        svg: svgCode,
+        standardKey: svgStandard,
+        categoryKey: svgCategory,
+      });
       setSearch("");
+      setSelectedStandard(svgStandard);
+      setSelectedCategory(svgCategory);
       setSvgModalOpen(false);
       setSvgName("");
       setSvgCode(EMPTY_SVG_TEMPLATE);
@@ -204,7 +333,7 @@ export default function IconToolbar({
           {onAddSvg && (
             <button
               type="button"
-              onClick={() => setSvgModalOpen(true)}
+              onClick={openSvgModal}
               title="Créer ou importer un SVG"
               className="flex cursor-pointer items-center gap-1 rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-1 text-[9px] font-semibold text-emerald-300 hover:bg-emerald-500/20"
             >
@@ -213,7 +342,7 @@ export default function IconToolbar({
             </button>
           )}
           <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-neutral-500">
-            {iconsList.length}
+            {iconsList.length}/{allIcons.length}
           </span>
         </div>
       </div>
@@ -239,6 +368,47 @@ export default function IconToolbar({
               <X className="h-3 w-3" />
             </button>
           )}
+        </div>
+        <div className="mt-2 grid grid-cols-1 gap-1.5">
+          <label className="block">
+            <span className="mb-1 block text-[8px] font-bold uppercase tracking-[0.12em] text-neutral-600">
+              Norme
+            </span>
+            <select
+              value={effectiveStandard}
+              onChange={(event) => {
+                setSelectedStandard(event.target.value);
+                setSelectedCategory(ALL_PICTOGRAM_FILTERS);
+              }}
+              className="w-full rounded border border-black/50 bg-[#1b1b1d] px-2 py-1.5 text-[10px] font-medium text-neutral-300 outline-none focus:border-emerald-500/60"
+            >
+              <option value={ALL_PICTOGRAM_FILTERS}>Toutes les normes ({allIcons.length})</option>
+              {standardOptions.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label} ({option.count})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[8px] font-bold uppercase tracking-[0.12em] text-neutral-600">
+              Catégorie
+            </span>
+            <select
+              value={effectiveCategory}
+              onChange={(event) => setSelectedCategory(event.target.value)}
+              className="w-full rounded border border-black/50 bg-[#1b1b1d] px-2 py-1.5 text-[10px] font-medium text-neutral-300 outline-none focus:border-emerald-500/60"
+            >
+              <option value={ALL_PICTOGRAM_FILTERS}>
+                Toutes les catégories ({categoryOptions.reduce((total, option) => total + option.count, 0)})
+              </option>
+              {categoryOptions.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label} ({option.count})
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
         {libraryError && (
           <div className="mt-2 flex items-start gap-1.5 rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5">
@@ -474,6 +644,41 @@ export default function IconToolbar({
                   className="mt-1.5 w-full rounded border border-black/50 bg-[#1b1b1d] px-3 py-2 text-xs text-neutral-100 placeholder-neutral-600 focus:border-emerald-500/60 focus:outline-none"
                 />
               </label>
+
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <label className="block text-[11px] font-medium text-neutral-300">
+                  Norme
+                  <select
+                    value={svgStandard}
+                    onChange={(event) => {
+                      const standard = event.target.value;
+                      const categories = categoriesByStandard.get(standard) || [];
+                      setSvgStandard(standard);
+                      setSvgCategory(categories[0]?.key || "");
+                    }}
+                    className="mt-1.5 w-full rounded border border-black/50 bg-[#1b1b1d] px-3 py-2 text-xs text-neutral-100 focus:border-emerald-500/60 focus:outline-none"
+                  >
+                    {importStandardOptions.map((option) => (
+                      <option key={option.key} value={option.key}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-[11px] font-medium text-neutral-300">
+                  Dossier / catégorie
+                  <select
+                    value={svgCategory}
+                    onChange={(event) => setSvgCategory(event.target.value)}
+                    className="mt-1.5 w-full rounded border border-black/50 bg-[#1b1b1d] px-3 py-2 text-xs text-neutral-100 focus:border-emerald-500/60 focus:outline-none"
+                  >
+                    {importCategoryOptions.map((option) => (
+                      <option key={option.key} value={option.key}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <p className="mt-2 text-[10px] leading-relaxed text-neutral-500">
+                Le SVG reste personnel, mais il apparaîtra dans les filtres de la norme et du dossier choisis.
+              </p>
 
               <input
                 ref={svgFileInputRef}

@@ -7,7 +7,9 @@
     "dev:turbo": "next dev -H 127.0.0.1",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:plan-situation": "node --experimental-strip-types scripts/test-plan-situation.mjs",
+    "test:plan-legend": "node --experimental-strip-types scripts/test-plan-legend.mjs"
   },
   "dependencies": {
     "jspdf": "^4.2.1",

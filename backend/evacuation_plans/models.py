@@ -8,8 +8,11 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import models
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 from .media_access import media_path_aliases
+from .pictogram_catalogs import is_registered_catalogue_svg_path
+from .plan_compliance import DOCUMENT_TYPE_CHOICES, PAPER_FORMAT_CHOICES
 
 
 def _derive_xai_settings_keys():
@@ -58,11 +61,90 @@ def decrypt_xai_api_key(encrypted_api_key):
     return plaintext.decode("utf-8")
 
 
+class PlanFolder(models.Model):
+    """A user-owned folder used to organise plans from the same site."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='plan_folders')
+    name = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'name'], name='unique_plan_folder_name_per_user'),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.user})"
+
+
 class EvacuationPlan(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='evacuation_plans')
+    project_uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    folder = models.ForeignKey(
+        PlanFolder,
+        on_delete=models.SET_NULL,
+        related_name='plans',
+        null=True,
+        blank=True,
+    )
     title = models.CharField(max_length=255)
+    # Identification and revision metadata completed in the studio when a
+    # printed sheet template is associated with the plan. Defaults keep the
+    # original quick-import workflow and historical projects readable.
+    establishment_name = models.CharField(max_length=255, blank=True, default='')
     building_name = models.CharField(max_length=255)
     floor_name = models.CharField(max_length=255)
+    plan_number = models.CharField(max_length=100, blank=True, default='')
+    design_date = models.DateField(null=True, blank=True)
+    designer = models.CharField(max_length=255, blank=True, default='')
+    revision_index = models.CharField(max_length=50, blank=True, default='A')
+    last_verification_date = models.DateField(null=True, blank=True)
+    next_verification_date = models.DateField(null=True, blank=True)
+    # Per-plan display choices. A missing key means visible, which keeps older
+    # plans and newly added information fields forward-compatible.
+    plan_information_visibility = models.JSONField(default=dict, blank=True)
+    # Geometry of the movable information card, keyed by sheet template. This
+    # stays on the plan because it is client-specific and must never be written
+    # into a reusable template definition.
+    plan_information_layout = models.JSONField(default=dict, blank=True)
+    # Per-plan legend geometry and visibility, keyed by sheet template. The
+    # reusable template keeps its original legend position.
+    plan_legend_layout = models.JSONField(default=dict, blank=True)
+    # Icon types hidden from this plan's generated legend. The pictograms stay
+    # untouched on the drawing and can be restored to the legend at any time.
+    legend_hidden_icon_types = models.JSONField(default=list, blank=True)
+    # Exact, plan-owned copy of the last sheet composition. The reusable
+    # template may later be renamed or removed without changing this project.
+    template_snapshot = models.JSONField(default=dict, blank=True)
+    # Plan-specific inset shown on the printed sheet. Its editable blocks stay
+    # separate from reusable template definitions, while the optional raster or
+    # sanitised SVG background is stored as an independently protected file.
+    plan_situation_config = models.JSONField(default=dict, blank=True)
+    plan_situation_background_file = models.FileField(
+        upload_to='situation_backgrounds/',
+        null=True,
+        blank=True,
+    )
+    # Explicit export metadata used by the studio now and by the automatic
+    # compliance auditor later. It must not be inferred from raster pixels.
+    document_type = models.CharField(
+        max_length=32,
+        choices=DOCUMENT_TYPE_CHOICES,
+        blank=True,
+        default='',
+    )
+    export_paper_format = models.CharField(
+        max_length=2,
+        choices=PAPER_FORMAT_CHOICES,
+        default='a3',
+    )
+    print_scale_denominator = models.PositiveIntegerField(default=250)
+    # Calculated from a two-point calibration on the main plan. This is kept
+    # separate from the declared scale so an audit can distinguish intent from
+    # an actual geometric measurement on the final sheet.
+    measured_scale_denominator = models.FloatField(null=True, blank=True)
     background_file = models.FileField(upload_to='backgrounds/')
     background_type = models.CharField(max_length=50) # 'image' or 'pdf'
     cleaned_background_file = models.FileField(upload_to='backgrounds_cleaned/', null=True, blank=True)
@@ -84,9 +166,13 @@ class EvacuationPlan(models.Model):
     # Flexible, versioned presentation settings for the approval watermark/BAT.
     # Keeping the visual options together lets the canvas remain the only renderer.
     watermark_config = models.JSONField(default=dict, blank=True)
-    # The sheet selected for this specific plan. Template definitions remain
-    # reusable account data, while these three fields remember which one the
-    # project must reopen with and what name to show in the plans list.
+    # Per-plan crop of the source drawing inside the selected template window.
+    # This must not modify the reusable/default template itself.
+    sheet_plan_placement = models.JSONField(default=dict, blank=True)
+    # The sheet currently displayed for this specific plan. Template
+    # definitions remain reusable account data; the separate ``last_*`` fields
+    # below keep the latest real template even while the studio is saved in
+    # bare-plan mode.
     active_sheet_template_key = models.CharField(
         max_length=64,
         default='none',
@@ -103,11 +189,127 @@ class EvacuationPlan(models.Model):
         default='Plan seul',
         verbose_name="Nom du template actif",
     )
+    last_sheet_template_key = models.CharField(
+        max_length=64,
+        default='none',
+        verbose_name="Dernier template choisi",
+    )
+    last_sheet_template_version_id = models.CharField(
+        max_length=160,
+        blank=True,
+        default='',
+        verbose_name="Version du dernier template choisi",
+    )
+    last_sheet_template_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name="Nom du dernier template choisi",
+    )
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f"{self.title} - {self.building_name} ({self.floor_name})"
+
+
+def project_asset_upload_to(instance, filename):
+    extension = (str(filename or '').rsplit('.', 1)[-1] if '.' in str(filename or '') else 'bin')
+    extension = ''.join(character for character in extension.lower() if character.isalnum())[:10] or 'bin'
+    return f"projects/{instance.plan.project_uuid}/assets/{instance.sha256}.{extension}"
+
+
+class PlanProjectAsset(models.Model):
+    """Immutable, content-addressed bytes owned by one autonomous project."""
+
+    plan = models.ForeignKey(EvacuationPlan, on_delete=models.CASCADE, related_name='project_assets')
+    sha256 = models.CharField(max_length=64)
+    file = models.FileField(upload_to=project_asset_upload_to, max_length=500)
+    original_name = models.CharField(max_length=255)
+    media_type = models.CharField(max_length=100, default='application/octet-stream')
+    size = models.PositiveBigIntegerField(default=0)
+    kind = models.CharField(max_length=32, default='other')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sha256']
+        constraints = [
+            models.UniqueConstraint(fields=['plan', 'sha256'], name='unique_project_asset_hash'),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            previous = type(self).objects.filter(pk=self.pk).values(
+                'plan_id', 'sha256', 'file', 'original_name', 'size', 'media_type', 'kind'
+            ).first()
+            current = {
+                'plan_id': self.plan_id,
+                'sha256': self.sha256,
+                'file': self.file.name,
+                'original_name': self.original_name,
+                'size': self.size,
+                'media_type': self.media_type,
+                'kind': self.kind,
+            }
+            if previous and previous != current:
+                raise ValidationError("Une ressource de projet figée ne peut pas être modifiée.")
+        return super().save(*args, **kwargs)
+
+
+class PlanProjectResource(models.Model):
+    """Current logical binding (pictogram, background, logo…) to immutable bytes."""
+
+    plan = models.ForeignKey(EvacuationPlan, on_delete=models.CASCADE, related_name='project_resources')
+    asset = models.ForeignKey(PlanProjectAsset, on_delete=models.PROTECT, related_name='resource_bindings')
+    role = models.CharField(max_length=40)
+    key = models.CharField(max_length=255)
+    metadata = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['role', 'key']
+        constraints = [
+            models.UniqueConstraint(fields=['plan', 'role', 'key'], name='unique_project_resource_key'),
+        ]
+
+
+class PlanProjectRevision(models.Model):
+    """Append-only manifest describing one complete recoverable plan state."""
+
+    REASON_SAVE = 'save'
+    REASON_IMPORT = 'import'
+    REASON_DUPLICATE = 'duplicate'
+    REASON_RESTORE = 'restore'
+    REASON_ARCHIVE = 'archive'
+    REASON_BOOTSTRAP = 'bootstrap'
+
+    plan = models.ForeignKey(EvacuationPlan, on_delete=models.CASCADE, related_name='project_revisions')
+    revision_number = models.PositiveIntegerField()
+    schema_version = models.PositiveIntegerField(default=1)
+    reason = models.CharField(max_length=24, default=REASON_SAVE)
+    manifest = models.JSONField()
+    manifest_sha256 = models.CharField(max_length=64)
+    previous_manifest_sha256 = models.CharField(max_length=64, blank=True, default='')
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name='created_plan_project_revisions',
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-revision_number']
+        constraints = [
+            models.UniqueConstraint(fields=['plan', 'revision_number'], name='unique_project_revision_number'),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError("Une révision de projet est immuable.")
+        return super().save(*args, **kwargs)
 
 class PlanIcon(models.Model):
     plan = models.ForeignKey(EvacuationPlan, on_delete=models.CASCADE, related_name='icons')
@@ -122,6 +324,9 @@ class PlanIcon(models.Model):
     # be moved aside to stay legible. Null means the pictogram sits on the spot.
     anchor_x = models.FloatField(null=True, blank=True)
     anchor_y = models.FloatField(null=True, blank=True)
+    # A pictogram may point to several real positions. ``anchor_x/y`` are kept
+    # for backwards compatibility with saved plans predating this collection.
+    leader_points = models.JSONField(default=list, blank=True)
     # Stroke width of the leader line (defaults to 2). Editable per icon.
     leader_width = models.FloatField(default=2.0)
     # When True, the pictogram artwork is drawn inside a square frame (useful for
@@ -129,6 +334,9 @@ class PlanIcon(models.Model):
     framed = models.BooleanField(default=False)
     flip_x = models.BooleanField(default=False)
     flip_y = models.BooleanField(default=False)
+    # Pictograms keep their original proportions unless the editor explicitly
+    # unlocks width/height deformation for this instance.
+    lock_aspect_ratio = models.BooleanField(default=True)
     locked = models.BooleanField(default=False)
     visible = models.BooleanField(default=True)
     z_index = models.IntegerField(default=300)
@@ -143,7 +351,9 @@ class PlanIcon(models.Model):
 
     @property
     def is_offset(self):
-        return self.anchor_x is not None and self.anchor_y is not None
+        return bool(self.leader_points) or (
+            self.anchor_x is not None and self.anchor_y is not None
+        )
 
     def __str__(self):
         return f"{self.icon_type} on {self.plan.title}"
@@ -228,11 +438,22 @@ class PlanShape(models.Model):
     z_index = models.IntegerField(default=200)
     group_id = models.CharField(max_length=64, blank=True, default='')
     object_group_id = models.CharField(max_length=64, blank=True, default='')
+    # A calibration is stored as a hidden, locked line so its endpoints follow
+    # every move/resize of the main plan exactly like the other plan geometry.
+    is_scale_calibration = models.BooleanField(default=False)
+    calibration_real_distance_m = models.FloatField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['plan'],
+                condition=models.Q(is_scale_calibration=True),
+                name='one_scale_calibration_per_plan',
+            ),
+        ]
 
     def __str__(self):
         return f"{self.shape_type} on {self.plan.title}"
@@ -586,6 +807,25 @@ def accessible_plan_owner_ids(user, editable_only=False):
     return {user.id, *memberships.values_list('owner_id', flat=True)}
 
 
+def accessible_library_owner_ids(user):
+    """Return users whose reusable library is visible in this workspace.
+
+    Plan access is directional: accepting an invitation lets the member see the
+    owner's plans. Reusable editor resources are collaborative, so templates,
+    template assets and imported SVGs are visible both ways between connected
+    workspace accounts.
+    """
+    owner_ids = accessible_plan_owner_ids(user)
+    if not owner_ids:
+        return set()
+
+    invited_member_ids = WorkspaceMembership.objects.filter(
+        owner=user,
+        member__is_active=True,
+    ).values_list('member_id', flat=True)
+    return {*owner_ids, *invited_member_ids}
+
+
 def restrict_plans_to(queryset, user, editable_only=False):
     """Applies :func:`accessible_plan_owner_ids` to a plan queryset."""
     owner_ids = accessible_plan_owner_ids(user, editable_only=editable_only)
@@ -606,14 +846,27 @@ def user_can_access_media_path(user, relative_path):
     are authenticated separately by the HttpOnly media-session cookie.
     """
     owner_ids = accessible_plan_owner_ids(user)
+    library_owner_ids = accessible_library_owner_ids(user)
     if not owner_ids or not relative_path:
         return False
 
-    # The pictogram library is an application-wide resource, not a file owned
-    # by the user who uploaded a plan. It still requires an active account.
+    # The official pictogram library is application-wide. User-imported
+    # pictograms live under user_pictograms/<owner_id>/ and follow workspace
+    # sharing, like plans and template assets.
     top_level_directory = relative_path.split('/', 1)[0]
-    if top_level_directory in {'plan_picto', 'nf_x-picto'}:
+    if top_level_directory == 'plan_picto':
         return True
+    if is_registered_catalogue_svg_path(relative_path):
+        return True
+    if relative_path.startswith('user_pictograms/'):
+        parts = relative_path.split('/', 2)
+        if len(parts) == 3:
+            try:
+                pictogram_owner_id = int(parts[1])
+            except (TypeError, ValueError):
+                pictogram_owner_id = None
+            if pictogram_owner_id in library_owner_ids:
+                return True
     path_aliases = media_path_aliases(relative_path)
     if not path_aliases:
         return False
@@ -621,6 +874,7 @@ def user_can_access_media_path(user, relative_path):
     plan_file = EvacuationPlan.objects.filter(user_id__in=owner_ids).filter(
         models.Q(background_file__in=path_aliases)
         | models.Q(cleaned_background_file__in=path_aliases)
+        | models.Q(plan_situation_background_file__in=path_aliases)
     ).exists()
     if plan_file:
         return True
@@ -638,7 +892,13 @@ def user_can_access_media_path(user, relative_path):
     ).exists():
         return True
 
+    if PlanProjectAsset.objects.filter(
+        plan__user_id__in=owner_ids,
+        file__in=path_aliases,
+    ).exists():
+        return True
+
     return SheetTemplateAsset.objects.filter(
-        user_id__in=owner_ids,
+        user_id__in=library_owner_ids,
         image_file__in=path_aliases,
     ).exists()

@@ -5,7 +5,11 @@ from django.utils import timezone
 from .models import (
     EvacuationPlan,
     DefaultTemplateEditPermission,
+    PlanFolder,
     PlanIcon,
+    PlanProjectAsset,
+    PlanProjectResource,
+    PlanProjectRevision,
     SheetTemplateAsset,
     SheetTemplateVersion,
     WorkspaceInvitation,
@@ -91,20 +95,81 @@ class WorkspaceInvitationAdmin(admin.ModelAdmin):
 class PlanIconInline(admin.TabularInline):
     model = PlanIcon
     extra = 0
-    fields = ('icon_type', 'x', 'y', 'width', 'height', 'color', 'locked')
+    fields = ('icon_type', 'x', 'y', 'width', 'height', 'lock_aspect_ratio', 'color', 'locked')
     show_change_link = False
+
+
+@admin.register(PlanFolder)
+class PlanFolderAdmin(admin.ModelAdmin):
+    list_display = ('name', 'user', 'created_at', 'updated_at')
+    search_fields = ('name', 'user__username', 'user__email')
+    autocomplete_fields = ('user',)
+    ordering = ('user__username', 'name')
 
 
 @admin.register(EvacuationPlan)
 class EvacuationPlanAdmin(admin.ModelAdmin):
     """Every plan, with its owner — the field that decides who can reach it."""
 
-    list_display = ('title', 'user', 'building_name', 'floor_name', 'active_sheet_template_name', 'created_at')
-    list_filter = ('background_type', 'active_sheet_template_key', 'created_at')
-    search_fields = ('title', 'building_name', 'floor_name', 'active_sheet_template_name', 'user__username')
-    autocomplete_fields = ('user',)
+    list_display = (
+        'title', 'plan_number', 'user', 'establishment_name', 'building_name',
+        'floor_name', 'revision_index', 'document_type', 'export_paper_format',
+        'print_scale_denominator', 'measured_scale_denominator',
+        'active_sheet_template_name', 'created_at',
+        'archived_at',
+    )
+    list_filter = (
+        'document_type', 'export_paper_format', 'background_type',
+        'active_sheet_template_key', 'created_at',
+        'archived_at',
+    )
+    search_fields = (
+        'title', 'plan_number', 'establishment_name', 'building_name', 'floor_name',
+        'designer', 'active_sheet_template_name', 'user__username',
+    )
+    autocomplete_fields = ('user', 'folder')
     ordering = ('-created_at',)
     inlines = [PlanIconInline]
+
+    def has_delete_permission(self, request, obj=None):
+        # Projects are archived/restored by the application; the admin must not
+        # bypass the immutable revision history with an accidental hard delete.
+        return False
+
+
+class ImmutableProjectAdmin(admin.ModelAdmin):
+    def get_readonly_fields(self, request, obj=None):
+        return [field.name for field in self.model._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return bool(obj is None and super().has_change_permission(request, obj))
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(PlanProjectAsset)
+class PlanProjectAssetAdmin(ImmutableProjectAdmin):
+    list_display = ('sha256', 'plan', 'kind', 'size', 'created_at')
+    list_filter = ('kind', 'created_at')
+    search_fields = ('sha256', 'original_name', 'plan__title')
+
+
+@admin.register(PlanProjectResource)
+class PlanProjectResourceAdmin(ImmutableProjectAdmin):
+    list_display = ('plan', 'role', 'key', 'asset', 'updated_at')
+    list_filter = ('role', 'updated_at')
+    search_fields = ('plan__title', 'key', 'asset__sha256')
+
+
+@admin.register(PlanProjectRevision)
+class PlanProjectRevisionAdmin(ImmutableProjectAdmin):
+    list_display = ('plan', 'revision_number', 'reason', 'manifest_sha256', 'created_at')
+    list_filter = ('reason', 'schema_version', 'created_at')
+    search_fields = ('plan__title', 'manifest_sha256')
 
 
 @admin.register(SheetTemplateVersion)

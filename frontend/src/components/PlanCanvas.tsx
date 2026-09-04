@@ -11,10 +11,18 @@ import { buildCurvePathData } from "@/lib/curvePath";
 import { hasVisibleShapeFill, shapeHitStrokeWidth } from "@/lib/shapeFill";
 import {
   normalizeCanvasIconDimension,
+  normalizeCanvasIconSizeToAspectRatio,
   normalizeCanvasLeaderWidth,
   normalizeTransformedCanvasIconDimension,
 } from "@/lib/canvasIconDimensions";
 import { imageCrossOrigin } from "@/lib/api";
+import { loadPdfJs } from "@/lib/pdfjs";
+
+export interface CanvasLeaderPoint {
+  id: string;
+  x: number;
+  y: number;
+}
 
 export interface CanvasIcon {
   id?: number;
@@ -29,6 +37,8 @@ export interface CanvasIcon {
   /** True position of the equipment when the pictogram was moved aside. */
   anchor_x?: number | null;
   anchor_y?: number | null;
+  /** Every real position connected to this one pictogram. */
+  leader_points?: CanvasLeaderPoint[];
   /** Leader-line stroke width (editable per icon). */
   leader_width?: number;
   /** When true, the pictogram is drawn inside a square frame. */
@@ -37,6 +47,8 @@ export interface CanvasIcon {
   flip_x?: boolean;
   /** When true, the pictogram artwork is mirrored vertically. */
   flip_y?: boolean;
+  /** False lets width and height be resized independently. Defaults to true. */
+  lock_aspect_ratio?: boolean;
   /** '#rrggbb' repaint of the pictogram's ground; blank keeps the original. */
   color?: string;
   locked?: boolean;
@@ -46,6 +58,16 @@ export interface CanvasIcon {
   group_id?: string;
   /** Independent group created from an area/multi-selection. */
   object_group_id?: string;
+}
+
+export function canvasIconLeaderPoints(icon: Pick<CanvasIcon, "tempId" | "leader_points" | "anchor_x" | "anchor_y">): CanvasLeaderPoint[] {
+  if (Array.isArray(icon.leader_points) && icon.leader_points.length > 0) {
+    return icon.leader_points;
+  }
+  if (icon.anchor_x != null && icon.anchor_y != null) {
+    return [{ id: `legacy-${icon.tempId}`, x: icon.anchor_x, y: icon.anchor_y }];
+  }
+  return [];
 }
 
 export type EraserShape = "square" | "circle";
@@ -219,6 +241,9 @@ export interface CanvasShape {
   z_index?: number;
   group_id?: string;
   object_group_id?: string;
+  /** Hidden two-point reference used to verify the real printed scale. */
+  is_scale_calibration?: boolean;
+  calibration_real_distance_m?: number | null;
 }
 
 /** Remove one editable vertex while keeping a valid open or closed path. */
@@ -548,6 +573,8 @@ interface PlanCanvasProps {
   } | null;
   /** False makes the template itself read-only while plan annotations stay editable. */
   sheetEditingEnabled?: boolean;
+  /** Per-block exception for plan-owned overlays on a protected default template. */
+  isSheetBlockEditable?: (block: SheetBlock) => boolean;
   onSheetBlocksChange?: (blocks: SheetBlock[]) => void;
   selectedBlockId?: string | null;
   /** All template blocks selected by a mouse marquee or an object group. */
@@ -620,6 +647,14 @@ export interface PlanCanvasHandle {
   getBackgroundDataUrl: () => string | null;
   /** Remove one point from an unfinished path before using global history. */
   undoActiveDrawing: () => boolean;
+  /** Preserve an unfinished visible path as an editable open drawing. */
+  commitActiveDrawing: () => boolean;
+  /** Explicitly discard the current unfinished drawing. */
+  cancelActiveDrawing: () => void;
+  /** Convert a distance in plan-scene units to the final sheet's design units. */
+  getPlanDistanceInSheetUnits: (planDistance: number) => number | null;
+  /** Current plan-window corners expressed in the same source space as a traced silhouette. */
+  getVisiblePlanPolygon: () => ShapePoint[] | null;
 }
 
 // Share of the workspace the plan occupies when fitted, leaving a margin around it.
@@ -749,18 +784,7 @@ function rotatedBoxBounds(box: { x: number; y: number; width: number; height: nu
   };
 }
 
-// Global PDF.js loading helper (client-side only)
-let pdfjsLib: any = null;
 const PDF_RENDER_SCALE = 6;
-
-if (typeof window !== "undefined") {
-  // Dynamically load pdfjs-dist on client side
-  pdfjsLib = require("pdfjs-dist");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-    "pdfjs-dist/build/pdf.worker.min.mjs",
-    import.meta.url
-  ).toString();
-}
 
 function PlanCanvas({
   backgroundUrl,
@@ -801,6 +825,7 @@ function PlanCanvas({
   onPlaceText,
   sheet = null,
   sheetEditingEnabled = true,
+  isSheetBlockEditable,
   onSheetBlocksChange,
   selectedBlockId = null,
   selectedBlockIds = [],
@@ -945,8 +970,8 @@ function PlanCanvas({
   // library above: only the combinations a plan actually uses are built, and an
   // uploaded SVG has to be fetched before it can be repainted.
   const [recoloredIconImages, setRecoloredIconImages] = useState<Record<string, HTMLImageElement>>({});
-  // Pictograms on the printed sheet and on the plan use the same stretchable
-  // SVG artwork. The editor page also preloads the sheet subset, but that cache
+  // Pictograms on the printed sheet and on the plan use the same SVG artwork.
+  // The editor page also preloads the sheet subset, but that cache
   // can still be empty just after a paste (notably for uploaded pictograms).
   // Reuse this canvas-wide cache as the reliable fallback so the copied block
   // never degrades to an almost transparent placeholder rectangle.
@@ -1018,41 +1043,6 @@ function PlanCanvas({
     };
   }, []);
 
-  useImperativeHandle(
-    canvasRef,
-    () => ({
-      getStage: () => stageRef.current,
-      getEditedBackground: () => editedBackground,
-      getBackgroundDimensions: () => ({
-        width: bgImage?.naturalWidth || bgImage?.width || 0,
-        height: bgImage?.naturalHeight || bgImage?.height || 0,
-      }),
-      getBackgroundDataUrl: () => {
-        if (editedBackground) return editedBackground.toDataURL("image/png");
-        if (!bgImage) return null;
-        if (bgImage.src.startsWith("data:image/")) return bgImage.src;
-        const canvas = document.createElement("canvas");
-        canvas.width = bgImage.naturalWidth || bgImage.width;
-        canvas.height = bgImage.naturalHeight || bgImage.height;
-        const context = canvas.getContext("2d");
-        if (!context) return null;
-        context.drawImage(bgImage, 0, 0);
-        try {
-          const dataUrl = canvas.toDataURL("image/png");
-          canvas.width = 0;
-          canvas.height = 0;
-          return dataUrl;
-        } catch {
-          canvas.width = 0;
-          canvas.height = 0;
-          return null;
-        }
-      },
-      undoActiveDrawing: removeLastPolygonPoint,
-    }),
-    [editedBackground, bgImage, removeLastPolygonPoint]
-  );
-
   // A fresh working copy whenever the source background changes.
   useEffect(() => {
     if (!bgImage) {
@@ -1121,6 +1111,11 @@ function PlanCanvas({
           ...icon,
           x: icon.x + dx,
           y: icon.y + dy,
+          leader_points: canvasIconLeaderPoints(icon).map((point) => ({
+            ...point,
+            x: point.x + dx,
+            y: point.y + dy,
+          })),
           anchor_x: icon.anchor_x != null ? icon.anchor_x + dx : icon.anchor_x,
           anchor_y: icon.anchor_y != null ? icon.anchor_y + dy : icon.anchor_y,
         };
@@ -1194,12 +1189,16 @@ function PlanCanvas({
           : null;
       }
     }
-    const planPoint = pointerInPlanCoords(stage);
+    const planPoint = sheet
+      ? (pointerInSceneCoords(stage) ?? pointerInPlanCoords(stage))
+      : pointerInPlanCoords(stage);
     return planPoint ? { point: planPoint, space: "plan" } : null;
   };
 
   const pointerForDrawingSpace = (stage: any, space: "plan" | "sheet") =>
-    space === "sheet" ? pointerInSheetCoords(stage) : pointerInPlanCoords(stage);
+    space === "sheet"
+      ? pointerInSheetCoords(stage)
+      : (sheet ? (pointerInSceneCoords(stage) ?? pointerInPlanCoords(stage)) : pointerInPlanCoords(stage));
 
   const beginShape = (stage: any) => {
     if (!shapeTool || isPolygonTool(shapeTool)) return;
@@ -1284,11 +1283,14 @@ function PlanCanvas({
     setDraftShapeSpace("plan");
   };
 
-  const finishPolygonDraft = (closeCurve: boolean = false) => {
+  const storePolygonDraft = (options: { closeCurve?: boolean; forceOpen?: boolean } = {}) => {
     const isOpenPolyline = shapeTool === "polyline";
-    const closed = !isOpenPolyline && (shapeTool !== "curve_polygon_zone" || closeCurve);
+    const closed = options.forceOpen
+      ? false
+      : !isOpenPolyline && (shapeTool !== "curve_polygon_zone" || options.closeCurve);
     const points = draftPolygonPointsRef.current;
-    if (points.length < (isOpenPolyline ? 2 : 3)) return;
+    const minimumPoints = options.forceOpen ? 2 : isOpenPolyline ? 2 : 3;
+    if (!isPolygonTool(shapeTool) || points.length < minimumPoints) return false;
 
     const bounds = boundsFromPoints(points);
     const draft: CanvasShape = {
@@ -1319,9 +1321,80 @@ function PlanCanvas({
       onSelectShape?.(draft.tempId);
     }
     resetPolygonDraft();
+    return true;
+  };
+
+  const finishPolygonDraft = (closeCurve: boolean = false) => {
+    storePolygonDraft({ closeCurve });
     // Point-by-point tools stay armed after a path is completed so the next
     // click immediately starts another path. The toolbar button still exits it.
   };
+
+  const commitActiveDrawing = () => storePolygonDraft({ forceOpen: true });
+
+  useImperativeHandle(
+    canvasRef,
+    () => ({
+      getStage: () => stageRef.current,
+      getEditedBackground: () => editedBackground,
+      getBackgroundDimensions: () => ({
+        width: bgImage?.naturalWidth || bgImage?.width || 0,
+        height: bgImage?.naturalHeight || bgImage?.height || 0,
+      }),
+      getBackgroundDataUrl: () => {
+        if (editedBackground) return editedBackground.toDataURL("image/png");
+        if (!bgImage) return null;
+        if (bgImage.src.startsWith("data:image/")) return bgImage.src;
+        const canvas = document.createElement("canvas");
+        canvas.width = bgImage.naturalWidth || bgImage.width;
+        canvas.height = bgImage.naturalHeight || bgImage.height;
+        const context = canvas.getContext("2d");
+        if (!context) return null;
+        context.drawImage(bgImage, 0, 0);
+        try {
+          const dataUrl = canvas.toDataURL("image/png");
+          canvas.width = 0;
+          canvas.height = 0;
+          return dataUrl;
+        } catch {
+          canvas.width = 0;
+          canvas.height = 0;
+          return null;
+        }
+      },
+      undoActiveDrawing: removeLastPolygonPoint,
+      commitActiveDrawing,
+      cancelActiveDrawing: () => {
+        draftOriginRef.current = null;
+        setDraft(null);
+        resetPolygonDraft();
+      },
+      getPlanDistanceInSheetUnits: (planDistance: number) => {
+        const placement = stageRef.current?.findOne(".planPlacement");
+        if (!placement || !Number.isFinite(planDistance) || planDistance <= 0) return null;
+        return planDistance * Math.abs(placement.scaleX());
+      },
+      getVisiblePlanPolygon: () => {
+        const stage = stageRef.current;
+        const layer = layerRef.current || stage?.findOne("Layer");
+        const scene = stage?.findOne(".planScene");
+        const placement = stage?.findOne(".planPlacement");
+        const block = sheet ? findPlanBlock(sheet.blocks) : null;
+        if (!stage || !layer || !block || block.visible === false) return null;
+        const targetNode = scene || placement;
+        if (!targetNode) return null;
+        const layerTransform = layer.getAbsoluteTransform();
+        const inverseTransform = targetNode.getAbsoluteTransform().copy().invert();
+        return [
+          { x: block.x, y: block.y },
+          { x: block.x + block.width, y: block.y },
+          { x: block.x + block.width, y: block.y + block.height },
+          { x: block.x, y: block.y + block.height },
+        ].map((corner) => inverseTransform.point(layerTransform.point(corner)));
+      },
+    }),
+    [editedBackground, bgImage, removeLastPolygonPoint, commitActiveDrawing, sheet]
+  );
 
   const constrainPolygonPoint = (point: ShapePoint, shiftPressed: boolean): ShapePoint => {
     const currentPoints = draftPolygonPointsRef.current;
@@ -1878,6 +1951,11 @@ function PlanCanvas({
             y: mapY(icon.y),
             width: icon.width * sizeScale,
             height: icon.height * sizeScale,
+            leader_points: canvasIconLeaderPoints(icon).map((point) => ({
+              ...point,
+              x: mapX(point.x),
+              y: mapY(point.y),
+            })),
             anchor_x: icon.anchor_x != null ? mapX(icon.anchor_x) : icon.anchor_x,
             anchor_y: icon.anchor_y != null ? mapY(icon.anchor_y) : icon.anchor_y
           }) : icon)
@@ -1886,7 +1964,7 @@ function PlanCanvas({
 
     if (shapes.length && onShapesChange) {
       onShapesChange(
-        shapes.map((shape) => belongsToMainPlan(shape.group_id) ? ({
+        shapes.map((shape) => (shape.is_scale_calibration || belongsToMainPlan(shape.group_id)) ? ({
             ...shape,
             x: mapX(shape.x),
             y: mapY(shape.y),
@@ -1960,12 +2038,17 @@ function PlanCanvas({
           const anchor = icon.anchor_x != null && icon.anchor_y != null
             ? transformPoint({ x: icon.anchor_x, y: icon.anchor_y })
             : null;
+          const leaderPoints = canvasIconLeaderPoints(icon).map((point) => ({
+            ...point,
+            ...transformPoint(point),
+          }));
           return {
             ...icon,
             x: center.x - width / 2,
             y: center.y - height / 2,
             width,
             height,
+            leader_points: leaderPoints,
             anchor_x: anchor?.x ?? icon.anchor_x,
             anchor_y: anchor?.y ?? icon.anchor_y,
           };
@@ -2064,12 +2147,12 @@ function PlanCanvas({
       // Labels are drawn just under the icon, so leave a little more room below.
       maxY = Math.max(maxY, icon.y + icon.height + SHEET_MARGIN + (icon.label ? 18 : 0));
 
-      if (icon.anchor_x != null && icon.anchor_y != null) {
-        minX = Math.min(minX, icon.anchor_x - SHEET_MARGIN);
-        minY = Math.min(minY, icon.anchor_y - SHEET_MARGIN);
-        maxX = Math.max(maxX, icon.anchor_x + SHEET_MARGIN);
-        maxY = Math.max(maxY, icon.anchor_y + SHEET_MARGIN);
-      }
+      canvasIconLeaderPoints(icon).forEach((point) => {
+        minX = Math.min(minX, point.x - SHEET_MARGIN);
+        minY = Math.min(minY, point.y - SHEET_MARGIN);
+        maxX = Math.max(maxX, point.x + SHEET_MARGIN);
+        maxY = Math.max(maxY, point.y + SHEET_MARGIN);
+      });
     });
 
     shapes.filter((shape) => shape.visible !== false).forEach((shape) => {
@@ -2231,6 +2314,27 @@ function PlanCanvas({
   }, [sheet, onSheetBlocksChange, selectedBlockIds]);
 
   const planBlockSelected = Boolean(planBlock && selectedBlockId === planBlock.id);
+  const selectedCanvasPictogram = React.useMemo(
+    () => selectedIconId
+      ? icons.find((icon) => icon.tempId === selectedIconId) ?? null
+      : null,
+    [icons, selectedIconId]
+  );
+  const selectedSheetPictogram = React.useMemo(
+    () => selectedBlockIds.length <= 1 && selectedBlockId
+      ? sheet?.blocks.find((block) => block.id === selectedBlockId && block.kind === "picto") ?? null
+      : null,
+    [selectedBlockId, selectedBlockIds.length, sheet]
+  );
+  const selectedSituationFrame = Boolean(
+    selectedBlockId
+    && sheet?.blocks.some(
+      (block) => block.id === selectedBlockId && block.situationRole === "frame",
+    )
+  );
+  const selectedPictogramRatioLocked = selectedCanvasPictogram
+    ? selectedCanvasPictogram.lock_aspect_ratio !== false
+    : Boolean(selectedSheetPictogram && selectedSheetPictogram.lockAspectRatio !== false);
 
   const selectedSheetBounds = React.useMemo(() => {
     if (!sheet || selectedBlockIds.length < 2) return null;
@@ -2784,23 +2888,29 @@ function PlanCanvas({
   useEffect(() => {
     if (!backgroundUrl) return;
 
-    if (backgroundType === "pdf" && pdfjsLib) {
+    if (backgroundType === "pdf") {
+      let cancelled = false;
       const renderPdf = async () => {
         try {
+          const pdfjsLib = await loadPdfJs();
+          if (cancelled) return;
           const loadingTask = pdfjsLib.getDocument({
             url: backgroundUrl,
             withCredentials: true,
           });
           const pdf = await loadingTask.promise;
+          if (cancelled) return;
           const page = await pdf.getPage(1);
           
           const viewport = page.getViewport({ scale: PDF_RENDER_SCALE });
           const canvas = document.createElement("canvas");
           const context = canvas.getContext("2d");
+          if (!context) throw new Error("Impossible de préparer le rendu PDF.");
           canvas.height = viewport.height;
           canvas.width = viewport.width;
 
           const renderContext = {
+            canvas,
             canvasContext: context,
             viewport: viewport,
           };
@@ -2809,6 +2919,7 @@ function PlanCanvas({
           const img = new window.Image();
           img.src = canvas.toDataURL();
           img.onload = () => {
+            if (cancelled) return;
             setBgImage(img);
             setImageSize({ width: img.width / PDF_RENDER_SCALE, height: img.height / PDF_RENDER_SCALE });
           };
@@ -2817,6 +2928,9 @@ function PlanCanvas({
         }
       };
       renderPdf();
+      return () => {
+        cancelled = true;
+      };
     } else {
       const img = new window.Image();
       img.crossOrigin = imageCrossOrigin(backgroundUrl);
@@ -2874,9 +2988,8 @@ function PlanCanvas({
     };
   }, [icons, sheet, iconDefinitions, recoloredIconImages]);
 
-  // Cache/preload stretchable pictograms for the editable canvas. The library
-  // thumbnails keep their normal aspect ratio; only placed artwork follows the
-  // user's exact width and height.
+  // Cache/preload pictograms for the editable canvas. Placed artwork fills its
+  // selection box, whose ratio is locked to the artwork while it is resized.
   useEffect(() => {
     const types = Object.keys(iconDefinitions) as IconType[];
     if (types.length === 0) {
@@ -3099,6 +3212,22 @@ function PlanCanvas({
   }, [selectedIconId, selectedShapeId, selectedTextId, selectedBlockIds, multiSelection, icons, shapes, texts, sheet, onSheetBlocksChange, onSelectBlock, onSelectBlocks, onIconsChange, onSelectIcon, onShapesChange, onSelectShape, onTextsChange, onSelectText, onMultiSelectionChange, shapeTool, draftPolygonPoints, removeLastPolygonPoint]);
 
   const handleStageMouseDown = (e: any) => {
+    // Navigation must remain available while a guided polygon trace is armed.
+    // In pan mode the stage owns the drag; no point is added underneath it.
+    if (mode === "pan") return;
+    const stage = e.target.getStage();
+    let targetNode = e.target;
+    while (targetNode && targetNode !== stage) {
+      const targetId = typeof targetNode.id === "function" ? targetNode.id() : "";
+      if (targetId && icons.some((icon) => icon.tempId === targetId)) {
+        // A real pictogram click is a selection request. Let its own click
+        // handler switch the editor back to selection without drawing or
+        // erasing underneath it during the same pointer gesture.
+        return;
+      }
+      targetNode = typeof targetNode.getParent === "function" ? targetNode.getParent() : null;
+    }
+
     // Erasing must win over a stale area-selection flag. The toolbar normally
     // clears that flag, but a keyboard/tool change can land in the same React
     // render and would otherwise start a marquee instead of an eraser stroke.
@@ -3133,8 +3262,8 @@ function PlanCanvas({
       let iconHeight = requestedHeight;
 
       // A newly imported rectangular SVG must not be squeezed into the old
-      // universal 40 × 40 square. Start it at its natural ratio; after it is
-      // placed, the Transformer still lets width and height change freely.
+      // universal 40 × 40 square. Start it at its natural ratio; the Transformer
+      // preserves that ratio during every later resize.
       if (naturalWidth > 0 && naturalHeight > 0) {
         const baseSize = Math.max(15, Math.min(requestedWidth, requestedHeight));
         const naturalRatio = naturalWidth / naturalHeight;
@@ -3260,6 +3389,62 @@ function PlanCanvas({
     const isModifierZoom = event.metaKey;
     const isMouseWheel =
       event.deltaX === 0 && Math.abs(event.deltaY) >= 40 && Number.isInteger(event.deltaY);
+
+    // In reframe mode the wheel and trackpad control the drawing *inside* its
+    // fixed template window. Zoom is anchored under the pointer, so aiming at
+    // the right or left wing keeps that exact zone in view instead of always
+    // enlarging around the centre of the sheet.
+    if (sheet && planBlock && planReframeMode && onPlanPlacementChange) {
+      const sheetPoint = pointerInSheetCoords(stage);
+      if (sheetPoint && isInsidePlanWindow(sheetPoint)) {
+        if (isPinchGesture || isModifierZoom || isMouseWheel) {
+          const placementPoint = pointerInPlanCoords(stage);
+          if (!placementPoint) return;
+          const currentPercent = Math.max(10, planPlacement.scale);
+          const sensitivity = isPinchGesture ? 0.01 : 0.002;
+          const nextPercent = Math.max(
+            20,
+            Math.min(600, currentPercent * Math.exp(-event.deltaY * sensitivity)),
+          );
+          const radians = planRotation * Math.PI / 180;
+          const centreX = contentBounds.x + contentBounds.width / 2;
+          const centreY = contentBounds.y + contentBounds.height / 2;
+          // pointerInPlanCoords returns coordinates local to planPlacement;
+          // planScene's rotation has already been applied in that coordinate space.
+          const rotatedSource = placementPoint;
+          const cos = Math.abs(Math.cos(radians));
+          const sin = Math.abs(Math.sin(radians));
+          const rotatedWidth = contentBounds.width * cos + contentBounds.height * sin;
+          const rotatedHeight = contentBounds.width * sin + contentBounds.height * cos;
+          const fit = Math.min(
+            planBlock.width / Math.max(1, rotatedWidth),
+            planBlock.height / Math.max(1, rotatedHeight),
+          );
+          const nextScale = fit * nextPercent / 100;
+          onPlanPlacementChange({
+            scale: Math.round(nextPercent * 100) / 100,
+            offsetX: Math.round(
+              sheetPoint.x - planBlock.x - planBlock.width / 2
+              + (centreX - rotatedSource.x) * nextScale,
+            ),
+            offsetY: Math.round(
+              sheetPoint.y - planBlock.y - planBlock.height / 2
+              + (centreY - rotatedSource.y) * nextScale,
+            ),
+          });
+          return;
+        }
+
+        const deltaX = event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX;
+        const deltaY = event.shiftKey && event.deltaX === 0 ? 0 : event.deltaY;
+        onPlanPlacementChange({
+          ...planPlacement,
+          offsetX: Math.round(planPlacement.offsetX - deltaX / Math.max(zoom, 0.1)),
+          offsetY: Math.round(planPlacement.offsetY - deltaY / Math.max(zoom, 0.1)),
+        });
+        return;
+      }
+    }
 
     if (isPinchGesture || isModifierZoom || isMouseWheel) {
       const pointer = stage.getPointerPosition();
@@ -3430,9 +3615,10 @@ function PlanCanvas({
         onMouseDown={handleStageMouseDown}
         onTouchStart={handleStageMouseDown}
         onDblClick={() => {
-          if (isPolygonTool(shapeTool)) finishPolygonDraft();
+          if (mode !== "pan" && isPolygonTool(shapeTool)) finishPolygonDraft();
         }}
         onMouseMove={(e: any) => {
+          if (mode === "pan") return;
           if (mode === "erase") {
             if (eraserTarget === "lines") {
               setVectorEraserCursor(pointerInSceneCoords(e.target.getStage()));
@@ -3444,6 +3630,7 @@ function PlanCanvas({
           else if (shapeTool) extendShape(e.target.getStage());
         }}
         onTouchMove={(e: any) => {
+          if (mode === "pan") return;
           if (mode === "erase") extendEraseStroke(e.target.getStage());
           else if (marqueeOriginRef.current) extendAreaSelection(e.target.getStage());
           else if (isPolygonTool(shapeTool)) updatePolygonCursor(e.target.getStage());
@@ -3475,10 +3662,10 @@ function PlanCanvas({
           cursor:
             mode === "erase"
               ? "cell"
-              : areaSelectionMode || isPolygonTool(shapeTool) || placementIconType || placementText
-                ? "crosshair"
-                : mode === "pan"
+              : mode === "pan"
                   ? "grab"
+                  : areaSelectionMode || isPolygonTool(shapeTool) || placementIconType || placementText
+                    ? "crosshair"
                   : "default"
         }}
       >
@@ -3575,7 +3762,7 @@ function PlanCanvas({
               y={sheet ? planTransform.y : 0}
               scaleX={sheet ? planTransform.scale : 1}
               scaleY={sheet ? planTransform.scale : 1}
-              draggable={Boolean(sheet) && sheetEditingEnabled && mode === "select" && planBlockSelected && !planBlock?.locked}
+              draggable={Boolean(sheet) && sheetEditingEnabled && mode === "select" && planBlockSelected && Boolean(onPlanPlacementChange)}
               onDragStart={(event: any) => {
                 // Both the window and the plan inside it are draggable, and Konva
                 // always picks the innermost one. Alt is the switch: without it,
@@ -4010,10 +4197,9 @@ function PlanCanvas({
           {/* Leader lines. Pure geometry linking two real positions, so unlike the
               pictograms these turn with the plan — they sit outside the
               ".iconUpright" groups that hold the artwork straight. */}
-          {icons.filter((icon) => icon.visible !== false).map((icon) => {
-            if (icon.anchor_x == null || icon.anchor_y == null) return null;
-
-            const end = leaderEndpoint(icon, icon.anchor_x, icon.anchor_y, iconDefinitions, planRotation);
+          {icons.filter((icon) => icon.visible !== false).flatMap((icon) =>
+            canvasIconLeaderPoints(icon).map((leaderPoint) => {
+            const end = leaderEndpoint(icon, leaderPoint.x, leaderPoint.y, iconDefinitions, planRotation);
             // Centralised leader colour: exact pictogram → colour lookup, so the
             // line and anchor dot use the pictogram's functional colour (red for
             // fire-fighting, green for escape, …) rather than a flat tint.
@@ -4023,9 +4209,9 @@ function PlanCanvas({
             });
 
             return (
-              <Group key={`leader-${icon.tempId}`} name={editorLayerNodeName(icon.tempId)}>
+              <Group key={`leader-${icon.tempId}-${leaderPoint.id}`} name={editorLayerNodeName(icon.tempId)}>
                 <Line
-                  points={[icon.anchor_x, icon.anchor_y, end.x, end.y]}
+                  points={[leaderPoint.x, leaderPoint.y, end.x, end.y]}
                   stroke={leaderColor}
                   strokeWidth={normalizeCanvasLeaderWidth(icon.leader_width)}
                   strokeScaleEnabled={false}
@@ -4033,8 +4219,8 @@ function PlanCanvas({
                   listening={false}
                 />
                 <Circle
-                  x={icon.anchor_x}
-                  y={icon.anchor_y}
+                  x={leaderPoint.x}
+                  y={leaderPoint.y}
                   radius={4 / Math.max(zoom, 0.05)}
                   fill={leaderColor}
                   stroke={leaderColor}
@@ -4049,7 +4235,16 @@ function PlanCanvas({
                     onIconsChange(
                       icons.map((item) =>
                         item.tempId === icon.tempId
-                          ? { ...item, anchor_x: e.target.x(), anchor_y: e.target.y() }
+                          ? {
+                              ...item,
+                              anchor_x: null,
+                              anchor_y: null,
+                              leader_points: canvasIconLeaderPoints(item).map((point) =>
+                                point.id === leaderPoint.id
+                                  ? { ...point, x: e.target.x(), y: e.target.y() }
+                                  : point
+                              ),
+                            }
                           : item
                       )
                     );
@@ -4057,7 +4252,7 @@ function PlanCanvas({
                 />
               </Group>
             );
-          })}
+          }))}
 
           {/* Render Safety Icons */}
           {icons.filter((icon) => icon.visible !== false).map((icon) => {
@@ -4100,7 +4295,8 @@ function PlanCanvas({
                   onIconsChange(updated);
                 }}
                 onTransformEnd={(e) => {
-                  // transformer changes scale properties. We update width, height and rotation.
+                  // Konva stores a resize as scale. Commit it as real dimensions
+                  // while preserving the pictogram artwork's intrinsic ratio.
                   const node = e.target;
                   const nodeScaleX = Math.abs(node.scaleX());
                   const nodeScaleY = Math.abs(node.scaleY());
@@ -4111,14 +4307,31 @@ function PlanCanvas({
                   node.scaleX(1);
                   node.scaleY(1);
 
+                  const transformedWidth = normalizeTransformedCanvasIconDimension(
+                    icon.width * scaleX,
+                    icon.width
+                  );
+                  const transformedHeight = normalizeTransformedCanvasIconDimension(
+                    icon.height * scaleY,
+                    icon.height
+                  );
+                  const transformedSize = icon.lock_aspect_ratio !== false
+                    ? normalizeCanvasIconSizeToAspectRatio(
+                        transformedWidth,
+                        transformedHeight,
+                        artworkWidth / artworkHeight,
+                        { width: icon.width, height: icon.height }
+                      )
+                    : { width: transformedWidth, height: transformedHeight };
+
                   const updated = icons.map((item) => {
                     if (item.tempId === icon.tempId) {
                       return {
                         ...item,
                         x: node.x(),
                         y: node.y(),
-                        width: normalizeTransformedCanvasIconDimension(icon.width * scaleX, icon.width),
-                        height: normalizeTransformedCanvasIconDimension(icon.height * scaleY, icon.height),
+                        width: transformedSize.width,
+                        height: transformedSize.height,
                         rotation: node.rotation()
                       };
                     }
@@ -4341,7 +4554,11 @@ function PlanCanvas({
                   key={block.id}
                   block={block}
                   isSelected={selectedBlockIds.length <= 1 && selectedBlockId === block.id}
-                  editable={sheetEditingEnabled && mode === "select" && !areaSelectionMode && !block.locked}
+                  editable={sheetEditingEnabled
+                    && (isSheetBlockEditable?.(block) ?? true)
+                    && mode === "select"
+                    && !areaSelectionMode
+                    && !block.locked}
                   legendEntries={sheetLegendEntries}
                   images={sheetImages}
                   pictoImages={resolvedSheetPictoImages}
@@ -4357,7 +4574,14 @@ function PlanCanvas({
                   onChange={updateSheetBlock}
                   onEditText={(id) => {
                     const target = sheet.blocks.find((item) => item.id === id);
-                    if (!target || target.kind === "image" || target.kind === "picto" || target.kind === "shape") return;
+                    if (
+                      !target
+                      || target.kind === "image"
+                      || target.kind === "picto"
+                      || target.kind === "shape"
+                      || target.situationRole === "frame"
+                      || !(isSheetBlockEditable?.(target) ?? true)
+                    ) return;
                     onSelectBlock?.(id);
                     setEditingBlockId(id);
                   }}
@@ -4627,20 +4851,21 @@ function PlanCanvas({
             <Transformer
               ref={transformerRef}
               flipEnabled={false}
-              // Drive the ratio lock from our keyboard state instead of the
-              // transformer's pointer event. This guarantees free resizing for
-              // pictograms and objects until Shift is actually held.
-              keepRatio={Boolean(
+              // Pictograms keep their artwork ratio by default; their properties
+              // can explicitly unlock deformation. Other objects retain their
+              // Shift behaviour, while plan overlays can also use the permanent
+              // plan-ratio option.
+              keepRatio={selectedPictogramRatioLocked || (Boolean(
                 selectedOverlayId &&
                 !selectedIconId &&
                 !selectedShapeId &&
                 !selectedTextId &&
                 !selectedBlockId
-              ) ? keepPlanRatio || shiftPressed : shiftPressed}
+              ) ? keepPlanRatio || shiftPressed : shiftPressed)}
               shiftBehavior="none"
               // Turning the plan alone would leave its pictograms behind: the
               // whole scene turns together, from the toolbar's rotation.
-              rotateEnabled={selectedOverlayId !== MAIN_PLAN_ID}
+              rotateEnabled={selectedOverlayId !== MAIN_PLAN_ID && !selectedSituationFrame}
               boundBoxFunc={(oldBox, newBox) => {
                 // limit minimum size
                 if (Math.abs(newBox.width) < 15 || Math.abs(newBox.height) < 15) {
@@ -4648,16 +4873,18 @@ function PlanCanvas({
                 }
                 return newBox;
               }}
-              enabledAnchors={[
-                "top-left",
-                "top-center",
-                "top-right",
-                "middle-right",
-                "bottom-right",
-                "bottom-center",
-                "bottom-left",
-                "middle-left",
-              ]}
+              enabledAnchors={selectedPictogramRatioLocked
+                ? ["top-left", "top-right", "bottom-right", "bottom-left"]
+                : [
+                    "top-left",
+                    "top-center",
+                    "top-right",
+                    "middle-right",
+                    "bottom-right",
+                    "bottom-center",
+                    "bottom-left",
+                    "middle-left",
+                  ]}
               rotateAnchorOffset={20}
               borderStroke="#3b82f6"
               borderStrokeWidth={1}

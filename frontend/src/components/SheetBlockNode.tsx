@@ -5,6 +5,7 @@ import { Group, Rect, Text, Line, Ellipse, Circle, Image as KonvaImage, Path } f
 import { SheetBlock } from "@/lib/sheetTemplates";
 import { IconType, normalizePictogramColorOverride } from "@/utils/safetyIcons";
 import { buildCurvePathData } from "@/lib/curvePath";
+import { normalizeCanvasIconSizeToAspectRatio } from "@/lib/canvasIconDimensions";
 import { hasVisibleShapeFill, shapeHitStrokeWidth } from "@/lib/shapeFill";
 
 export interface SheetLegendEntry {
@@ -65,6 +66,14 @@ export function SheetBlockNode({
 
   const width = Math.max(1, block.width);
   const height = Math.max(1, block.height);
+  const pictogramColorOverride = block.kind === "picto"
+    ? normalizePictogramColorOverride(block.color)
+    : "";
+  const pictogramImage = block.kind === "picto" && block.iconType
+    ? (pictogramColorOverride
+        ? recoloredPictoImages[`${block.iconType}|${pictogramColorOverride}`] ?? pictoImages[block.iconType]
+        : pictoImages[block.iconType]) ?? null
+    : null;
   const titleHeight = block.title ? block.titleHeight ?? 30 : 0;
   const padding = block.padding ?? 8;
   const showInlineSelection = isSelected && !editable;
@@ -296,17 +305,11 @@ export function SheetBlockNode({
       </>
     );
   } else if (block.kind === "picto") {
-    const colorOverride = normalizePictogramColorOverride(block.color);
-    const image = block.iconType
-      ? (colorOverride
-          ? recoloredPictoImages[`${block.iconType}|${colorOverride}`] ?? pictoImages[block.iconType]
-          : pictoImages[block.iconType]) ?? null
-      : null;
-    const artworkWidth = Math.max(1, image?.naturalWidth || image?.width || width);
-    const artworkHeight = Math.max(1, image?.naturalHeight || image?.height || height);
-    content = image ? (
+    const artworkWidth = Math.max(1, pictogramImage?.naturalWidth || pictogramImage?.width || width);
+    const artworkHeight = Math.max(1, pictogramImage?.naturalHeight || pictogramImage?.height || height);
+    content = pictogramImage ? (
       <KonvaImage
-        image={image}
+        image={pictogramImage}
         x={block.flipX ? width : 0}
         y={block.flipY ? height : 0}
         width={artworkWidth}
@@ -338,7 +341,11 @@ export function SheetBlockNode({
     } else {
       content = (
         <Text
-          text={block.imageKey === "studioLogo" ? "Logo studio" : "Logo client"}
+          text={block.imageKey === "studioLogo"
+            ? "Logo studio"
+            : block.imageKey === "planSituationBackground"
+              ? "Fond du plan de situation"
+              : "Logo client"}
           width={width}
           height={height}
           align="center"
@@ -561,11 +568,22 @@ export function SheetBlockNode({
         const scaleY = Math.abs(node.scaleY());
         node.scaleX(1);
         node.scaleY(1);
+        const transformedWidth = Math.max(20, Math.round(width * scaleX));
+        const transformedHeight = Math.max(16, Math.round(height * scaleY));
+        const transformedSize = block.kind === "picto" && block.lockAspectRatio !== false
+          ? normalizeCanvasIconSizeToAspectRatio(
+              transformedWidth,
+              transformedHeight,
+              Math.max(1, pictogramImage?.naturalWidth || pictogramImage?.width || width)
+                / Math.max(1, pictogramImage?.naturalHeight || pictogramImage?.height || height),
+              { width, height }
+            )
+          : { width: transformedWidth, height: transformedHeight };
         onChange(block.id, {
           x: Math.round(node.x()),
           y: Math.round(node.y()),
-          width: Math.max(20, Math.round(width * scaleX)),
-          height: Math.max(16, Math.round(height * scaleY)),
+          width: transformedSize.width,
+          height: transformedSize.height,
           rotation: node.rotation()
         });
       }}

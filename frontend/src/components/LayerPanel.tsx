@@ -30,6 +30,10 @@ export interface EditorLayerItem {
   zIndex: number;
   /** Keeps the eye control available for selected read-only sheet blocks. */
   visibilityEditable?: boolean;
+  /** Allows a plan-owned layer to stay editable inside a protected template. */
+  editable?: boolean;
+  /** Prevents direct layer controls for protected children of a composite. */
+  interactionProtected?: boolean;
 }
 
 interface LayerPanelProps {
@@ -77,6 +81,7 @@ export default function LayerPanel({
   } | null>(null);
   const selectedIndex = items.findIndex((item) => item.id === selectedId);
   const selected = selectedIndex >= 0 ? items[selectedIndex] : null;
+  const selectedEditable = Boolean(selected && (!readOnly || selected.editable));
 
   const getDropPosition = (
     event: React.DragEvent<HTMLDivElement>
@@ -93,6 +98,8 @@ export default function LayerPanel({
     setDraggedId(null);
     setDropTarget(null);
     if (!sourceId || sourceId === targetId) return;
+    const source = items.find((item) => item.id === sourceId);
+    if (readOnly && !source?.editable) return;
 
     const orderedIds = items.map((item) => item.id).filter((id) => id !== sourceId);
     const targetIndex = orderedIds.indexOf(targetId);
@@ -115,12 +122,14 @@ export default function LayerPanel({
       <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
         {items.map((item) => {
           const isSelected = item.id === selectedId;
-          const visibilityReadOnly = readOnly && !item.visibilityEditable;
+          const visibilityReadOnly = Boolean(item.interactionProtected || (readOnly && !item.visibilityEditable));
+          const itemReadOnly = Boolean(item.interactionProtected || (readOnly && !item.editable));
           return (
             <div
               key={item.id}
               onDragOver={(event) => {
-                if (readOnly) return;
+                const source = items.find((candidate) => candidate.id === draggedId);
+                if (readOnly && !source?.editable) return;
                 event.preventDefault();
                 event.dataTransfer.dropEffect = "move";
                 const position = getDropPosition(event);
@@ -131,7 +140,7 @@ export default function LayerPanel({
                 );
               }}
               onDrop={(event) => {
-                if (!readOnly) handleDrop(event, item.id);
+                handleDrop(event, item.id);
               }}
               className={`relative mb-1 flex min-w-0 items-center gap-1 rounded border transition-colors ${
                 isSelected
@@ -147,9 +156,9 @@ export default function LayerPanel({
               )}
               <button
                 type="button"
-                draggable={!readOnly}
+                draggable={!itemReadOnly}
                 onDragStart={(event) => {
-                  if (readOnly) {
+                  if (itemReadOnly) {
                     event.preventDefault();
                     return;
                   }
@@ -165,7 +174,7 @@ export default function LayerPanel({
                 onClick={() => onSelect(item)}
                 title="Faire glisser pour changer l’ordre"
                 aria-label={`Déplacer le calque ${item.label}`}
-                className={`flex h-8 w-5 shrink-0 items-center justify-center text-neutral-600 ${readOnly ? "cursor-not-allowed opacity-40" : "cursor-grab hover:text-neutral-200 active:cursor-grabbing"}`}
+                className={`flex h-8 w-5 shrink-0 items-center justify-center text-neutral-600 ${itemReadOnly ? "cursor-not-allowed opacity-40" : "cursor-grab hover:text-neutral-200 active:cursor-grabbing"}`}
               >
                 <GripVertical className="pointer-events-none h-3.5 w-3.5" />
               </button>
@@ -194,7 +203,7 @@ export default function LayerPanel({
               </button>
               <button
                 type="button"
-                disabled={readOnly}
+                disabled={itemReadOnly}
                 onClick={() => onToggleLock(item)}
                 title={item.locked ? "Déverrouiller cet objet" : "Verrouiller cet objet pour empêcher son déplacement"}
                 aria-label={item.locked ? `Déverrouiller ${item.label}` : `Verrouiller ${item.label}`}
@@ -216,7 +225,7 @@ export default function LayerPanel({
         <div className="grid grid-cols-4 gap-1">
           <button
             type="button"
-            disabled={readOnly || !selected || selectedIndex === 0}
+            disabled={!selectedEditable || selectedIndex === 0}
             onClick={() => selected && onMove(selected.id, "front")}
             title="Mettre tout devant"
             className="flex h-7 cursor-pointer items-center justify-center rounded border border-white/10 text-neutral-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
@@ -225,7 +234,7 @@ export default function LayerPanel({
           </button>
           <button
             type="button"
-            disabled={readOnly || !selected || selectedIndex === 0}
+            disabled={!selectedEditable || selectedIndex === 0}
             onClick={() => selected && onMove(selected.id, "up")}
             title="Avancer d’un niveau"
             className="flex h-7 cursor-pointer items-center justify-center rounded border border-white/10 text-neutral-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
@@ -234,7 +243,7 @@ export default function LayerPanel({
           </button>
           <button
             type="button"
-            disabled={readOnly || !selected || selectedIndex === items.length - 1}
+            disabled={!selectedEditable || selectedIndex === items.length - 1}
             onClick={() => selected && onMove(selected.id, "down")}
             title="Reculer d’un niveau"
             className="flex h-7 cursor-pointer items-center justify-center rounded border border-white/10 text-neutral-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
@@ -243,7 +252,7 @@ export default function LayerPanel({
           </button>
           <button
             type="button"
-            disabled={readOnly || !selected || selectedIndex === items.length - 1}
+            disabled={!selectedEditable || selectedIndex === items.length - 1}
             onClick={() => selected && onMove(selected.id, "back")}
             title="Mettre tout derrière"
             className="flex h-7 cursor-pointer items-center justify-center rounded border border-white/10 text-neutral-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"

@@ -7,6 +7,13 @@ export interface SafetyIconDefinition {
   svg?: string;
   imageUrl?: string;
   fileName?: string;
+  /** Standard/category metadata supplied by the server-side catalogue registry. */
+  standardKey?: string;
+  standardLabel?: string;
+  categoryKey?: string;
+  categoryLabel?: string;
+  subcategoryKey?: string;
+  subcategoryLabel?: string;
   /** True only for SVG files uploaded by a user and safe to remove from the library. */
   deletable?: boolean;
 }
@@ -48,31 +55,155 @@ export const DIRECTIONAL_ICON_KEYWORDS = [
 const stripAccents = (value: string) =>
   value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
+const normalizeOrientationText = (value: string) =>
+  stripAccents(value).replace(/[^a-z0-9]+/g, " ").trim();
+
+const pictogramLeafKey = (value: string) => {
+  const leaf = String(value || "").replace(/\\/g, "/").split(/[/:]/).pop() || "";
+  return stripAccents(leaf.replace(/\.[^.]+$/, ""))
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+};
+
+/**
+ * Default and previously saved templates predate the standard/category
+ * catalogue hierarchy. Their short keys must keep resolving even when the SVG
+ * moves to another directory. Targets are deliberately identified by standard
+ * plus filename stem rather than by the current full media path.
+ */
+const LEGACY_TEMPLATE_PICTOGRAM_TARGETS: Record<
+  string,
+  { standardKey: string; fileStem: string }
+> = {
+  "10": { standardKey: "other", fileStem: "10" },
+  "11": { standardKey: "other", fileStem: "11" },
+  "15-118": { standardKey: "other", fileStem: "15-18" },
+  "15-18": { standardKey: "other", fileStem: "15-18" },
+  air: { standardKey: "other", fileStem: "air" },
+  alarme_incendie: { standardKey: "nfx08070", fileStem: "dm" },
+  "cheminement evacuation": { standardKey: "other", fileStem: "cheminement evacuation" },
+  direction: { standardKey: "other", fileStem: "direction" },
+  "ear-svgrepo-com": { standardKey: "other", fileStem: "ear-svgrepo-com" },
+  "evacuation-2": { standardKey: "other", fileStem: "evacuation-2" },
+  "evacuation-3": { standardKey: "other", fileStem: "evacuation-3" },
+  evacuation1: { standardKey: "other", fileStem: "evacuation1" },
+  exticnteur: { standardKey: "nfx08070", fileStem: "lutte_ext" },
+  extincteur: { standardKey: "nfx08070", fileStem: "lutte_ext" },
+  Extincteur: { standardKey: "nfx08070", fileStem: "lutte_ext" },
+  fire: { standardKey: "other", fileStem: "fire" },
+  icon_10_clean_safe: { standardKey: "nfx08070", fileStem: "dm" },
+  icon_10_transparent: { standardKey: "nfx08070", fileStem: "dm" },
+  "Déclencheur manuel d’alarme incendie": { standardKey: "nfx08070", fileStem: "dm" },
+  icon_11_clean_safe: { standardKey: "other", fileStem: "icon_11_clean_safe" },
+  icon_12_clean_safe: { standardKey: "other", fileStem: "icon_12_clean_safe" },
+  icon_13_clean_safe: { standardKey: "other", fileStem: "icon_13_clean_safe" },
+  icon_14_clean_safe: { standardKey: "nfx08070", fileStem: "rassemblement" },
+  icon_15_clean_safe: { standardKey: "other", fileStem: "icon_15_clean_safe" },
+  "Issue finale - panneau complet": { standardKey: "nfx08070", fileStem: "is_d" },
+  "Issue finale": { standardKey: "nfx08070", fileStem: "is_d" },
+  issue_de_secours: { standardKey: "nfx08070", fileStem: "is_d" },
+  "mege-phone": { standardKey: "other", fileStem: "mege-phone" },
+  Pharmacie: { standardKey: "nfx08070", fileStem: "pharma" },
+  point_rassemblement: { standardKey: "nfx08070", fileStem: "rassemblement" },
+  "Point de rassemblement": { standardKey: "nfx08070", fileStem: "rassemblement" },
+  "Porte coupe-feu": { standardKey: "nfx08070", fileStem: "pcf" },
+  telephone_rouge_final_corrige: { standardKey: "other", fileStem: "telephone_rouge_final_corrige" },
+  "Téléphone de sécurité incendie": { standardKey: "nfx08070", fileStem: "tel-urgence" },
+  telephone_vert: { standardKey: "other", fileStem: "telephone_vert" },
+  "urgence-01": { standardKey: "other", fileStem: "urgence-01" },
+  "urgence-02": { standardKey: "other", fileStem: "urgence-02" },
+  "urgence-03": { standardKey: "other", fileStem: "urgence-03" },
+  "urgence-05": { standardKey: "other", fileStem: "urgence-05" },
+  "urgence-sourds": { standardKey: "other", fileStem: "urgence-sourds" },
+};
+
+export function withLegacyTemplatePictogramAliases(
+  definitions: Record<IconType, SafetyIconDefinition>,
+): Record<IconType, SafetyIconDefinition> {
+  const result = { ...definitions };
+  const catalogueDefinitions = Object.values(definitions).filter(
+    (definition) => Boolean(definition.standardKey && definition.fileName),
+  );
+
+  Object.entries(LEGACY_TEMPLATE_PICTOGRAM_TARGETS).forEach(([alias, target]) => {
+    const match = catalogueDefinitions.find((definition) => (
+      definition.standardKey === target.standardKey
+      && pictogramLeafKey(definition.fileName || "") === pictogramLeafKey(target.fileStem)
+    ));
+    if (!match) return;
+    // A real server definition already registered under the old key wins. The
+    // static built-in sketches do not: use the catalogue's current SVG instead.
+    if (result[alias]?.standardKey) return;
+    result[alias] = { ...match, type: alias };
+  });
+
+  return result;
+}
+
+/**
+ * These NF X 08-070 signs carry a fixed, readable left/right meaning on the
+ * printed sheet. They must therefore stay upright when “Vous êtes ici” turns
+ * the plan, even though their category or label contains evacuation/issue.
+ */
+const FIXED_UPRIGHT_ICON_KEYS = new Set(["eas", "is_d", "is_g"]);
+const FIXED_UPRIGHT_ICON_LABELS = new Set([
+  "espace d attente securise",
+  "issue de secours droite",
+  "issue de secours gauche",
+]);
+const DIRECTIONAL_ICON_KEYS = new Set(["chemin", "is_fleche", "is_fleche_diag"]);
+
+export function isFixedUprightIcon(
+  type: IconType,
+  definitions: Record<IconType, SafetyIconDefinition> = SAFETY_ICONS
+): boolean {
+  const definition = definitions[type];
+  const typeKey = pictogramLeafKey(type);
+  const fileKey = pictogramLeafKey(definition?.fileName ?? "");
+  const label = normalizeOrientationText(definition?.label ?? "");
+  return FIXED_UPRIGHT_ICON_KEYS.has(typeKey)
+    || FIXED_UPRIGHT_ICON_KEYS.has(fileKey)
+    || FIXED_UPRIGHT_ICON_LABELS.has(label);
+}
+
 /** True when the pictogram carries a direction and must follow the plan. */
 export function isDirectionalIcon(
   type: IconType,
   definitions: Record<IconType, SafetyIconDefinition> = SAFETY_ICONS
 ): boolean {
   const definition = definitions[type];
-  // Include the stored filename too: imported SVGs can keep an internal type
-  // such as "icon_12" while their actual filename still says "home",
-  // "personne" or "sortie". The whole SVG artwork is then classified as one
-  // directional sign, so its door/house, arrow and person rotate together.
-  const haystack = stripAccents(
-    `${type} ${definition?.label ?? ""} ${definition?.fileName ?? ""}`
+  if (isFixedUprightIcon(type, definitions)) return false;
+
+  const typeKey = pictogramLeafKey(type);
+  const fileKey = pictogramLeafKey(definition?.fileName ?? "");
+  if (DIRECTIONAL_ICON_KEYS.has(typeKey) || DIRECTIONAL_ICON_KEYS.has(fileKey)) {
+    return true;
+  }
+
+  // Only inspect the pictogram's leaf identifiers. Server types and filenames
+  // include category paths such as "01-evacuation"; reading the complete path
+  // made every sign in that folder rotate, including EAS.
+  const haystack = normalizeOrientationText(
+    `${typeKey} ${definition?.label ?? ""} ${fileKey}`
   );
   return DIRECTIONAL_ICON_KEYWORDS.some((keyword) => haystack.includes(keyword));
 }
 
 /** The pictogram whose rotation defines the plan's reading direction. */
 export const YOU_ARE_HERE_KEYWORD = "vous etes ici";
+const YOU_ARE_HERE_KEYS = new Set(["vous_ici", "vous_etes_ici"]);
 
 export function isYouAreHereIcon(
   type: IconType,
   definitions: Record<IconType, SafetyIconDefinition> = SAFETY_ICONS
 ): boolean {
   const definition = definitions[type];
-  return stripAccents(`${type} ${definition?.label ?? ""}`).includes(YOU_ARE_HERE_KEYWORD);
+  const typeKey = pictogramLeafKey(type);
+  const fileKey = pictogramLeafKey(definition?.fileName ?? "");
+  const identity = normalizeOrientationText(`${typeKey} ${definition?.label ?? ""} ${fileKey}`);
+  return YOU_ARE_HERE_KEYS.has(typeKey)
+    || YOU_ARE_HERE_KEYS.has(fileKey)
+    || identity.includes(YOU_ARE_HERE_KEYWORD);
 }
 
 /**
@@ -86,7 +217,9 @@ export function isYouAreHereIcon(
  * tolerates the typos found in the source files (e.g. "chaufferier",
  * "grouoe ventilisation").
  */
-export const LEADER_COLOR_RED = "#ef233c";
+/** Approximation écran unique du rouge de sécurité NF X 08-070 (RAL 3020). */
+export const SAFETY_RED = "#C1121C";
+export const LEADER_COLOR_RED = SAFETY_RED;
 export const LEADER_COLOR_GREEN = "#00a651";
 export const LEADER_COLOR_BLUE = "#3046b8";
 export const LEADER_COLOR_YELLOW = "#ffd500";
@@ -94,7 +227,7 @@ export const LEADER_COLOR_DARK = "#222222";
 
 /** Exact pictogram name (normalised) → leader colour. Single source of truth. */
 const PICTOGRAM_LEADER_COLORS: Record<string, string> = {
-  // ROUGE — #ef233c
+  // ROUGE — #C1121C
   "acces pompiers principal": LEADER_COLOR_RED,
   "acces pompiers": LEADER_COLOR_RED,
   "baie accessible": LEADER_COLOR_RED,
@@ -239,9 +372,9 @@ export const SAFETY_ICONS: Record<IconType, SafetyIconDefinition> = {
   extincteur: {
     type: "extincteur",
     label: "Extincteur",
-    color: "#ef4444", // Red
+    color: SAFETY_RED,
     svg: `<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect x="35" y="30" width="30" height="55" rx="5" fill="#ef4444" stroke="white" stroke-width="4"/>
+      <rect x="35" y="30" width="30" height="55" rx="5" fill="${SAFETY_RED}" stroke="white" stroke-width="4"/>
       <path d="M42 20H58M50 20V30" stroke="white" stroke-width="5" stroke-linecap="round"/>
       <path d="M58 20C65 20 70 25 70 32C70 36 67 40 62 42" stroke="white" stroke-width="4" stroke-linecap="round"/>
       <rect x="42" y="40" width="16" height="8" rx="2" fill="white"/>
@@ -251,9 +384,9 @@ export const SAFETY_ICONS: Record<IconType, SafetyIconDefinition> = {
   ria: {
     type: "ria",
     label: "RIA",
-    color: "#ef4444", // Red
+    color: SAFETY_RED,
     svg: `<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect x="15" y="15" width="70" height="70" rx="8" fill="#ef4444" stroke="white" stroke-width="4"/>
+      <rect x="15" y="15" width="70" height="70" rx="8" fill="${SAFETY_RED}" stroke="white" stroke-width="4"/>
       <circle cx="50" cy="50" r="22" stroke="white" stroke-width="5" fill="none"/>
       <path d="M35 50H65M50 35V65" stroke="white" stroke-width="4"/>
       <circle cx="50" cy="50" r="10" fill="white"/>
@@ -274,12 +407,12 @@ export const SAFETY_ICONS: Record<IconType, SafetyIconDefinition> = {
   alarme_incendie: {
     type: "alarme_incendie",
     label: "Alarme incendie",
-    color: "#ef4444",
+    color: SAFETY_RED,
     svg: `<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect x="15" y="15" width="70" height="70" rx="8" fill="#ef4444" stroke="white" stroke-width="4"/>
+      <rect x="15" y="15" width="70" height="70" rx="8" fill="${SAFETY_RED}" stroke="white" stroke-width="4"/>
       <circle cx="50" cy="45" r="16" fill="white"/>
       <rect x="42" y="62" width="16" height="16" rx="2" fill="white"/>
-      <path d="M42 45H58" stroke="#ef4444" stroke-width="4"/>
+      <path d="M42 45H58" stroke="${SAFETY_RED}" stroke-width="4"/>
     </svg>`
   },
   detecteur_incendie: {
@@ -323,6 +456,38 @@ export const SAFETY_ICONS: Record<IconType, SafetyIconDefinition> = {
       <path d="M30 50H65M65 50L52 37M65 50L52 63" stroke="white" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>`
   }
+};
+
+// Immediate canonical key fallbacks before catalog API responses load
+SAFETY_ICONS["nfx08070:03-lutte:3a-extincteurs:lutte_ext"] = {
+  ...SAFETY_ICONS.extincteur,
+  type: "nfx08070:03-lutte:3a-extincteurs:lutte_ext",
+  fileName: "lutte_ext.svg",
+  standardKey: "nfx08070",
+};
+SAFETY_ICONS["nfx08070:01-evacuation:is_d"] = {
+  ...SAFETY_ICONS.issue_de_secours,
+  type: "nfx08070:01-evacuation:is_d",
+  fileName: "is_d.svg",
+  standardKey: "nfx08070",
+};
+SAFETY_ICONS["nfx08070:01-evacuation:rassemblement"] = {
+  ...SAFETY_ICONS.point_rassemblement,
+  type: "nfx08070:01-evacuation:rassemblement",
+  fileName: "rassemblement.svg",
+  standardKey: "nfx08070",
+};
+SAFETY_ICONS["nfx08070:02-alerte:dm"] = {
+  ...SAFETY_ICONS.alarme_incendie,
+  type: "nfx08070:02-alerte:dm",
+  fileName: "dm.svg",
+  standardKey: "nfx08070",
+};
+SAFETY_ICONS["nfx08070:03-lutte:ria"] = {
+  ...SAFETY_ICONS.ria,
+  type: "nfx08070:03-lutte:ria",
+  fileName: "ria.svg",
+  standardKey: "nfx08070",
 };
 
 export function getSvgDataUrl(type: IconType): string {
@@ -512,10 +677,9 @@ export function makeSvgStretchable(svg: string): string {
 }
 
 /**
- * Source used by pictograms placed on the editable canvas. Unlike thumbnails
- * and legend rows, canvas pictograms must be allowed to deform freely when the
- * user resizes only one axis. Holding Shift still protects the proportions by
- * keeping the outer box ratio locked.
+ * Source used by pictograms placed on the editable canvas. The SVG fills its
+ * outer box exactly; the canvas Transformer keeps that box locked to the
+ * artwork's natural aspect ratio during resize.
  */
 export async function buildStretchableIconSource(
   type: IconType,
