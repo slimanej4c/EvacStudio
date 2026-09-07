@@ -39,7 +39,7 @@ export const EMPTY_PLAN_SITUATION: PlanSituationState = {
   sectorial: false,
   auto_refresh_visible_area: true,
   orientation: 0,
-  orientation_mode: "manual",
+  orientation_mode: "observer",
   content_width_percent: 90,
   content_height_percent: 82,
   zone_opacity_percent: 35,
@@ -58,6 +58,7 @@ const cloneBlocks = (blocks: SheetBlock[]) => blocks.map((block) => ({
     : undefined,
   shapeStraightSegments: block.shapeStraightSegments ? [...block.shapeStraightSegments] : undefined,
   situationSourcePoints: block.situationSourcePoints?.map((point) => ({ ...point })),
+  situationIsSilhouette: block.situationIsSilhouette,
 }));
 
 const boundedPercent = (value: unknown, fallback: number, minimum: number) => (
@@ -67,6 +68,22 @@ const boundedPercent = (value: unknown, fallback: number, minimum: number) => (
 export function isPlanSituationBlock(block: SheetBlock) {
   return block.planSpecificKind === "situation"
     || block.id.startsWith(PLAN_SITUATION_BLOCK_PREFIX);
+}
+
+export function isPlanSituationMovableElement(block: SheetBlock): boolean {
+  if (!isPlanSituationBlock(block)) return false;
+  if (
+    block.id === PLAN_SITUATION_FRAME_ID ||
+    block.id === PLAN_SITUATION_BACKGROUND_ID ||
+    block.situationRole === "frame" ||
+    block.situationRole === "background" ||
+    block.situationRole === "building_outline" ||
+    block.situationRole === "represented_zone" ||
+    block.situationIsSilhouette === true
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export function stripPlanSituationBlocks(blocks: SheetBlock[]) {
@@ -86,7 +103,7 @@ export function normalizePlanSituation(value?: Partial<PlanSituationState> | nul
       sectorial: Boolean(value?.sectorial),
       auto_refresh_visible_area: value?.auto_refresh_visible_area !== false,
       orientation: finite(value?.orientation, 0),
-      orientation_mode: value?.orientation_mode === "observer" ? "observer" : "manual",
+      orientation_mode: value?.orientation_mode === "manual" ? "manual" : "observer",
       content_width_percent: boundedPercent(value?.content_width_percent, 90, 20),
       content_height_percent: boundedPercent(value?.content_height_percent, 82, 20),
       zone_opacity_percent: boundedPercent(value?.zone_opacity_percent, 35, 5),
@@ -112,6 +129,11 @@ export function normalizePlanSituation(value?: Partial<PlanSituationState> | nul
         ?.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
         .slice(0, 500)
         .map((point) => ({ x: point.x, y: point.y })),
+      situationIsSilhouette: block.situationIsSilhouette ?? (
+        block.situationRole === "building_outline" || block.id.includes("building_outline")
+          ? true
+          : undefined
+      ),
     }));
   const frame = blocks.find((block) => block.id === PLAN_SITUATION_FRAME_ID);
   return {
@@ -121,8 +143,8 @@ export function normalizePlanSituation(value?: Partial<PlanSituationState> | nul
     locked: Boolean(value.locked),
     sectorial: Boolean(value.sectorial),
     auto_refresh_visible_area: value.auto_refresh_visible_area !== false,
-    orientation: finite(value.orientation, frame?.rotation ?? 0),
-    orientation_mode: value.orientation_mode === "observer" ? "observer" : "manual",
+    orientation: finite(value.orientation, 0),
+    orientation_mode: value.orientation_mode === "manual" ? "manual" : "observer",
     content_width_percent: boundedPercent(value.content_width_percent, 90, 20),
     content_height_percent: boundedPercent(value.content_height_percent, 82, 20),
     zone_opacity_percent: boundedPercent(value.zone_opacity_percent, 35, 5),
@@ -134,7 +156,22 @@ export function planSituationFrame(state: PlanSituationState) {
   return state.blocks.find((block) => block.id === PLAN_SITUATION_FRAME_ID) ?? null;
 }
 
-export function createPlanSituation(sheetWidth: number, sheetHeight: number): PlanSituationState {
+export function isPointInsidePlanSituationFrame(
+  point: { x: number; y: number },
+  state: PlanSituationState,
+): boolean {
+  if (!state.enabled || !state.visible) return false;
+  const frame = planSituationFrame(state);
+  if (!frame) return false;
+  const local = rotatePoint(point.x - frame.x, point.y - frame.y, -frame.rotation);
+  return local.x >= 0 && local.x <= frame.width && local.y >= 0 && local.y <= frame.height;
+}
+
+export function createPlanSituation(
+  sheetWidth: number,
+  sheetHeight: number,
+  initialOrientation: number = 0,
+): PlanSituationState {
   const portrait = sheetHeight > sheetWidth;
   const width = portrait ? 330 : 390;
   const height = portrait ? 275 : 235;
@@ -153,6 +190,7 @@ export function createPlanSituation(sheetWidth: number, sheetHeight: number): Pl
     locked: false,
     title: "PLAN DE SITUATION",
     text: "",
+    fill: "#ffffff",
     stroke: "#111827",
     strokeWidth: 2,
     color: "#111827",
@@ -164,9 +202,12 @@ export function createPlanSituation(sheetWidth: number, sheetHeight: number): Pl
     titleAlign: "center",
     titleRule: true,
   };
+  const normalizedOrientation = ((initialOrientation % 360) + 360) % 360;
   return {
     ...EMPTY_PLAN_SITUATION,
     enabled: true,
+    orientation: normalizedOrientation,
+    orientation_mode: "observer",
     blocks: [frame],
   };
 }
@@ -211,29 +252,59 @@ function tracedGeometryTransform(state: PlanSituationState, outlinePoints: Sourc
   };
 }
 
+export interface TraceIntoPlanSituationOptions {
+  targetBlockId?: string;
+  append?: boolean;
+  label?: string;
+}
+
+export function isSituationSilhouette(block: SheetBlock, allBlocks?: SheetBlock[]): boolean {
+  if ((block.situationSourcePoints?.length ?? 0) < 3) return false;
+  if (block.situationIsSilhouette === true) return true;
+  if (block.situationIsSilhouette === false) return false;
+  if (block.situationRole === "building_outline") return true;
+  if (block.id.includes("building_outline")) return true;
+  if (block.situationRole === "represented_zone") {
+    // If there is another building_outline among the blocks, this represented_zone is a sub-zone
+    if (allBlocks && allBlocks.some((b) => b.id !== block.id && (b.situationRole === "building_outline" || b.situationIsSilhouette === true || b.id.includes("building_outline")))) {
+      return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+export function getSituationSilhouettes(state: PlanSituationState): SheetBlock[] {
+  return state.blocks.filter((block) => isSituationSilhouette(block, state.blocks));
+}
+
 /**
  * Refit traced vector geometry inside the situation frame. Only the saved
  * plan-space points are used, so browser zoom and canvas pan never affect it.
- * The traced silhouette and represented zone rotate by the frame-relative
+ * The traced silhouettes and represented zone rotate by the frame-relative
  * orientation to remain aligned with the main plan's observer angle.
+ * When multiple silhouettes exist, they are all framed together preserving
+ * their exact relative distances, sizes, and positioning.
  */
 export function refitPlanSituationTraces(
   state: PlanSituationState,
   changes: Partial<Pick<PlanSituationState, "content_width_percent" | "content_height_percent" | "zone_opacity_percent" | "orientation" | "orientation_mode" | "auto_refresh_visible_area">> = {},
 ) {
   const configured = normalizePlanSituation({ ...state, ...changes });
-  const outline = configured.blocks.find(
-    (block) => block.situationRole === "building_outline" && (block.situationSourcePoints?.length ?? 0) >= 3,
+  const traceBlocks = configured.blocks.filter(
+    (block) => (block.situationRole === "building_outline" || block.situationRole === "represented_zone")
+      && (block.situationSourcePoints?.length ?? 0) >= 3,
   );
-  if (!outline?.situationSourcePoints) return configured;
+  if (!traceBlocks.length) return configured;
   const frame = planSituationFrame(configured);
   if (!frame) return configured;
 
   const traceRotation = ((configured.orientation - (frame.rotation ?? 0)) % 360 + 360) % 360;
-  const rawOutlineBounds = sourceBounds(outline.situationSourcePoints);
+  const allSourcePoints = traceBlocks.flatMap((b) => b.situationSourcePoints ?? []);
+  const rawSiteBounds = sourceBounds(allSourcePoints);
   const center = {
-    x: rawOutlineBounds.x + rawOutlineBounds.width / 2,
-    y: rawOutlineBounds.y + rawOutlineBounds.height / 2,
+    x: rawSiteBounds.x + rawSiteBounds.width / 2,
+    y: rawSiteBounds.y + rawSiteBounds.height / 2,
   };
 
   const rotateAroundCenter = (point: SourcePoint, degrees: number): SourcePoint => {
@@ -242,8 +313,8 @@ export function refitPlanSituationTraces(
     return { x: center.x + rotated.x, y: center.y + rotated.y };
   };
 
-  const rotatedOutlinePoints = outline.situationSourcePoints.map((point) => rotateAroundCenter(point, traceRotation));
-  const rotatedOutlineBounds = sourceBounds(rotatedOutlinePoints);
+  const allRotatedPoints = allSourcePoints.map((point) => rotateAroundCenter(point, traceRotation));
+  const rotatedSiteBounds = sourceBounds(allRotatedPoints);
 
   const titleHeight = frame.title ? frame.titleHeight ?? 28 : 0;
   const usable = {
@@ -254,9 +325,9 @@ export function refitPlanSituationTraces(
   };
   const maximumWidth = usable.width * configured.content_width_percent / 100;
   const maximumHeight = usable.height * configured.content_height_percent / 100;
-  const scale = Math.min(maximumWidth / rotatedOutlineBounds.width, maximumHeight / rotatedOutlineBounds.height);
-  const localX = usable.x + (usable.width - rotatedOutlineBounds.width * scale) / 2;
-  const localY = usable.y + (usable.height - rotatedOutlineBounds.height * scale) / 2;
+  const scale = Math.min(maximumWidth / rotatedSiteBounds.width, maximumHeight / rotatedSiteBounds.height);
+  const localX = usable.x + (usable.width - rotatedSiteBounds.width * scale) / 2;
+  const localY = usable.y + (usable.height - rotatedSiteBounds.height * scale) / 2;
 
   const blocks = configured.blocks.map((block) => {
     const points = block.situationSourcePoints;
@@ -268,8 +339,8 @@ export function refitPlanSituationTraces(
     const rotatedPoints = points.map((point) => rotateAroundCenter(point, traceRotation));
     const bounds = sourceBounds(rotatedPoints);
     const local = {
-      x: localX + (bounds.x - rotatedOutlineBounds.x) * scale,
-      y: localY + (bounds.y - rotatedOutlineBounds.y) * scale,
+      x: localX + (bounds.x - rotatedSiteBounds.x) * scale,
+      y: localY + (bounds.y - rotatedSiteBounds.y) * scale,
     };
     const world = rotatePoint(local.x, local.y, frame.rotation);
     return {
@@ -296,50 +367,209 @@ export function traceIntoPlanSituation(
   state: PlanSituationState,
   role: TraceRole,
   points: SourcePoint[],
+  options?: TraceIntoPlanSituationOptions,
 ) {
   if (points.length < 3 || points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
     return state;
   }
-  if (role === "represented_zone" && !state.blocks.some((block) => block.situationRole === "building_outline")) {
+  const silhouettes = getSituationSilhouettes(state);
+  const hasOutlines = silhouettes.length > 0;
+  if (role === "represented_zone" && !hasOutlines && !options?.targetBlockId) {
     return state;
   }
   const normalizedPoints = points.map((point) => ({ x: point.x, y: point.y }));
-  const block: SheetBlock = {
-    id: blockId(role),
+
+  // 1. If targetBlockId is provided, update that specific existing block
+  if (options?.targetBlockId) {
+    const existingIndex = state.blocks.findIndex((b) => b.id === options.targetBlockId);
+    if (existingIndex !== -1) {
+      const existing = state.blocks[existingIndex];
+      const updatedBlock: SheetBlock = {
+        ...existing,
+        situationSourcePoints: normalizedPoints,
+        ...(options.label ? { label: options.label } : {}),
+      };
+      const newBlocks = [...state.blocks];
+      newBlocks[existingIndex] = updatedBlock;
+      return refitPlanSituationTraces({ ...state, blocks: newBlocks });
+    }
+  }
+
+  // 2. Tracing building outline
+  if (role === "building_outline") {
+    const count = silhouettes.length;
+    const defaultLabel = count === 0 ? "Silhouette du bâtiment" : `Silhouette ${count + 1}`;
+    const newBlock: SheetBlock = {
+      id: blockId("building_outline"),
+      kind: "shape",
+      planSpecificKind: "situation",
+      situationRole: "building_outline",
+      situationIsSilhouette: true,
+      label: options?.label || defaultLabel,
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+      rotation: state.orientation,
+      visible: true,
+      locked: false,
+      shapeType: "polygon_zone",
+      shapePoints: [],
+      shapeClosed: true,
+      situationSourcePoints: normalizedPoints,
+      fill: "#e5e7eb",
+      fillOpacity: 0.75,
+      stroke: "#111827",
+      strokeWidth: 1,
+    };
+
+    if (options?.append) {
+      const frameIndex = state.blocks.findIndex((candidate) => candidate.id === PLAN_SITUATION_FRAME_ID);
+      let lastOutlineIndex = frameIndex;
+      for (let i = state.blocks.length - 1; i >= 0; i--) {
+        if (state.blocks[i].situationRole === "building_outline" || state.blocks[i].situationIsSilhouette) {
+          lastOutlineIndex = i;
+          break;
+        }
+      }
+      const newBlocks = [...state.blocks];
+      newBlocks.splice(Math.max(0, lastOutlineIndex + 1), 0, newBlock);
+      return refitPlanSituationTraces({ ...state, blocks: newBlocks });
+    }
+
+    // Default: initial trace or replace single outline
+    const replaced = state.blocks.filter((candidate) => (
+      candidate.situationRole !== "building_outline"
+      && !(candidate.situationRole === "represented_zone" && !candidate.situationIsSilhouette)
+    ));
+    const frameIndex = replaced.findIndex((candidate) => candidate.id === PLAN_SITUATION_FRAME_ID);
+    replaced.splice(Math.max(0, frameIndex + 1), 0, newBlock);
+    return refitPlanSituationTraces({ ...state, blocks: replaced });
+  }
+
+  // 3. Tracing represented zone (subzone)
+  const zoneBlock: SheetBlock = {
+    id: blockId("represented_zone"),
     kind: "shape",
     planSpecificKind: "situation",
-    situationRole: role,
-    label: role === "building_outline" ? "Silhouette du bâtiment" : "Zone représentée",
+    situationRole: "represented_zone",
+    situationIsSilhouette: false,
+    label: options?.label || "Zone représentée",
     x: 0,
     y: 0,
     width: 10,
     height: 10,
     rotation: state.orientation,
     visible: true,
-    locked: true,
+    locked: false,
     shapeType: "polygon_zone",
     shapePoints: [],
     shapeClosed: true,
     situationSourcePoints: normalizedPoints,
-    fill: role === "building_outline" ? "#e5e7eb" : "#6b7280",
-    fillOpacity: role === "building_outline" ? 0.75 : state.zone_opacity_percent / 100,
-    stroke: role === "building_outline" ? "#111827" : "#4b5563",
-    strokeWidth: role === "building_outline" ? 2 : 1.5,
+    fill: "#6b7280",
+    fillOpacity: state.zone_opacity_percent / 100,
+    stroke: "#4b5563",
+    strokeWidth: 1,
   };
-  // A zone calculated from an older silhouette is no longer trustworthy after
-  // that silhouette is retraced. Remove it and let the explicit refresh button
-  // calculate a new visible field.
-  const replaced = state.blocks.filter((candidate) => (
-    candidate.situationRole !== role
-    && !(role === "building_outline" && candidate.situationRole === "represented_zone")
+
+  // Remove any previous non-silhouette subzone
+  const remaining = state.blocks.filter((candidate) => (
+    candidate.situationRole !== "represented_zone" || candidate.situationIsSilhouette === true
   ));
-  const frameIndex = replaced.findIndex((candidate) => candidate.id === PLAN_SITUATION_FRAME_ID);
-  const outlineIndex = replaced.findIndex((candidate) => candidate.situationRole === "building_outline");
-  const insertAt = role === "building_outline"
-    ? Math.max(0, frameIndex + 1)
-    : Math.max(frameIndex + 1, outlineIndex + 1);
-  replaced.splice(insertAt, 0, block);
-  return refitPlanSituationTraces({ ...state, blocks: replaced });
+  // If a silhouette was previously marked as represented_zone, revert it back to building_outline
+  // so the subzone contrasts on top of it
+  const normalizedRemaining = remaining.map((candidate) => {
+    if (candidate.situationIsSilhouette && candidate.situationRole === "represented_zone") {
+      return {
+        ...candidate,
+        situationRole: "building_outline" as const,
+        fill: "#e5e7eb",
+        stroke: "#111827",
+        fillOpacity: 0.75,
+      };
+    }
+    return candidate;
+  });
+
+  const frameIndex = normalizedRemaining.findIndex((candidate) => candidate.id === PLAN_SITUATION_FRAME_ID);
+  let lastOutlineIndex = -1;
+  for (let i = normalizedRemaining.length - 1; i >= 0; i--) {
+    if (normalizedRemaining[i].situationRole === "building_outline" || normalizedRemaining[i].situationIsSilhouette) {
+      lastOutlineIndex = i;
+      break;
+    }
+  }
+  const insertAt = Math.max(frameIndex + 1, lastOutlineIndex + 1);
+  normalizedRemaining.splice(insertAt, 0, zoneBlock);
+  return refitPlanSituationTraces({ ...state, blocks: normalizedRemaining });
+}
+
+/**
+ * Select a specific building silhouette as the represented zone on the site.
+ * Highlight it in dark grey (#6b7280) and set any other building outlines back to light grey (#e5e7eb).
+ */
+export function selectPlanSituationRepresentedOutline(
+  state: PlanSituationState,
+  outlineId: string,
+): PlanSituationState {
+  const target = state.blocks.find((b) => b.id === outlineId);
+  if (!target || !target.situationSourcePoints) return state;
+
+  // Remove any non-silhouette subzone
+  const filteredBlocks = state.blocks.filter(
+    (b) => !(b.situationRole === "represented_zone" && !b.situationIsSilhouette && b.id !== outlineId),
+  );
+
+  const updatedBlocks = filteredBlocks.map((block) => {
+    if (block.id === outlineId) {
+      return {
+        ...block,
+        situationRole: "represented_zone" as const,
+        situationIsSilhouette: true,
+        fill: "#6b7280",
+        stroke: "#4b5563",
+        fillOpacity: state.zone_opacity_percent / 100,
+      };
+    }
+    if (block.situationIsSilhouette || block.situationRole === "building_outline" || block.situationRole === "represented_zone") {
+      return {
+        ...block,
+        situationRole: "building_outline" as const,
+        situationIsSilhouette: true,
+        fill: "#e5e7eb",
+        stroke: "#111827",
+        fillOpacity: 0.75,
+      };
+    }
+    return block;
+  });
+
+  return refitPlanSituationTraces({
+    ...state,
+    sectorial: true,
+    blocks: updatedBlocks,
+  });
+}
+
+/** Remove a specific building silhouette or element from the situation plan. */
+export function removePlanSituationBlock(
+  state: PlanSituationState,
+  blockId: string,
+): PlanSituationState {
+  const nextBlocks = state.blocks.filter((block) => block.id !== blockId);
+  return refitPlanSituationTraces({ ...state, blocks: nextBlocks });
+}
+
+/** Update the user-facing label of a situation plan silhouette or element. */
+export function updatePlanSituationBlockLabel(
+  state: PlanSituationState,
+  blockId: string,
+  label: string,
+): PlanSituationState {
+  const nextBlocks = state.blocks.map((block) => (
+    block.id === blockId ? { ...block, label } : block
+  ));
+  return { ...state, blocks: nextBlocks };
 }
 
 const crossProduct = (left: SourcePoint, right: SourcePoint) => (
@@ -442,18 +672,110 @@ export function clipPlanSituationPolygon(
 export function refreshPlanSituationVisibleArea(
   state: PlanSituationState,
   visiblePlanPolygon: SourcePoint[],
-) {
-  const outline = state.blocks.find(
-    (block) => block.situationRole === "building_outline"
-      && (block.situationSourcePoints?.length ?? 0) >= 3,
+): PlanSituationState | null {
+  const silhouettes = getSituationSilhouettes(state);
+  if (!silhouettes.length) return null;
+
+  // Calculate intersection of visiblePlanPolygon with each silhouette
+  const visibilityList = silhouettes.map((outline) => {
+    if (!outline.situationSourcePoints || outline.situationSourcePoints.length < 3) {
+      return { outline, clipped: [] as SourcePoint[], outlineArea: 0, clippedArea: 0, ratio: 0 };
+    }
+    const outlineArea = Math.abs(polygonSignedArea(outline.situationSourcePoints));
+    const clipped = clipPlanSituationPolygon(outline.situationSourcePoints, visiblePlanPolygon);
+    const clippedArea = clipped.length >= 3 ? Math.abs(polygonSignedArea(clipped)) : 0;
+    const ratio = outlineArea > 0 ? clippedArea / outlineArea : 0;
+    return { outline, clipped, outlineArea, clippedArea, ratio };
+  });
+
+  // If no silhouette intersects the visible plan window, return null
+  const anyVisible = visibilityList.some((v) => v.ratio >= 0.01);
+  if (!anyVisible) return null;
+
+  // Remove all existing non-silhouette subzones
+  const baseBlocks = state.blocks.filter(
+    (b) => !(b.situationRole === "represented_zone" && !b.situationIsSilhouette),
   );
-  if (!outline?.situationSourcePoints) return null;
-  const visibleArea = clipPlanSituationPolygon(
-    outline.situationSourcePoints,
-    visiblePlanPolygon,
-  );
-  if (visibleArea.length < 3) return null;
-  return traceIntoPlanSituation(state, "represented_zone", visibleArea);
+
+  const subzonesToAdd: SheetBlock[] = [];
+
+  let newBlocks = baseBlocks.map((block) => {
+    const vis = visibilityList.find((v) => v.outline.id === block.id);
+    if (!vis) return block;
+
+    if (vis.ratio >= 0.90) {
+      // Silhouette is fully (or almost fully >= 90%) visible in the canvas viewport
+      return {
+        ...block,
+        situationRole: "represented_zone" as const,
+        situationIsSilhouette: true,
+        fill: "#6b7280",
+        stroke: "#4b5563",
+        fillOpacity: state.zone_opacity_percent / 100,
+      };
+    } else if (vis.ratio >= 0.01) {
+      // Silhouette is partially visible: base silhouette is building_outline,
+      // and a subzone represented_zone is added with the exact clipped points
+      const subzone: SheetBlock = {
+        id: blockId("represented_zone"),
+        kind: "shape",
+        planSpecificKind: "situation",
+        situationRole: "represented_zone",
+        situationIsSilhouette: false,
+        label: `${block.label || "Zone"} (visible)`,
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        rotation: state.orientation,
+        visible: true,
+        locked: false,
+        shapeType: "polygon_zone",
+        shapePoints: [],
+        shapeClosed: true,
+        situationSourcePoints: vis.clipped,
+        fill: "#6b7280",
+        fillOpacity: state.zone_opacity_percent / 100,
+        stroke: "#4b5563",
+        strokeWidth: 1,
+      };
+      subzonesToAdd.push(subzone);
+
+      return {
+        ...block,
+        situationRole: "building_outline" as const,
+        situationIsSilhouette: true,
+        fill: "#e5e7eb",
+        stroke: "#111827",
+        fillOpacity: 0.75,
+      };
+    } else {
+      // Silhouette is not visible in the canvas viewport
+      return {
+        ...block,
+        situationRole: "building_outline" as const,
+        situationIsSilhouette: true,
+        fill: "#e5e7eb",
+        stroke: "#111827",
+        fillOpacity: 0.75,
+      };
+    }
+  });
+
+  // Insert subzones right after the silhouettes
+  let lastOutlineIndex = newBlocks.findIndex((b) => b.id === PLAN_SITUATION_FRAME_ID);
+  for (let i = newBlocks.length - 1; i >= 0; i--) {
+    if (newBlocks[i].situationRole === "building_outline" || newBlocks[i].situationIsSilhouette) {
+      lastOutlineIndex = i;
+      break;
+    }
+  }
+  newBlocks.splice(Math.max(0, lastOutlineIndex + 1), 0, ...subzonesToAdd);
+
+  return refitPlanSituationTraces({
+    ...state,
+    blocks: newBlocks,
+  });
 }
 
 export function decorateWithPlanSituation(
@@ -464,17 +786,25 @@ export function decorateWithPlanSituation(
   if (!state.enabled || !state.visible) return base;
   return [
     ...base,
-    ...cloneBlocks(state.blocks).map((block) => ({
-      ...block,
-      // The inset behaves as one protected object on the sheet. Its outer
-      // frame remains editable; none of its contents can be deformed or moved
-      // accidentally with the mouse.
-      locked: block.situationRole !== "frame",
-    })),
+    ...cloneBlocks(state.blocks).map((block) => {
+      const isProtectedGeometry =
+        block.situationRole === "building_outline"
+        || block.situationRole === "represented_zone"
+        || block.situationIsSilhouette === true
+        || block.situationRole === "background"
+        || block.id === PLAN_SITUATION_BACKGROUND_ID;
+
+      const isFrame = block.id === PLAN_SITUATION_FRAME_ID || block.situationRole === "frame";
+
+      return {
+        ...block,
+        locked: isProtectedGeometry ? true : Boolean(block.locked),
+      };
+    }),
   ];
 }
 
-function blockId(role: PlanSituationRole) {
+export function blockId(role: PlanSituationRole) {
   const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -514,7 +844,7 @@ export function upsertPlanSituationBackground(state: PlanSituationState) {
     height: Math.max(40, frame.height - titleHeight - 16),
     rotation: frame.rotation,
     visible: true,
-    locked: true,
+    locked: false,
     imageKey: PLAN_SITUATION_IMAGE_KEY,
   };
   const blocks = state.blocks.filter((block) => block.id !== PLAN_SITUATION_BACKGROUND_ID);
@@ -549,7 +879,7 @@ export function addPlanSituationPictogram(
     height: size,
     rotation: state.orientation,
     visible: true,
-    locked: true,
+    locked: false,
     iconType,
     lockAspectRatio: true,
   };
@@ -566,7 +896,7 @@ export function addPlanSituationElement(
     situationRole: role,
     rotation: state.orientation,
     visible: true,
-    locked: true,
+    locked: false,
   };
   let block: SheetBlock;
   if (role === "represented_zone") {
@@ -583,7 +913,7 @@ export function addPlanSituationElement(
       fill: "#f59e0b",
       fillOpacity: 0.2,
       stroke: "#c2410c",
-      strokeWidth: 3,
+      strokeWidth: 1,
     };
   } else if (role === "road") {
     block = {
@@ -609,7 +939,7 @@ export function addPlanSituationElement(
       height: 62,
       fill: role === "building" ? "#dbeafe" : "#e5e7eb",
       stroke: role === "building" ? "#2563eb" : "#6b7280",
-      strokeWidth: 2,
+      strokeWidth: 1,
       color: "#111827",
       fontSize: 10,
       fontStyle: "bold",
@@ -628,7 +958,7 @@ export function addPlanSituationElement(
       height: 46,
       fill: "#2563eb",
       stroke: "#ffffff",
-      strokeWidth: 2,
+      strokeWidth: 1,
       color: "#ffffff",
       fontSize: 28,
       fontStyle: "bold",
@@ -770,6 +1100,7 @@ export function constrainPlanSituationBlocks(
 
   return translated.map((block) => {
     if (block.id === PLAN_SITUATION_FRAME_ID) return block;
+    if (!isPlanSituationMovableElement(block)) return block;
     const centerOffset = rotatePoint(block.width / 2, block.height / 2, block.rotation);
     const blockCenter = { x: block.x + centerOffset.x, y: block.y + centerOffset.y };
     const local = rotatePoint(
@@ -850,8 +1181,13 @@ export function evaluatePlanSituationAudit(
       : [{ severity: "manual", message: "Déterminer selon le site si un plan de situation est nécessaire." }];
   }
   const roles = new Set(state.blocks.map((block) => block.situationRole));
+  const hasSilhouette = state.blocks.some((block) => (
+    block.situationIsSilhouette
+    || block.situationRole === "building_outline"
+    || block.situationRole === "represented_zone"
+  ) && (block.situationSourcePoints?.length ?? 0) >= 3);
   const items: PlanSituationAuditItem[] = [];
-  if (!roles.has("background") && !roles.has("building_outline") && !roles.has("building")) {
+  if (!roles.has("background") && !roles.has("building_outline") && !roles.has("building") && !hasSilhouette) {
     items.push({ severity: "error", message: "La silhouette ou le fond du site n’est pas représenté dans le plan de situation." });
   }
   if (state.sectorial && !roles.has("represented_zone")) {

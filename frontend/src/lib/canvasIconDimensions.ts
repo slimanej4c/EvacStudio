@@ -2,7 +2,10 @@ export const MIN_CANVAS_ICON_DIMENSION = 15;
 export const MAX_CANVAS_ICON_DIMENSION = 1000;
 export const MIN_CANVAS_LEADER_WIDTH = 0.5;
 export const MAX_CANVAS_LEADER_WIDTH = 12;
-export const DEFAULT_CANVAS_LEADER_WIDTH = 2;
+export const DEFAULT_CANVAS_LEADER_WIDTH = 1;
+export const MIN_CANVAS_LEADER_DOT_SIZE = 0;
+export const MAX_CANVAS_LEADER_DOT_SIZE = 20;
+export const DEFAULT_CANVAS_LEADER_DOT_SIZE = 1;
 
 /**
  * Keep pictogram dimensions usable even when a number input is cleared or a
@@ -114,5 +117,23 @@ export function normalizeCanvasLeaderWidth(
   return Math.min(
     MAX_CANVAS_LEADER_WIDTH,
     Math.max(MIN_CANVAS_LEADER_WIDTH, Math.round(numericValue * 2) / 2)
+  );
+}
+
+export function normalizeCanvasLeaderDotSize(
+  value: unknown,
+  fallback: number = DEFAULT_CANVAS_LEADER_DOT_SIZE
+): number {
+  const numericValue = Number(value);
+  const numericFallback = Number(fallback);
+  const safeFallback = Number.isFinite(numericFallback)
+    ? Math.min(MAX_CANVAS_LEADER_DOT_SIZE, Math.max(MIN_CANVAS_LEADER_DOT_SIZE, numericFallback))
+    : DEFAULT_CANVAS_LEADER_DOT_SIZE;
+
+  if (!Number.isFinite(numericValue)) return safeFallback;
+
+  return Math.min(
+    MAX_CANVAS_LEADER_DOT_SIZE,
+    Math.max(MIN_CANVAS_LEADER_DOT_SIZE, Math.round(numericValue * 2) / 2)
   );
 }

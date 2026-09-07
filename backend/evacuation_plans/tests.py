@@ -190,6 +190,7 @@ def _plan_situation_config():
                     {"x": 100, "y": 50}, {"x": 800, "y": 50},
                     {"x": 800, "y": 400}, {"x": 100, "y": 400},
                 ],
+                "situationIsSilhouette": True,
             },
         ],
     }
@@ -1855,6 +1856,8 @@ class EditorSyncTests(_PlanFactoryMixin, TestCase):
                     "block_x": 0.7,
                     "block_y": 0.6,
                     "block_locked": False,
+                    "block_width": 380,
+                    "block_height": 260,
                 },
             },
         }
@@ -1907,6 +1910,8 @@ class EditorSyncTests(_PlanFactoryMixin, TestCase):
         self.assertEqual(plan.watermark_config["reference"], "BAT-42")
         self.assertTrue(plan.watermark_config["client_logo"].startswith("data:image/png;base64,"))
         self.assertTrue(plan.watermark_config["creator_logo"].startswith("data:image/png;base64,"))
+        self.assertEqual(plan.watermark_config["block_width"], 380)
+        self.assertEqual(plan.watermark_config["block_height"], 260)
         self.assertTrue(plan.icons.get().locked)
         self.assertTrue(plan.icons.get().visible)
         self.assertEqual(plan.icons.get().z_index, 80)

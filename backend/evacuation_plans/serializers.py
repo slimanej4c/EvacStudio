@@ -341,7 +341,7 @@ def validate_plan_situation_config(value):
         'padding', 'uppercase', 'titleFill', 'titleColor', 'titleFontSize',
         'titleHeight', 'titleAlign', 'titleRule', 'titleLetterSpacing',
         'objectGroupId', 'planSpecificKind', 'situationRole',
-        'situationSourcePoints',
+        'situationSourcePoints', 'situationIsSilhouette',
     }
     seen_ids = set()
     for index, block in enumerate(blocks):
@@ -380,7 +380,7 @@ def validate_plan_situation_config(value):
                 )
         if block['width'] < 1 or block['height'] < 1:
             raise serializers.ValidationError("Les éléments doivent avoir une taille positive.")
-        for field in ('visible', 'locked', 'flipX', 'flipY', 'lockAspectRatio', 'shapeClosed', 'uppercase', 'titleRule'):
+        for field in ('visible', 'locked', 'flipX', 'flipY', 'lockAspectRatio', 'shapeClosed', 'uppercase', 'titleRule', 'situationIsSilhouette'):
             if field in block and not isinstance(block[field], bool):
                 raise serializers.ValidationError(
                     f"La propriété « {field} » de l’élément {index + 1} doit être booléenne."
@@ -548,7 +548,7 @@ class PlanIconSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanIcon
         fields = ['id', 'plan', 'icon_type', 'x', 'y', 'width', 'height', 'rotation', 'label',
-                  'anchor_x', 'anchor_y', 'leader_points', 'leader_width', 'leader_color', 'framed', 'flip_x', 'flip_y',
+                  'anchor_x', 'anchor_y', 'leader_points', 'leader_width', 'leader_dot_size', 'leader_color', 'framed', 'flip_x', 'flip_y',
                   'lock_aspect_ratio', 'locked',
                   'visible', 'z_index', 'group_id', 'object_group_id', 'color',
                   'created_at', 'updated_at']
@@ -756,6 +756,7 @@ class SyncPlanIconSerializer(serializers.Serializer):
         validators=[validate_icon_leader_points],
     )
     leader_width = serializers.FloatField(required=False, min_value=0, default=2.0)
+    leader_dot_size = serializers.FloatField(required=False, min_value=0, default=1.0)
     leader_color = serializers.RegexField(
         r'^(#[0-9a-fA-F]{6})?$',
         required=False,
@@ -816,6 +817,8 @@ class WatermarkConfigSerializer(serializers.Serializer):
     block_x = serializers.FloatField(required=False, min_value=0, max_value=1, default=0.68)
     block_y = serializers.FloatField(required=False, min_value=0, max_value=1, default=0.62)
     block_locked = serializers.BooleanField(required=False, default=False)
+    block_width = serializers.FloatField(required=False, min_value=50, max_value=5000, default=None, allow_null=True)
+    block_height = serializers.FloatField(required=False, min_value=50, max_value=5000, default=None, allow_null=True)
 
 
 class EditorPlanSettingsSerializer(serializers.Serializer):

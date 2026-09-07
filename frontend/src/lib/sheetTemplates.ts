@@ -1,4 +1,4 @@
-import finalSheetTemplateStatesData from "./finalSheetTemplateStates.json";
+import finalSheetTemplateStatesData from "./finalSheetTemplateStates.json" with { type: "json" };
 
 /**
  * Sheet templates — the printed sheet described as data instead of as canvas
@@ -132,6 +132,8 @@ export interface SheetBlock {
     | "pictogram";
   /** Original plan-space polygon retained for automatic situation-plan fitting. */
   situationSourcePoints?: SheetShapePoint[];
+  /** Whether this polygon represents one of the site building outlines/silhouettes. */
+  situationIsSilhouette?: boolean;
 
   // ── Content ──────────────────────────────────────────────────────────────
   /** Title bar text. Empty or absent means no title bar. */
@@ -455,6 +457,32 @@ const FINAL_SHEET_TEMPLATE_STATES = (
     templates: Record<SheetTemplateKey, FinalSheetTemplateState>;
   }
 ).templates;
+
+/**
+ * Ensures that the sheet contains both the client logo and creator/studio logo.
+ * If either is missing, it is restored from the canonical template baseline.
+ */
+export function ensureSheetTemplateLogos(
+  template: SheetTemplateKey,
+  blocks: SheetBlock[]
+): SheetBlock[] {
+  let nextBlocks = blocks;
+  const hasClient = nextBlocks.some((b) => b.kind === "image" && b.imageKey === "clientLogo");
+  const hasStudio = nextBlocks.some((b) => b.kind === "image" && b.imageKey === "studioLogo");
+  if (hasClient && hasStudio) return nextBlocks;
+
+  const finalState = FINAL_SHEET_TEMPLATE_STATES[template];
+  const defaultClient = finalState?.blocks.find((b) => b.kind === "image" && b.imageKey === "clientLogo");
+  const defaultStudio = finalState?.blocks.find((b) => b.kind === "image" && b.imageKey === "studioLogo");
+
+  if (!hasClient && defaultClient) {
+    nextBlocks = [...nextBlocks, JSON.parse(JSON.stringify(defaultClient))];
+  }
+  if (!hasStudio && defaultStudio) {
+    nextBlocks = [...nextBlocks, JSON.parse(JSON.stringify(defaultStudio))];
+  }
+  return nextBlocks;
+}
 
 const FINAL_TEMPLATE_TITLE_BLOCK_IDS: Record<SheetTemplateKey, string> = {
   nfx08070: "nf-banner",
@@ -1847,29 +1875,31 @@ export function createSheetBlocks(
   context: SheetTemplateContext = {}
 ): SheetBlock[] {
   const finalBlocks = createFinalSheetBlocks(template, context);
-  if (finalBlocks) return ensureSheetLegendBlock(template, finalBlocks);
-
-  if (template.startsWith("official_")) {
-    return ensureSheetLegendBlock(template, createOfficialEditableBlocks(template, context));
+  if (finalBlocks) {
+    return ensureSheetTemplateLogos(template, ensureSheetLegendBlock(template, finalBlocks));
   }
 
   let blocks: SheetBlock[];
-  switch (template) {
-    case "consignes_chambre":
-      blocks = createConsignesChambreBlocks(context);
-      break;
-    case "evacuation_consigne_gauche":
-      blocks = createEvacuationConsigneGaucheBlocks(context);
-      break;
-    case "intervention_multiniveaux":
-      blocks = createInterventionMultiniveauxBlocks(context);
-      break;
-    case "nfx08070":
-    default:
-      blocks = createNfx08070Blocks(context);
-      break;
+  if (template.startsWith("official_")) {
+    blocks = createOfficialEditableBlocks(template, context);
+  } else {
+    switch (template) {
+      case "consignes_chambre":
+        blocks = createConsignesChambreBlocks(context);
+        break;
+      case "evacuation_consigne_gauche":
+        blocks = createEvacuationConsigneGaucheBlocks(context);
+        break;
+      case "intervention_multiniveaux":
+        blocks = createInterventionMultiniveauxBlocks(context);
+        break;
+      case "nfx08070":
+      default:
+        blocks = createNfx08070Blocks(context);
+        break;
+    }
   }
-  return ensureSheetLegendBlock(template, blocks);
+  return ensureSheetTemplateLogos(template, ensureSheetLegendBlock(template, blocks));
 }
 
 function createOfficialEditableBlocks(
@@ -1995,6 +2025,30 @@ function createOfficialBlankInterventionBlocks(
       visible: true,
       fill: "#ffffff",
       strokeWidth: 0
+    },
+    {
+      id: `${template}-client-logo`,
+      kind: "image",
+      label: "Logo client",
+      imageKey: "clientLogo",
+      x: 1370,
+      y: 146,
+      width: 170,
+      height: 70,
+      rotation: 0,
+      visible: true
+    },
+    {
+      id: `${template}-studio-logo`,
+      kind: "image",
+      label: "Logo créateur",
+      imageKey: "studioLogo",
+      x: 60,
+      y: 146,
+      width: 170,
+      height: 70,
+      rotation: 0,
+      visible: true
     }
   ];
 }
@@ -2102,6 +2156,18 @@ function createOfficialLandscapeBlocks(
       y: 146,
       width: 170,
       height: 70,
+      rotation: 0,
+      visible: true
+    },
+    {
+      id: `${template}-studio-logo`,
+      kind: "image",
+      label: "Logo créateur",
+      imageKey: "studioLogo",
+      x: hasLeftConsignes ? 70 : 60,
+      y: hasLeftConsignes ? 1035 : 146,
+      width: hasLeftConsignes ? 220 : 170,
+      height: hasLeftConsignes ? 66 : 70,
       rotation: 0,
       visible: true
     }
@@ -2464,6 +2530,18 @@ function createOfficialEvacuationLandscapeBlocks(
       rotation: 0,
       visible: true,
     },
+    {
+      id: `${template}-pe-landscape-client-logo`,
+      kind: "image",
+      label: "Logo client",
+      imageKey: "clientLogo",
+      x: 1340,
+      y: 146,
+      width: 170,
+      height: 70,
+      rotation: 0,
+      visible: true,
+    },
   ];
 }
 
@@ -2550,6 +2628,30 @@ function createOfficialInterventionPortraitBlocks(
       lineHeight: 1,
       padding: 0,
       uppercase: true,
+    },
+    {
+      id: `${template}-pi-portrait-client-logo`,
+      kind: "image",
+      label: "Logo client",
+      imageKey: "clientLogo",
+      x: 927,
+      y: 195,
+      width: 150,
+      height: 62,
+      rotation: 0,
+      visible: true,
+    },
+    {
+      id: `${template}-pi-portrait-studio-logo`,
+      kind: "image",
+      label: "Logo créateur",
+      imageKey: "studioLogo",
+      x: 54,
+      y: 195,
+      width: 150,
+      height: 62,
+      rotation: 0,
+      visible: true,
     },
   ];
 }
@@ -2907,6 +3009,30 @@ function createOfficialEvacuationModernPortraitBlocks(
       uppercase: true,
     }),
     line("assembly-line", "Ligne du point de rassemblement", 693, 1559, 400, 1, darkGreen),
+    {
+      id: `${template}-modern-client-logo`,
+      kind: "image",
+      label: "Logo client",
+      imageKey: "clientLogo",
+      x: 927,
+      y: 180,
+      width: 150,
+      height: 62,
+      rotation: 0,
+      visible: true,
+    },
+    {
+      id: `${template}-modern-studio-logo`,
+      kind: "image",
+      label: "Logo créateur",
+      imageKey: "studioLogo",
+      x: 54,
+      y: 180,
+      width: 150,
+      height: 62,
+      rotation: 0,
+      visible: true,
+    },
   ];
 }
 
@@ -3016,6 +3142,8 @@ export function createOfficialEvacuationModernLandscapeFromPortraitBlocks(
     "assembly-line": {
       x: 213, y: 1054, width: 92, height: 1, shapePoints: horizontalPoints,
     },
+    "client-logo": { x: 1370, y: 160, width: 170, height: 70 },
+    "studio-logo": { x: 350, y: 160, width: 170, height: 70 },
   };
 
   return sourceBlocks.flatMap((source, index) => {
@@ -3569,7 +3697,19 @@ function createOfficialPsiPortraitBlocks(
       186,
       56,
       { fontSize: 8.2, lineHeight: 1.12 }
-    )
+    ),
+    {
+      id: `${template}-psi-client-logo`,
+      kind: "image",
+      label: "Logo client",
+      imageKey: "clientLogo",
+      x: 890,
+      y: 195,
+      width: 165,
+      height: 65,
+      rotation: 0,
+      visible: true,
+    },
   ];
 }
 
@@ -3798,6 +3938,21 @@ export function createOfficialEvacuationPortraitFromPsiBlocks(
     }
   );
 
+  if (!converted.some((b) => b.kind === "image" && b.imageKey === "clientLogo")) {
+    converted.push({
+      id: `${template}-pe-client-logo`,
+      kind: "image",
+      label: "Logo client",
+      imageKey: "clientLogo",
+      x: 890,
+      y: 195,
+      width: 165,
+      height: 65,
+      rotation: 0,
+      visible: true,
+    });
+  }
+
   return converted;
 }
 
@@ -3879,6 +4034,18 @@ function createOfficialPortraitBlocks(
       label: "Logo client",
       imageKey: "clientLogo",
       x: sheetW - 204,
+      y: 126,
+      width: 150,
+      height: 62,
+      rotation: 0,
+      visible: true
+    },
+    {
+      id: `${template}-studio-logo`,
+      kind: "image",
+      label: "Logo créateur",
+      imageKey: "studioLogo",
+      x: 54,
       y: 126,
       width: 150,
       height: 62,

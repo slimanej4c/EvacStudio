@@ -5,10 +5,11 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter, useParams } from "next/navigation";
 import dynamic from "next/dynamic";
-import { AlignCenter, AlignLeft, AlignRight, ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Pencil, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw, Lock, Unlock, Stamp, Group as GroupIcon, Ungroup, BoxSelect, Layers3, Library, ImagePlus, Ruler, Hand } from "lucide-react";
+import { AlignCenter, AlignLeft, AlignRight, ArrowLeft, Save, Trash2, Settings, HelpCircle, Loader2, Sparkles, RefreshCw, X, Download, Eye, PanelLeft, PanelRight, Eraser, Circle, Square, Copy, CopyPlus, ClipboardPaste, Minus, Anchor, Undo2, Redo2, Type, AlertTriangle, Check, PaintBucket, Pencil, Waypoints, FileUp, Crop, FlipHorizontal, FlipVertical, RotateCcw, RotateCw, Lock, Unlock, Stamp, Group as GroupIcon, Ungroup, BoxSelect, Layers3, Library, ImagePlus, Ruler, Hand, Maximize2 } from "lucide-react";
 import { CropModal } from "@/components/CropModal";
 import { PolygonCropModal } from "@/components/PolygonCropModal";
 import { WatermarkModal } from "@/components/WatermarkModal";
+import { AutoSaveModal } from "@/components/AutoSaveModal";
 import PlanInformationModal from "@/components/PlanInformationModal";
 import ScaleCalibrationModal from "@/components/ScaleCalibrationModal";
 import PlanSituationModal from "@/components/PlanSituationModal";
@@ -84,32 +85,45 @@ import {
   PLAN_SITUATION_IMAGE_KEY,
   addPlanSituationElement,
   addPlanSituationPictogram,
+  blockId,
   createPlanSituation,
   constrainPlanSituationBlocks,
   decorateWithPlanSituation,
   isPlanSituationBlock,
+  isPlanSituationMovableElement,
+  isPointInsidePlanSituationFrame,
   normalizePlanSituation,
   orientPlanSituationFromObserver,
+  planSituationFrame,
   removePlanSituationBackground,
   refreshPlanSituationVisibleArea,
   refitPlanSituationTraces,
+  removePlanSituationBlock,
+  selectPlanSituationRepresentedOutline,
   setPlanSituationOrientation,
   situationBlocksFromSheet,
   stripPlanSituationBlocks,
   transformSituationChildrenForFrame,
   traceIntoPlanSituation,
+  updatePlanSituationBlockLabel,
   upsertPlanSituationBackground,
   type PlanSituationRole,
   type PlanSituationState,
 } from "@/lib/planSituation";
 import {
+  DEFAULT_CANVAS_LEADER_DOT_SIZE,
   MAX_CANVAS_ICON_DIMENSION,
+  MAX_CANVAS_LEADER_DOT_SIZE,
+  DEFAULT_CANVAS_LEADER_WIDTH,
   MAX_CANVAS_LEADER_WIDTH,
   MIN_CANVAS_ICON_DIMENSION,
+  MIN_CANVAS_LEADER_DOT_SIZE,
   MIN_CANVAS_LEADER_WIDTH,
   normalizeCanvasIconDimension,
   normalizeCanvasIconSizeToAspectRatio,
+  normalizeCanvasLeaderDotSize,
   normalizeCanvasLeaderWidth,
+  normalizeTransformedCanvasIconDimension,
 } from "@/lib/canvasIconDimensions";
 import jsPDF from "jspdf";
 
@@ -177,7 +191,10 @@ const isWritableSheetTemplateVersion = (
   userId?: number
 ) => isPersonalSheetTemplateVersionId(version.id) && (!version.owner || version.owner === userId);
 const lockDefaultSheetBlocks = (blocks: SheetBlock[]) =>
-  cloneSheetBlocks(blocks).map((block) => ({ ...block, locked: true }));
+  cloneSheetBlocks(blocks).map((block) => ({
+    ...block,
+    locked: block.kind === "background",
+  }));
 const unlockPersonalSheetBlocks = (blocks: SheetBlock[]) =>
   cloneSheetBlocks(blocks).map((block) => ({
     ...block,
@@ -817,6 +834,7 @@ interface EvacuationPlanBackend {
     anchor_y: number | null;
     leader_points?: Array<{ id: string; x: number; y: number }>;
     leader_width?: number;
+    leader_dot_size?: number;
     leader_color?: string | null;
     framed?: boolean;
     flip_x?: boolean;
@@ -1013,7 +1031,7 @@ export default function PlanEditorPage() {
   const [scaleCalibrationModalOpen, setScaleCalibrationModalOpen] = useState(false);
   const [scaleCalibrationDraftShapeId, setScaleCalibrationDraftShapeId] = useState<string | null>(null);
   const [scaleMeasurement, setScaleMeasurement] = useState<ScaleCalibrationMeasurement | null>(null);
-  const [shapeStrokeWidth, setShapeStrokeWidth] = useState(3);
+  const [shapeStrokeWidth, setShapeStrokeWidth] = useState(1);
   const [shapeColor, setShapeColor] = useState("#3b82f6");
   const [selectedIconId, setSelectedIconId] = useState<string | null>(null);
   const [resizeSameTypeIcons, setResizeSameTypeIcons] = useState(false);
@@ -1028,6 +1046,7 @@ export default function PlanEditorPage() {
   const [zoom, setZoom] = useState(1.0);
   const [fitSignal, setFitSignal] = useState(0);
   const [canvasRotation, setCanvasRotation] = useState(0);
+  const [saveStatus, setSaveStatus] = useState("");
   const [mode, setMode] = useState<"select" | "pan" | "erase">("select");
   const spaceHeldRef = useRef(false);
   const modeBeforeSpaceRef = useRef<"select" | "pan" | "erase">("select");
@@ -1037,6 +1056,8 @@ export default function PlanEditorPage() {
   // Default to 100% so the canvas fills the available space and no inert
   // backdrop is left on the right side of the window.
   const [canvasWidthPercent, setCanvasWidthPercent] = useState(100);
+  const [canvasMargin, setCanvasMargin] = useState<number>(28);
+  const [isPlanDeformed, setIsPlanDeformed] = useState(false);
   const planCanvasRef = useRef<PlanCanvasHandle>(null);
   const [eraserSize, setEraserSize] = useState(24);
   const [eraserShape, setEraserShape] = useState<EraserShape>("square");
@@ -1055,6 +1076,9 @@ export default function PlanEditorPage() {
     eraseTargetNonceRef.current += 1;
     setEraseStrokeTarget({ count, nonce: eraseTargetNonceRef.current });
   }, []);
+  const [sessionBackgroundUrl, setSessionBackgroundUrl] = useState<string | null>(null);
+  const [sessionBackgroundType, setSessionBackgroundType] = useState<"image" | "pdf" | null>(null);
+  const isEraseDirtyRef = useRef(false);
   const [savingErase, setSavingErase] = useState(false);
   const [clipboardHasIcon, setClipboardHasIcon] = useState(() =>
     typeof window !== "undefined" && Boolean(window.localStorage.getItem(ICON_CLIPBOARD_KEY))
@@ -1099,6 +1123,8 @@ export default function PlanEditorPage() {
   }));
   const [planSituationModalOpen, setPlanSituationModalOpen] = useState(false);
   const [planSituationTraceMode, setPlanSituationTraceMode] = useState<"building_outline" | "represented_zone" | null>(null);
+  const [planSituationTraceTargetId, setPlanSituationTraceTargetId] = useState<string | null>(null);
+  const [planSituationTraceAppend, setPlanSituationTraceAppend] = useState<boolean>(false);
   const [planSituationBackgroundImage, setPlanSituationBackgroundImage] = useState<HTMLImageElement | null>(null);
   const [planSituationBackgroundUploading, setPlanSituationBackgroundUploading] = useState(false);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
@@ -1115,6 +1141,31 @@ export default function PlanEditorPage() {
     name: string;
   } | null>(null);
   const [nonStandardIconColorOpen, setNonStandardIconColorOpen] = useState(false);
+
+  const setPlanObjectsLockState = useCallback((locked: boolean) => {
+    setIcons((current) => {
+      if (!current.some((item) => Boolean(item.locked) !== locked)) return current;
+      return current.map((item) => (Boolean(item.locked) === locked ? item : { ...item, locked }));
+    });
+    setShapes((current) => {
+      if (!current.some((item) => Boolean(item.locked) !== locked)) return current;
+      return current.map((item) => (Boolean(item.locked) === locked ? item : { ...item, locked }));
+    });
+    setTexts((current) => {
+      if (!current.some((item) => Boolean(item.locked) !== locked)) return current;
+      return current.map((item) => (Boolean(item.locked) === locked ? item : { ...item, locked }));
+    });
+    setPlanOverlays((current) => {
+      if (!current.some((item) => Boolean(item.locked) !== locked)) return current;
+      return current.map((item) => (Boolean(item.locked) === locked ? item : { ...item, locked }));
+    });
+    setMainPlanLocked((current) => (current === locked ? current : locked));
+  }, []);
+
+  useEffect(() => {
+    const shouldLock = sheetTemplate !== "none";
+    setPlanObjectsLockState(shouldLock);
+  }, [sheetTemplate, setPlanObjectsLockState]);
 
   const activateInteractionMode = useCallback((nextMode: "select" | "pan" | "erase") => {
     // Permanent tools are exclusive. Without this reset, a stale drawing tool
@@ -1224,6 +1275,14 @@ const MAX_HISTORY_STEPS = 50;
     if (pendingSnapshot) commitHistorySnapshot(pendingSnapshot);
   }, [commitHistorySnapshot]);
 
+  const isInteractingRef = useRef(false);
+  const handleDragStateChange = useCallback((dragging: boolean) => {
+    isInteractingRef.current = dragging;
+    if (!dragging) {
+      flushPendingHistorySnapshot();
+    }
+  }, [flushPendingHistorySnapshot]);
+
   useEffect(() => {
     if (loading) return;
     if (isHistoryActionRef.current) {
@@ -1276,6 +1335,9 @@ const MAX_HISTORY_STEPS = 50;
     // those would fill the whole stack and make a single undo useless, so a run
     // of nudges is coalesced into the one step the user thinks they made.
     pendingHistorySnapshotRef.current = currentSnapshot;
+    if (isInteractingRef.current) {
+      return;
+    }
     historyTimerRef.current = window.setTimeout(() => {
       historyTimerRef.current = null;
       const pendingSnapshot = pendingHistorySnapshotRef.current;
@@ -1299,6 +1361,7 @@ const MAX_HISTORY_STEPS = 50;
     const index = historyIndexRef.current;
     const stack = historyRef.current;
     if (index <= 0 || !stack[index - 1]) return;
+    const current = stack[index];
     const target = stack[index - 1];
     isHistoryActionRef.current = true;
     setIcons(target.icons);
@@ -1330,16 +1393,42 @@ const MAX_HISTORY_STEPS = 50;
       setSheetPlanPlacement(target.sheetPlanPlacement ?? { ...DEFAULT_SHEET_PLAN_PLACEMENT });
     }
     setPlanSituation(target.planSituation ?? { ...EMPTY_PLAN_SITUATION });
+    setEraseStrokeCount(target.eraseStrokeCount ?? 0);
     requestEraseStrokeTarget(target.eraseStrokeCount ?? 0);
+    isEraseDirtyRef.current = true;
     setAreaSelectionMode(false);
-    setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+    setMultiSelection((current) => ({
+      iconIds: current.iconIds.filter((id) => target.icons.some((i) => i.tempId === id)),
+      shapeIds: current.shapeIds.filter((id) => target.shapes.some((s) => s.tempId === id)),
+      textIds: current.textIds.filter((id) => target.texts.some((t) => t.tempId === id)),
+    }));
+    setSelectedIconId((id) => (id && target.icons.some((i) => i.tempId === id) ? id : null));
+    setSelectedShapeId((id) => (id && target.shapes.some((s) => s.tempId === id) ? id : null));
+    setSelectedTextId((id) => (id && target.texts.some((t) => t.tempId === id) ? id : null));
     setSelectedOverlayId(null);
     setSelectedBatBlock(false);
     historyIndexRef.current = index - 1;
     setHistoryIndex(historyIndexRef.current);
+
+    const removedShapes = (current?.shapes ?? []).filter(
+      (s) => !target.shapes?.some((ts) => ts.tempId === s.tempId)
+    );
+    if (removedShapes.length === 1) {
+      const removedShape = removedShapes[0];
+      if (isPolygonShape(removedShape.shape_type) && (removedShape.points?.length ?? 0) > 0) {
+        setShapeTool(removedShape.shape_type as ShapeKind);
+        if (removedShape.color) setShapeColor(removedShape.color);
+        if (removedShape.stroke_width) setShapeStrokeWidth(removedShape.stroke_width);
+        planCanvasRef.current?.restorePolygonDraft(removedShape);
+        setSaveStatus("Tracé réouvert pour modification (Ctrl+Z pour retirer le dernier point, Entrée pour valider)");
+        window.setTimeout(() => setSaveStatus(""), 4000);
+      }
+    }
   }, [activeSheetTemplateVersionId, canEditDefaultTemplates, flushPendingHistorySnapshot, requestEraseStrokeTarget, sheetTemplate]);
 
   const handleRedo = useCallback(() => {
+    planCanvasRef.current?.cancelActiveDrawing();
+    setShapeTool(null);
     flushPendingHistorySnapshot();
     const index = historyIndexRef.current;
     const stack = historyRef.current;
@@ -1375,9 +1464,18 @@ const MAX_HISTORY_STEPS = 50;
       setSheetPlanPlacement(target.sheetPlanPlacement ?? { ...DEFAULT_SHEET_PLAN_PLACEMENT });
     }
     setPlanSituation(target.planSituation ?? { ...EMPTY_PLAN_SITUATION });
+    setEraseStrokeCount(target.eraseStrokeCount ?? 0);
     requestEraseStrokeTarget(target.eraseStrokeCount ?? 0);
+    isEraseDirtyRef.current = true;
     setAreaSelectionMode(false);
-    setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+    setMultiSelection((current) => ({
+      iconIds: current.iconIds.filter((id) => target.icons.some((i) => i.tempId === id)),
+      shapeIds: current.shapeIds.filter((id) => target.shapes.some((s) => s.tempId === id)),
+      textIds: current.textIds.filter((id) => target.texts.some((t) => t.tempId === id)),
+    }));
+    setSelectedIconId((id) => (id && target.icons.some((i) => i.tempId === id) ? id : null));
+    setSelectedShapeId((id) => (id && target.shapes.some((s) => s.tempId === id) ? id : null));
+    setSelectedTextId((id) => (id && target.texts.some((t) => t.tempId === id) ? id : null));
     setSelectedOverlayId(null);
     setSelectedBatBlock(false);
     historyIndexRef.current = index + 1;
@@ -1392,7 +1490,7 @@ const MAX_HISTORY_STEPS = 50;
         (target.tagName === "TEXTAREA" ||
           target.isContentEditable ||
           (target.tagName === "INPUT" &&
-            ["text", "search", "email", "url", "tel", "password"].includes(
+            ["text", "search", "email", "url", "tel", "password", "number"].includes(
               (target as HTMLInputElement).type
             )));
 
@@ -1472,6 +1570,9 @@ const MAX_HISTORY_STEPS = 50;
 
       if (res.ok) {
         const updatedPlan: EvacuationPlanBackend = await res.json();
+        setSessionBackgroundUrl(null);
+        setSessionBackgroundType(null);
+        isEraseDirtyRef.current = false;
         setPlan(updatedPlan);
         setMainPlanTransform(croppedTransform);
         setCropModalOpen(false);
@@ -1508,6 +1609,9 @@ const MAX_HISTORY_STEPS = 50;
 
       if (res.ok) {
         const updatedPlan: EvacuationPlanBackend = await res.json();
+        setSessionBackgroundUrl(null);
+        setSessionBackgroundType(null);
+        isEraseDirtyRef.current = false;
         setPlan(updatedPlan);
         setMainPlanTransform({
           x: updatedPlan.main_plan_x || 0,
@@ -1537,12 +1641,43 @@ const MAX_HISTORY_STEPS = 50;
   const [cleaningHistory, setCleaningHistory] = useState<CleaningHistoryItem[]>([]);
   const [cleaningHistoryLoading, setCleaningHistoryLoading] = useState(false);
   const [cleaningHistoryApplyingId, setCleaningHistoryApplyingId] = useState<number | null>(null);
-  const [saveStatus, setSaveStatus] = useState("");
   // Unsaved-changes guard: a JSON snapshot of icons/shapes/texts captured at the
   // last successful save (and at initial load). Comparing the current state to it
   // tells us whether leaving the editor would discard work.
   const [savedSnapshot, setSavedSnapshot] = useState("");
   const [pendingNav, setPendingNav] = useState(false);
+
+  // Auto-save preferences and status: active by default, 20 seconds by default
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    const stored = window.localStorage.getItem("evacstudio_autosave_enabled");
+    return stored !== null ? stored === "true" : true;
+  });
+  const [autoSaveInterval, setAutoSaveInterval] = useState<number>(() => {
+    if (typeof window === "undefined") return 20;
+    const stored = window.localStorage.getItem("evacstudio_autosave_interval");
+    const parsed = stored ? parseInt(stored, 10) : 20;
+    return Number.isFinite(parsed) && parsed >= 5 ? parsed : 20;
+  });
+  const [autoSaveModalOpen, setAutoSaveModalOpen] = useState(false);
+  const [secondsUntilAutoSave, setSecondsUntilAutoSave] = useState<number>(20);
+  const isAutoSavingRef = useRef(false);
+
+  const handleToggleAutoSave = (enabled: boolean) => {
+    setAutoSaveEnabled(enabled);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("evacstudio_autosave_enabled", String(enabled));
+    }
+  };
+
+  const handleChangeAutoSaveInterval = (interval: number) => {
+    const clamped = Math.max(5, Math.min(600, interval));
+    setAutoSaveInterval(clamped);
+    setSecondsUntilAutoSave(clamped);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("evacstudio_autosave_interval", String(clamped));
+    }
+  };
   // ── Studio sheet mode ──────────────────────────────────────────────────────
   // "plan" keeps the bare plan on screen, the way the editor has always worked;
   // a template shows the printed sheet around it, editable in place.
@@ -1975,6 +2110,9 @@ const MAX_HISTORY_STEPS = 50;
           const loadedPlanSituation = normalizePlanSituation(data.plan_situation_config);
           const loadedSheetPlanPlacement = normalizeSheetPlanPlacement(data.sheet_plan_placement);
           setPlanSituation(loadedPlanSituation);
+          const initialTemplateActive = Boolean(
+            data.active_sheet_template_key && data.active_sheet_template_key !== "none"
+          );
           // Convert database icons to CanvasIcon type
           const canvasIcons: CanvasIcon[] = data.icons.map((icon) => ({
             id: icon.id,
@@ -1990,13 +2128,14 @@ const MAX_HISTORY_STEPS = 50;
             anchor_y: icon.anchor_y ?? null,
             leader_points: Array.isArray(icon.leader_points) ? icon.leader_points : [],
             leader_width: normalizeCanvasLeaderWidth(icon.leader_width),
+            leader_dot_size: normalizeCanvasLeaderDotSize(icon.leader_dot_size),
             leader_color: icon.leader_color || null,
             framed: icon.framed ?? false,
             flip_x: icon.flip_x ?? false,
             color: icon.color ?? "",
             flip_y: icon.flip_y ?? false,
             lock_aspect_ratio: icon.lock_aspect_ratio ?? true,
-            locked: icon.locked ?? false,
+            locked: initialTemplateActive,
             visible: icon.visible ?? true,
             z_index: icon.z_index ?? 300,
             group_id: icon.group_id || "",
@@ -2023,7 +2162,7 @@ const MAX_HISTORY_STEPS = 50;
             points: shape.points || undefined,
             closed: shape.closed ?? (shape.shape_type !== "polyline"),
             straight_segments: shape.straight_segments || [],
-            locked: shape.locked ?? false,
+            locked: initialTemplateActive,
             visible: shape.visible ?? true,
             z_index: shape.z_index ?? 200,
             group_id: shape.group_id || "",
@@ -2047,7 +2186,7 @@ const MAX_HISTORY_STEPS = 50;
             italic: t.italic,
             background_color: t.background_color ?? null,
             rotation: t.rotation,
-            locked: t.locked ?? false,
+            locked: initialTemplateActive,
             visible: t.visible ?? true,
             z_index: t.z_index ?? 400,
             group_id: t.group_id || "",
@@ -2065,7 +2204,7 @@ const MAX_HISTORY_STEPS = 50;
             height: overlay.height,
             rotation: overlay.rotation,
             label: overlay.label || "",
-            locked: overlay.locked ?? false,
+            locked: initialTemplateActive,
             visible: overlay.visible ?? true,
             z_index: overlay.z_index ?? 100,
             group_id: overlay.group_id || "",
@@ -2090,7 +2229,7 @@ const MAX_HISTORY_STEPS = 50;
           const loadedMainPlanVisible = (data.main_plan_visible ?? true)
             || isAccidentallyHiddenFreshImport(data);
           setMainPlanTransform(loadedMainPlanTransform);
-          setMainPlanLocked(Boolean(data.main_plan_locked));
+          setMainPlanLocked(initialTemplateActive);
           setMainPlanVisible(loadedMainPlanVisible);
           setMainPlanZIndex(data.main_plan_z_index ?? 0);
           setMainPlanGroupId(data.main_plan_group_id || "");
@@ -2108,20 +2247,20 @@ const MAX_HISTORY_STEPS = 50;
           // The very same fields as buildEditableSnapshot, or the editor would
           // report unsaved changes before the user has touched anything.
           setSavedSnapshot(JSON.stringify({
-            icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_color, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
-              icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_color: leader_color || "", framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
+            icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_dot_size, leader_color, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
+              icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_dot_size: normalizeCanvasLeaderDotSize(leader_dot_size), leader_color: leader_color || "", framed, flip_x, flip_y, locked: initialTemplateActive, visible, z_index, group_id, object_group_id, color,
             })),
             shapes: canvasShapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m }) => ({
-              shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m,
+              shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked: initialTemplateActive, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m,
             })),
             texts: canvasTexts.map(({ text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id }) => ({
-              text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id,
+              text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked: initialTemplateActive, visible, z_index, group_id, object_group_id,
             })),
             overlays: canvasOverlays.map(({ url, x, y, width, height, rotation, label, locked, visible, z_index, group_id }) => ({
-              url, x, y, width, height, rotation, label, locked, visible, z_index, group_id,
+              url, x, y, width, height, rotation, label, locked: initialTemplateActive, visible, z_index, group_id,
             })),
             mainPlanTransform: loadedMainPlanTransform,
-            mainPlanLocked: Boolean(data.main_plan_locked),
+            mainPlanLocked: initialTemplateActive,
             mainPlanVisible: loadedMainPlanVisible,
             mainPlanZIndex: data.main_plan_z_index ?? 0,
             mainPlanGroupId: data.main_plan_group_id || "",
@@ -2468,8 +2607,8 @@ const MAX_HISTORY_STEPS = 50;
   // tempId/id) so a deep-equality check detects any real change.
   const buildEditableSnapshot = () =>
     JSON.stringify({
-      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_color, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
-        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_color: leader_color || "", framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
+      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_dot_size, leader_color, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
+        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_dot_size: normalizeCanvasLeaderDotSize(leader_dot_size), leader_color: leader_color || "", framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
       })),
       shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m }) => ({
         shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m,
@@ -2497,6 +2636,7 @@ const MAX_HISTORY_STEPS = 50;
       exportPaperFormat,
       printScaleDenominator,
       measuredScaleDenominator: scaleMeasurement?.measuredScaleDenominator ?? null,
+      eraseStrokeCount,
     });
 
   const hasUnsavedChanges = () => buildEditableSnapshot() !== savedSnapshot;
@@ -2625,6 +2765,7 @@ const MAX_HISTORY_STEPS = 50;
       anchor_y: icon.anchor_y ?? null,
       leader_points: canvasIconLeaderPoints(icon),
       leader_width: normalizeCanvasLeaderWidth(icon.leader_width),
+      leader_dot_size: normalizeCanvasLeaderDotSize(icon.leader_dot_size),
       leader_color: icon.leader_color || "",
       framed: icon.framed ?? false,
       flip_x: icon.flip_x ?? false,
@@ -2731,6 +2872,9 @@ const MAX_HISTORY_STEPS = 50;
         return;
       }
 
+      setSessionBackgroundUrl(null);
+      setSessionBackgroundType(null);
+      isEraseDirtyRef.current = false;
       setPlan(await res.json());
       setMainPlanTransform(croppedTransform);
       setSaveStatus("Plan principal rogné, éléments conservés — sauvegardez le projet");
@@ -2808,6 +2952,33 @@ const MAX_HISTORY_STEPS = 50;
     setSaving(true);
     setSaveStatus("Sauvegarde...");
     try {
+      if (isEraseDirtyRef.current) {
+        const canvas = planCanvasRef.current?.getEditedBackground();
+        if (canvas) {
+          try {
+            const eraseRes = await fetch(buildApiUrl(`/api/plans/${id}/apply-manual-edit/`), {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
+              body: JSON.stringify({ image_data: canvas.toDataURL("image/png") }),
+            });
+            if (eraseRes.ok) {
+              const updatedFromErase = await eraseRes.json();
+              const currentRawBg = (plan?.use_cleaned_background && plan?.cleaned_background_file)
+                ? plan.cleaned_background_file
+                : plan?.background_file || "";
+              const currentRawType = (plan?.use_cleaned_background && plan?.cleaned_background_file)
+                ? "image"
+                : plan?.background_type || "image";
+              setSessionBackgroundUrl((current) => current || currentRawBg);
+              setSessionBackgroundType((current) => current || (currentRawType as "image" | "pdf"));
+              setPlan(updatedFromErase);
+              isEraseDirtyRef.current = false;
+            }
+          } catch (eraseErr) {
+            console.error("Auto-apply erase failed during save:", eraseErr);
+          }
+        }
+      }
       const planInformationLayouts = { ...(plan?.plan_information_layout ?? {}) };
       const currentPlanInformationLayout = getPlanInformationBlockLayout(sheetBlocks);
       if (sheetTemplate !== "none" && currentPlanInformationLayout) {
@@ -2899,6 +3070,14 @@ const MAX_HISTORY_STEPS = 50;
       }
 
       const savedPlan: EvacuationPlanBackend = await response.json();
+      const currentRawBg = (plan?.use_cleaned_background && plan?.cleaned_background_file)
+        ? plan.cleaned_background_file
+        : plan?.background_file || "";
+      const currentRawType = (plan?.use_cleaned_background && plan?.cleaned_background_file)
+        ? "image"
+        : plan?.background_type || "image";
+      setSessionBackgroundUrl((current) => current || currentRawBg);
+      setSessionBackgroundType((current) => current || (currentRawType as "image" | "pdf"));
       setPlan(savedPlan);
       setPlanOverlays((current) =>
         current.map((overlay, index) => {
@@ -3033,6 +3212,9 @@ const MAX_HISTORY_STEPS = 50;
       });
       if (res.ok) {
         const data = await res.json();
+        setSessionBackgroundUrl(null);
+        setSessionBackgroundType(null);
+        isEraseDirtyRef.current = false;
         setPlan(data);
         setRevertConfirmOpen(false);
         void fetchCleaningHistory();
@@ -3059,6 +3241,9 @@ const MAX_HISTORY_STEPS = 50;
       });
       if (res.ok) {
         const data = await res.json();
+        setSessionBackgroundUrl(null);
+        setSessionBackgroundType(null);
+        isEraseDirtyRef.current = false;
         setPlan(data);
         void fetchCleaningHistory();
       } else {
@@ -3142,6 +3327,9 @@ const MAX_HISTORY_STEPS = 50;
       });
       if (res.ok) {
         const data = await res.json();
+        setSessionBackgroundUrl(null);
+        setSessionBackgroundType(null);
+        isEraseDirtyRef.current = false;
         setPlan(data);
       } else {
         alert("Erreur lors de la restauration du plan.");
@@ -3416,7 +3604,12 @@ const MAX_HISTORY_STEPS = 50;
         headers: getPlanAuthHeaders(),
         cache: "no-store",
       });
-      if (res.ok) setPlan(await res.json());
+      if (res.ok) {
+        setSessionBackgroundUrl(null);
+        setSessionBackgroundType(null);
+        isEraseDirtyRef.current = false;
+        setPlan(await res.json());
+      }
     } catch {
       /* informational; the history list already reflects the new state */
     }
@@ -3505,6 +3698,9 @@ const MAX_HISTORY_STEPS = 50;
           canRevertOriginal: Boolean(data.overlay.can_revert_original),
         });
       } else {
+        setSessionBackgroundUrl(null);
+        setSessionBackgroundType(null);
+        isEraseDirtyRef.current = false;
         setPlan(data);
       }
       setCleanModalOpen(false);
@@ -3535,18 +3731,45 @@ const MAX_HISTORY_STEPS = 50;
           && (shape.points?.length ?? 0) >= 3,
       );
       if (tracedShape?.points) {
-        const next = traceIntoPlanSituation(planSituation, planSituationTraceMode, tracedShape.points);
+        const baseOrientation = planSituation.orientation_mode === "manual"
+          ? planSituation.orientation
+          : effectivePlanRotation;
+        const baseSituation: PlanSituationState = {
+          ...planSituation,
+          orientation: baseOrientation,
+          orientation_mode: planSituation.orientation_mode === "manual" ? "manual" : "observer",
+        };
+        const next = traceIntoPlanSituation(
+          baseSituation,
+          planSituationTraceMode,
+          tracedShape.points,
+          {
+            targetBlockId: planSituationTraceTargetId ?? undefined,
+            append: planSituationTraceAppend,
+          },
+        );
+        const targetId = planSituationTraceTargetId;
+        const wasAppend = planSituationTraceAppend;
         setShapes(updatedShapes.filter((shape) => shape.tempId !== tracedShape.tempId));
         setPlanSituationTraceMode(null);
+        setPlanSituationTraceTargetId(null);
+        setPlanSituationTraceAppend(false);
         setShapeTool(null);
         setSelectedShapeId(null);
+
+        const visiblePlanPolygon = planCanvasRef.current?.getVisiblePlanPolygon();
+        const nextToApply = (next.auto_refresh_visible_area && visiblePlanPolygon && visiblePlanPolygon.length >= 3)
+          ? (refreshPlanSituationVisibleArea(next, visiblePlanPolygon) ?? next)
+          : next;
+
+        lastSituationOrientationRef.current = nextToApply.orientation;
         applyPlanSituationState(
-          next,
-          next.blocks.find((block) => block.situationRole === planSituationTraceMode)?.id ?? null,
+          nextToApply,
+          targetId || (nextToApply.blocks.find((block) => block.situationRole === planSituationTraceMode)?.id ?? null),
         );
         setPlanSituationModalOpen(true);
         setSaveStatus(planSituationTraceMode === "building_outline"
-          ? "Silhouette vectorielle créée automatiquement"
+          ? (wasAppend ? "Nouvelle silhouette ajoutée" : (targetId ? "Silhouette mise à jour" : "Silhouette vectorielle créée automatiquement"))
           : "Zone représentée ajoutée à la silhouette");
         window.setTimeout(() => setSaveStatus(""), 3500);
         return;
@@ -3623,16 +3846,16 @@ const MAX_HISTORY_STEPS = 50;
 
   const lastSituationOrientationRef = useRef<number | null>(null);
 
-  // Synchronise situation plan silhouette and traces with the main plan reading orientation ("Vous êtes ici")
+  // Synchronise situation plan silhouette and traces with the main plan reading orientation ("Vous êtes ici" or canvas rotation)
   useEffect(() => {
     if (!planSituation.enabled) return;
     const targetOrientation = effectivePlanRotation;
-    if (lastSituationOrientationRef.current === targetOrientation) return;
+    if (lastSituationOrientationRef.current === targetOrientation && planSituation.orientation === targetOrientation) return;
     if (planSituation.orientation === targetOrientation && planSituation.orientation_mode === "observer") {
       lastSituationOrientationRef.current = targetOrientation;
       return;
     }
-    if (!youAreHereIcon && planSituation.orientation_mode !== "observer") return;
+    if (planSituation.orientation_mode === "manual" && !youAreHereIcon) return;
 
     lastSituationOrientationRef.current = targetOrientation;
     const next = refitPlanSituationTraces({
@@ -3668,7 +3891,7 @@ const MAX_HISTORY_STEPS = 50;
       || !planSituation.auto_refresh_visible_area
       || !sheetActive
       || planSituationTraceMode !== null
-      || !planSituation.blocks.some((block) => block.situationRole === "building_outline")
+      || !planSituation.blocks.some((block) => (block.situationIsSilhouette || block.situationRole === "building_outline" || block.situationRole === "represented_zone") && (block.situationSourcePoints?.length ?? 0) >= 3)
     ) {
       return;
     }
@@ -3676,7 +3899,12 @@ const MAX_HISTORY_STEPS = 50;
     const planBlock = sheetBlocks.find((block) => block.kind === "plan");
     if (!planBlock || planBlock.visible === false) return;
 
-    const placementKey = `${sheetPlanPlacement.scale.toFixed(2)}_${Math.round(sheetPlanPlacement.offsetX)}_${Math.round(sheetPlanPlacement.offsetY)}_${effectivePlanRotation}_${Math.round(planBlock.x)}_${Math.round(planBlock.y)}_${Math.round(planBlock.width)}_${Math.round(planBlock.height)}`;
+    const silhouettesKey = planSituation.blocks
+      .filter((block) => (block.situationIsSilhouette || block.situationRole === "building_outline" || block.situationRole === "represented_zone") && (block.situationSourcePoints?.length ?? 0) >= 3)
+      .map((block) => `${block.id}:${block.situationSourcePoints?.length ?? 0}:${Math.round(block.situationSourcePoints?.[0]?.x ?? 0)}`)
+      .join(";");
+
+    const placementKey = `${silhouettesKey}_${sheetPlanPlacement.scale.toFixed(2)}_${Math.round(sheetPlanPlacement.offsetX)}_${Math.round(sheetPlanPlacement.offsetY)}_${effectivePlanRotation}_${Math.round(planBlock.x)}_${Math.round(planBlock.y)}_${Math.round(planBlock.width)}_${Math.round(planBlock.height)}`;
     if (lastVisibleAreaPlacementRef.current === placementKey) {
       return;
     }
@@ -3698,6 +3926,7 @@ const MAX_HISTORY_STEPS = 50;
   }, [
     planSituation.enabled,
     planSituation.auto_refresh_visible_area,
+    planSituation.blocks,
     Boolean(planSituationTraceMode),
     sheetActive,
     sheetPlanPlacement.scale,
@@ -3815,13 +4044,11 @@ const MAX_HISTORY_STEPS = 50;
 
   const personalSheetTemplateActive = activeSheetTemplateVersionId.startsWith("custom:");
   const defaultSheetTemplateActive = sheetActive && !personalSheetTemplateActive;
-  const canEditActiveSheetTemplate = !defaultSheetTemplateActive || canEditDefaultTemplates;
+  const canEditActiveSheetTemplate = canEditPlan;
   const hasMovablePlanInformationBlock = sheetBlocks.some(
     (block) => block.id === PLAN_INFORMATION_BLOCK_ID,
   );
-  const canEditSheetCanvas = canEditActiveSheetTemplate
-    || hasMovablePlanInformationBlock
-    || (canEditPlan && sheetActive);
+  const canEditSheetCanvas = canEditPlan && sheetActive;
   const currentSheetTemplateVersions = useMemo(
     () => sheetTemplate === "none"
       ? []
@@ -3926,6 +4153,52 @@ const MAX_HISTORY_STEPS = 50;
     ), plan?.plan_legend_layout?.[template] ?? null), planSituation)
   );
 
+  // ── Auto-save timer effect (20s default) ──────────────────────────────────
+  useEffect(() => {
+    if (!autoSaveEnabled) {
+      setSecondsUntilAutoSave(autoSaveInterval);
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      if (loading || !canEditPlan) return;
+      if (saving || isAutoSavingRef.current) return;
+
+      // Do not trigger auto-save if required template fields are incomplete
+      if (sheetTemplate !== "none" && missingPlanInformationCount > 0) return;
+
+      if (!hasUnsavedChanges()) {
+        setSecondsUntilAutoSave(autoSaveInterval);
+        return;
+      }
+
+      setSecondsUntilAutoSave((prev) => {
+        if (prev <= 1) {
+          if (!isAutoSavingRef.current && !saving && hasUnsavedChanges()) {
+            isAutoSavingRef.current = true;
+            void (async () => {
+              try {
+                const res = await handleSave();
+                if (res) {
+                  setSaveStatus("Sauvegardé auto !");
+                  setTimeout(() => setSaveStatus(""), 2500);
+                }
+              } catch (err) {
+                console.error("Auto-save error:", err);
+              } finally {
+                isAutoSavingRef.current = false;
+              }
+            })();
+          }
+          return autoSaveInterval;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [autoSaveEnabled, autoSaveInterval, loading, saving, canEditPlan, savedSnapshot, icons, shapes, texts, planOverlays, mainPlanTransform, watermarkConfig, sheetPlanPlacement, sheetTemplate, missingPlanInformationCount]);
+
   const openPlanInformationSettings = () => {
     setPlanInformationDraft({ ...savedPlanInformation });
     setPlanInformationVisibilityDraft({ ...savedPlanInformationVisibility });
@@ -4022,7 +4295,7 @@ const MAX_HISTORY_STEPS = 50;
       normalized,
     ));
     if (selectedSituationBlockId !== undefined) {
-      const selectionId = selectedSituationBlockId ? PLAN_SITUATION_FRAME_ID : null;
+      const selectionId = selectedSituationBlockId;
       setSelectedBlockId(selectionId);
       setSelectedSheetBlockIds(selectionId ? [selectionId] : []);
     }
@@ -4057,7 +4330,7 @@ const MAX_HISTORY_STEPS = 50;
     const frame = nextSituationBlocks.find((block) => block.id === PLAN_SITUATION_FRAME_ID);
     const nextState = normalizePlanSituation({
       ...planSituation,
-      orientation: frame?.rotation ?? planSituation.orientation,
+      orientation: planSituation.orientation,
       blocks: nextSituationBlocks,
     });
     const constrainedState = {
@@ -4080,11 +4353,15 @@ const MAX_HISTORY_STEPS = 50;
       window.setTimeout(() => setSaveStatus(""), 3500);
       return;
     }
-    const next = createPlanSituation(activeSheetSize.width, activeSheetSize.height);
+    const next = createPlanSituation(activeSheetSize.width, activeSheetSize.height, effectivePlanRotation);
     applyPlanSituationState(next, PLAN_SITUATION_FRAME_ID);
   };
 
-  const startSituationTrace = (role: "building_outline" | "represented_zone") => {
+  const startSituationTrace = (
+    role: "building_outline" | "represented_zone",
+    targetBlockId?: string,
+    append?: boolean,
+  ) => {
     if (sheetTemplate === "none") {
       setPlanSituationModalOpen(false);
       setTemplateLibraryOpen(true);
@@ -4093,7 +4370,20 @@ const MAX_HISTORY_STEPS = 50;
       return;
     }
     if (!canEditPlan) return;
-    if (role === "represented_zone" && !planSituation.blocks.some((block) => block.situationRole === "building_outline")) {
+    if (planSituation.orientation_mode !== "manual" && planSituation.orientation !== effectivePlanRotation) {
+      const synced = refitPlanSituationTraces({
+        ...planSituation,
+        orientation: effectivePlanRotation,
+        orientation_mode: "observer",
+      });
+      setPlanSituation(synced);
+      setSheetBlocks((current) => decorateWithPlanSituation(stripPlanSituationBlocks(current), synced));
+    }
+    const hasOutlines = planSituation.blocks.some(
+      (block) => (block.situationIsSilhouette || block.situationRole === "building_outline" || block.situationRole === "represented_zone")
+        && (block.situationSourcePoints?.length ?? 0) >= 3,
+    );
+    if (role === "represented_zone" && !hasOutlines && !targetBlockId) {
       alert("Tracez d’abord la silhouette extérieure du bâtiment.");
       return;
     }
@@ -4105,18 +4395,26 @@ const MAX_HISTORY_STEPS = 50;
     setSelectedBlockId(null);
     setSelectedSheetBlockIds([]);
     setPlanSituationTraceMode(role);
+    setPlanSituationTraceTargetId(targetBlockId ?? null);
+    setPlanSituationTraceAppend(Boolean(append));
     setShapeColor(role === "building_outline" ? "#111827" : "#6b7280");
-    setShapeStrokeWidth(role === "building_outline" ? 2 : 1);
+    setShapeStrokeWidth(1);
     setShapeTool("polygon_zone");
     setPlanSituationModalOpen(false);
-    setSaveStatus(role === "building_outline"
-      ? "Cliquez autour du contour extérieur du bâtiment"
-      : "Cliquez autour de la zone couverte par le plan principal");
+    setSaveStatus(
+      role === "building_outline"
+        ? (append
+            ? "Cliquez autour du contour du nouveau bâtiment / zone"
+            : (targetBlockId ? "Retracez le contour du bâtiment sélectionné" : "Cliquez autour du contour extérieur du bâtiment"))
+        : "Cliquez autour de la zone couverte par le plan principal"
+    );
   };
 
   const cancelSituationTrace = () => {
     planCanvasRef.current?.cancelActiveDrawing();
     setPlanSituationTraceMode(null);
+    setPlanSituationTraceTargetId(null);
+    setPlanSituationTraceAppend(false);
     setShapeTool(null);
     setSaveStatus("");
     setPlanSituationModalOpen(true);
@@ -4124,7 +4422,11 @@ const MAX_HISTORY_STEPS = 50;
 
   const refreshSituationVisibleArea = () => {
     if (!canEditPlan) return;
-    if (!planSituation.blocks.some((block) => block.situationRole === "building_outline")) {
+    const hasOutlines = planSituation.blocks.some(
+      (block) => (block.situationIsSilhouette || block.situationRole === "building_outline" || block.situationRole === "represented_zone")
+        && (block.situationSourcePoints?.length ?? 0) >= 3,
+    );
+    if (!hasOutlines) {
       alert("Tracez d’abord la silhouette extérieure du bâtiment.");
       return;
     }
@@ -4145,6 +4447,28 @@ const MAX_HISTORY_STEPS = 50;
     setPlanSituationModalOpen(false);
     setSaveStatus("Champ visible actualisé et sélectionné en gris");
     window.setTimeout(() => setSaveStatus(""), 3500);
+  };
+
+  const handleSelectRepresentedOutline = (outlineId: string) => {
+    if (!canEditPlan) return;
+    const next = selectPlanSituationRepresentedOutline(planSituation, outlineId);
+    applyPlanSituationState(next, outlineId);
+    setSaveStatus("Zone représentée mise à jour");
+    window.setTimeout(() => setSaveStatus(""), 3500);
+  };
+
+  const handleRemoveSituationBlock = (blockId: string) => {
+    if (!canEditPlan) return;
+    const next = removePlanSituationBlock(planSituation, blockId);
+    applyPlanSituationState(next, PLAN_SITUATION_FRAME_ID);
+    setSaveStatus("Silhouette supprimée");
+    window.setTimeout(() => setSaveStatus(""), 3500);
+  };
+
+  const handleUpdateSituationBlockLabel = (blockId: string, label: string) => {
+    if (!canEditPlan) return;
+    const next = updatePlanSituationBlockLabel(planSituation, blockId, label);
+    applyPlanSituationState(next, blockId);
   };
 
   const updateSituationFit = (
@@ -4360,19 +4684,13 @@ const MAX_HISTORY_STEPS = 50;
   const selectedPlanLegendBlock = selectedBlock?.kind === "legend";
   const selectedPlanSituationBlock = Boolean(selectedBlock && isPlanSituationBlock(selectedBlock));
   const selectedPlanSituationFrame = selectedBlock?.id === PLAN_SITUATION_FRAME_ID;
+  const protectedPdfBackgroundSelected = Boolean(
+    selectedBlock?.kind === "background" && selectedBlock.assetId
+  );
   const canEditSelectedSheetBlock = Boolean(
     selectedBlock
     && canEditPlan
-    && (selectedPlanSituationBlock
-      ? selectedPlanSituationFrame
-      : (
-          canEditActiveSheetTemplate
-          || selectedPlanInformationBlock
-          || selectedPlanLegendBlock
-        ))
-  );
-  const protectedPdfBackgroundSelected = Boolean(
-    selectedBlock?.kind === "background" && selectedBlock.assetId
+    && !protectedPdfBackgroundSelected
   );
 
   useEffect(() => {
@@ -4383,6 +4701,7 @@ const MAX_HISTORY_STEPS = 50;
       currentSelectedBlock
       && isPlanSituationBlock(currentSelectedBlock)
       && currentSelectedBlock.id !== PLAN_SITUATION_FRAME_ID
+      && !isPlanSituationMovableElement(currentSelectedBlock)
     ) {
       setSelectedBlockId(PLAN_SITUATION_FRAME_ID);
       setSelectedSheetBlockIds([PLAN_SITUATION_FRAME_ID]);
@@ -4411,13 +4730,14 @@ const MAX_HISTORY_STEPS = 50;
     }
     const selected = sheetBlocks.find((block) => block.id === blockId);
     if (!selected) return;
-    const selectableId = isPlanSituationBlock(selected)
+    const isMovableChild = isPlanSituationMovableElement(selected);
+    const selectableId = isPlanSituationBlock(selected) && !isMovableChild
       ? PLAN_SITUATION_FRAME_ID
       : blockId;
     setSelectedBlockId(selectableId);
     setSelectedSheetBlockIds((current) => {
       if (current.includes(selectableId)) return current;
-      if (isPlanSituationBlock(selected)) return [PLAN_SITUATION_FRAME_ID];
+      if (isPlanSituationBlock(selected) && !isMovableChild) return [PLAN_SITUATION_FRAME_ID];
       if (selected.objectGroupId) {
         return sheetBlocks
           .filter((block) => block.objectGroupId === selected.objectGroupId)
@@ -4528,11 +4848,9 @@ const MAX_HISTORY_STEPS = 50;
         label: block.label,
         visible: block.visible,
         locked: Boolean(block.locked),
-        // Default templates stay geometrically immutable, but their automatic
-        // legend may still be hidden for the current final export.
-        visibilityEditable: block.kind === "legend" || isPlanSituationBlock(block),
-        editable: block.id === PLAN_SITUATION_FRAME_ID || block.id === PLAN_INFORMATION_BLOCK_ID || block.kind === "legend",
-        interactionProtected: isPlanSituationBlock(block) && block.id !== PLAN_SITUATION_FRAME_ID,
+        visibilityEditable: true,
+        editable: block.kind !== "background",
+        interactionProtected: false,
         // Sheet blocks are rendered bottom-to-top in array order.
         zIndex: index * 10,
       }))
@@ -4580,9 +4898,7 @@ const MAX_HISTORY_STEPS = 50;
     if (sheetBlock && isPlanSituationBlock(sheetBlock) && sheetBlock.id !== PLAN_SITUATION_FRAME_ID) return;
     if (
       sheetActive
-      && !canEditActiveSheetTemplate
-      && sheetBlock?.kind !== "legend"
-      && !(sheetBlock && isPlanSituationBlock(sheetBlock))
+      && !canEditPlan
     ) return;
     const visible = !item.visible;
     if (sheetActive) {
@@ -4633,11 +4949,8 @@ const MAX_HISTORY_STEPS = 50;
     }
     setSheetBlocks((current) => {
       const normalized = ensureSheetLegendBlock(sheetTemplate, current);
-      const templateBlocks = defaultSheetTemplateActive
-        ? lockDefaultSheetBlocks(normalized)
-        : normalized;
       return applyPlanLegendLayout(
-        templateBlocks,
+        normalized,
         plan?.plan_legend_layout?.[sheetTemplate] ?? null,
       );
     });
@@ -4651,13 +4964,11 @@ const MAX_HISTORY_STEPS = 50;
       targetSheetBlock
       && isPlanSituationBlock(targetSheetBlock)
       && targetSheetBlock.id !== PLAN_SITUATION_FRAME_ID
+      && !isPlanSituationMovableElement(targetSheetBlock)
     ) return;
     if (
       sheetActive
-      && !canEditActiveSheetTemplate
-      && !targetSheetBlock?.planSpecificKind
-      && targetSheetBlock?.id !== PLAN_INFORMATION_BLOCK_ID
-      && targetSheetBlock?.kind !== "legend"
+      && (!canEditPlan || (targetSheetBlock?.kind === "background" && targetSheetBlock?.assetId))
     ) return;
     const locked = !item.locked;
     if (sheetActive) {
@@ -4941,7 +5252,10 @@ const MAX_HISTORY_STEPS = 50;
     const centerY = icon.y + icon.height / 2;
     canvasIconLeaderPoints(icon).forEach((point) => {
       parts.push(`<line x1="${svgNumber(point.x)}" y1="${svgNumber(point.y)}" x2="${svgNumber(centerX)}" y2="${svgNumber(centerY)}" stroke="${escapeSvgAttribute(leaderColor)}" stroke-width="${svgNumber(normalizeCanvasLeaderWidth(icon.leader_width))}" stroke-linecap="round"/>`);
-      parts.push(`<circle cx="${svgNumber(point.x)}" cy="${svgNumber(point.y)}" r="4" fill="${escapeSvgAttribute(leaderColor)}"/>`);
+      const dotRadius = normalizeCanvasLeaderDotSize(icon.leader_dot_size);
+      if (dotRadius > 0) {
+        parts.push(`<circle cx="${svgNumber(point.x)}" cy="${svgNumber(point.y)}" r="${svgNumber(dotRadius)}" fill="${escapeSvgAttribute(leaderColor)}"/>`);
+      }
     });
 
     const flipX = icon.flip_x ? -1 : 1;
@@ -5573,6 +5887,19 @@ const MAX_HISTORY_STEPS = 50;
     return true;
   };
 
+  const handleRestorePlanRatio = useCallback(() => {
+    const success = planCanvasRef.current?.restoreMainPlanRatio();
+    if (success) {
+      setSaveStatus("Proportions d'origine (1:1) du plan restaurées avec succès !");
+      window.setTimeout(() => setSaveStatus(""), 3500);
+      setIsPlanDeformed(false);
+      setFitSignal((s) => s + 1);
+    } else {
+      setSaveStatus("Le plan respecte déjà ses proportions d'origine");
+      window.setTimeout(() => setSaveStatus(""), 2500);
+    }
+  }, []);
+
   // Suppr./Retour arrière removes the selected secondary plan. Its own listener,
   // so it always sees the current selection instead of the first render's.
   useEffect(() => {
@@ -5615,7 +5942,10 @@ const MAX_HISTORY_STEPS = 50;
       const byId = new Map<string, StoredSheetTemplateVersion>();
       [...globalVersions, ...legacyVersions, ...accountVersions].forEach((version) => {
         if (version?.id && version?.template && Array.isArray(version.blocks)) {
-          byId.set(version.id, version);
+          const blocks = (version.id.startsWith("baseline-builtin:") || version.id.startsWith("draft:"))
+            ? lockDefaultSheetBlocks(version.blocks)
+            : version.blocks;
+          byId.set(version.id, { ...version, blocks });
         }
       });
       const merged = Array.from(byId.values());
@@ -6333,7 +6663,7 @@ const MAX_HISTORY_STEPS = 50;
       setExportPaperFormat(recommendedPaperForTemplate(version.template));
       setPrintScaleDenominator(RECOMMENDED_SCALE_DENOMINATOR);
     }
-    setSheetBlocks(decoratePlanInformation(version.template, cloneSheetBlocks(version.blocks)));
+    setSheetBlocks(decoratePlanInformation(version.template, lockDefaultSheetBlocks(version.blocks)));
     if (!options.preservePlanPlacement) {
       setSheetPlanPlacement({ ...version.planPlacement });
     }
@@ -6345,7 +6675,12 @@ const MAX_HISTORY_STEPS = 50;
     });
     setAreaSelectionMode(false);
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+    setSelectedIconId(null);
+    setSelectedShapeId(null);
+    setSelectedTextId(null);
+    setSelectedOverlayId(null);
     setSelectedBlockId(null);
+    setPlanObjectsLockState(true);
     window.setTimeout(() => setFitSignal((signal) => signal + 1), 60);
   };
 
@@ -6383,12 +6718,18 @@ const MAX_HISTORY_STEPS = 50;
     setExportOfficialFond("none");
     setAreaSelectionMode(false);
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+    setSelectedIconId(null);
+    setSelectedShapeId(null);
+    setSelectedTextId(null);
+    setSelectedOverlayId(null);
     setSelectedBlockId(null);
     setActiveSheetTemplateVersionId("");
     if (template === "none") {
+      setPlanObjectsLockState(false);
       setSheetBlocks([]);
       return;
     }
+    setPlanObjectsLockState(true);
     const templateConfig = SHEET_TEMPLATES[template];
     setLastSheetTemplateSelection({
       key: template,
@@ -6452,7 +6793,7 @@ const MAX_HISTORY_STEPS = 50;
         (version) => version.id === `baseline-builtin:${template}`
       );
       if (baseline) {
-        defaultBlocks = cloneSheetBlocks(baseline.blocks);
+        defaultBlocks = lockDefaultSheetBlocks(baseline.blocks);
         defaultPlacement = { ...baseline.planPlacement };
       }
     }
@@ -6542,7 +6883,7 @@ const MAX_HISTORY_STEPS = 50;
         (version) => version.id !== savedDraft.id
       );
       writeStoredSheetTemplateVersions([...versions, backup, upgradedDraft]);
-      setSheetBlocks(decoratePlanInformation(template, cloneSheetBlocks(upgradedDraft.blocks)));
+      setSheetBlocks(decoratePlanInformation(template, lockDefaultSheetBlocks(upgradedDraft.blocks)));
       if (!options.preservePlanPlacement) {
         setSheetPlanPlacement({ ...upgradedDraft.planPlacement });
       }
@@ -6558,7 +6899,7 @@ const MAX_HISTORY_STEPS = 50;
       return;
     }
     if (savedDraft) {
-      setSheetBlocks(decoratePlanInformation(template, cloneSheetBlocks(savedDraft.blocks)));
+      setSheetBlocks(decoratePlanInformation(template, lockDefaultSheetBlocks(savedDraft.blocks)));
       if (!options.preservePlanPlacement) {
         setSheetPlanPlacement({ ...savedDraft.planPlacement });
       }
@@ -6589,7 +6930,15 @@ const MAX_HISTORY_STEPS = 50;
     ) return false;
 
     setSheetTemplate(template);
-    setSheetBlocks(decoratePlanInformation(template, cloneSheetBlocks(snapshot.blocks)));
+    setAreaSelectionMode(false);
+    setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+    setSelectedIconId(null);
+    setSelectedShapeId(null);
+    setSelectedTextId(null);
+    setSelectedOverlayId(null);
+    setSelectedBlockId(null);
+    setPlanObjectsLockState(true);
+    setSheetBlocks(decoratePlanInformation(template, lockDefaultSheetBlocks(snapshot.blocks)));
     setSheetPlanPlacement(normalizeSheetPlanPlacement(
       plan?.sheet_plan_placement || snapshot.planPlacement,
     ));
@@ -7171,7 +7520,7 @@ const MAX_HISTORY_STEPS = 50;
       writeStoredSheetTemplateVersions(versions.map((version) =>
         version.id === restored.id ? restored : version
       ));
-      setSheetBlocks(decoratePlanInformation(restored.template, cloneSheetBlocks(restored.blocks)));
+      setSheetBlocks(decoratePlanInformation(restored.template, lockDefaultSheetBlocks(restored.blocks)));
       setSheetPlanPlacement({ ...restored.planPlacement });
       setSelectedBlockId(null);
       setSelectedSheetBlockIds([]);
@@ -7419,6 +7768,48 @@ const MAX_HISTORY_STEPS = 50;
     size?: { width: number; height: number }
   ) => {
     if (!canEditActiveSheetTemplate) return;
+
+    if (planSituation.enabled && isPointInsidePlanSituationFrame({ x, y }, planSituation)) {
+      const frame = planSituationFrame(planSituation);
+      const iconWidth = size?.width ?? 36;
+      const iconHeight = size?.height ?? 36;
+      const label = iconDefinitions[type]?.label || String(type);
+      const isAssembly = String(type).toLowerCase().includes("rassemblement") || label.toLowerCase().includes("rassemblement");
+      const isObserver = isYouAreHereIcon(type, iconDefinitions);
+      const role: PlanSituationRole = isObserver
+        ? "observer"
+        : isAssembly
+          ? "assembly_point"
+          : activeDocumentType === "intervention"
+            ? "remote_equipment"
+            : "pictogram";
+      const block: SheetBlock = {
+        id: blockId(role),
+        kind: "picto",
+        planSpecificKind: "situation",
+        situationRole: role,
+        label,
+        x: Math.round(x - iconWidth / 2),
+        y: Math.round(y - iconHeight / 2),
+        width: iconWidth,
+        height: iconHeight,
+        rotation: frame?.rotation ?? planSituation.orientation,
+        visible: true,
+        locked: false,
+        iconType: type,
+        lockAspectRatio: true,
+      };
+      const next: PlanSituationState = {
+        ...planSituation,
+        blocks: [...planSituation.blocks, block],
+      };
+      applyPlanSituationState(next, block.id);
+      setPlacementIconType(null);
+      setSaveStatus("Pictogramme ajouté au plan de situation");
+      window.setTimeout(() => setSaveStatus(""), 3500);
+      return;
+    }
+
     const block = createPictoBlock(
       type,
       iconDefinitions[type]?.label || String(type),
@@ -7565,6 +7956,14 @@ const MAX_HISTORY_STEPS = 50;
       )));
       return;
     }
+    if (field === "leader_dot_size") {
+      if (!Number.isFinite(Number(value))) return;
+      const leaderDotSize = normalizeCanvasLeaderDotSize(value, selectedIcon?.leader_dot_size);
+      setIcons((currentIcons) => currentIcons.map((icon) => (
+        icon.tempId === selectedIconId ? { ...icon, leader_dot_size: leaderDotSize } : icon
+      )));
+      return;
+    }
     if (field === "leader_color") {
       const leaderColor = typeof value === "string" ? value.trim() : null;
       setIcons((currentIcons) => currentIcons.map((icon) => (
@@ -7613,6 +8012,7 @@ const MAX_HISTORY_STEPS = 50;
               anchor_x: null,
               anchor_y: null,
               leader_points: [...existingPoints, point],
+              leader_dot_size: normalizeCanvasLeaderDotSize(icon.leader_dot_size),
               // Only the first déport moves the symbol clear of its true position.
               x: existingPoints.length ? icon.x : icon.x + OFFSET_STEP,
               y: existingPoints.length ? icon.y : icon.y - OFFSET_STEP,
@@ -7784,6 +8184,7 @@ const MAX_HISTORY_STEPS = 50;
           anchor_y: selectedIcon.anchor_y ?? null,
           leader_points: canvasIconLeaderPoints(selectedIcon),
           leader_width: normalizeCanvasLeaderWidth(selectedIcon.leader_width),
+          leader_dot_size: normalizeCanvasLeaderDotSize(selectedIcon.leader_dot_size),
           leader_color: selectedIcon.leader_color ?? null,
           framed: selectedIcon.framed ?? false,
           flip_x: selectedIcon.flip_x ?? false,
@@ -7818,6 +8219,7 @@ const MAX_HISTORY_STEPS = 50;
       anchor_y: source.anchor_y ?? null,
       leader_points: Array.isArray(source.leader_points) ? source.leader_points : [],
       leader_width: normalizeCanvasLeaderWidth(source.leader_width),
+      leader_dot_size: normalizeCanvasLeaderDotSize(source.leader_dot_size),
       leader_color: source.leader_color ?? null,
       framed: source.framed ?? false,
       flip_x: source.flip_x ?? false,
@@ -10594,13 +10996,16 @@ const MAX_HISTORY_STEPS = 50;
     );
   }
 
-  const backgroundUrl = (plan?.use_cleaned_background && plan?.cleaned_background_file)
+  const rawBackgroundUrl = (plan?.use_cleaned_background && plan?.cleaned_background_file)
     ? plan.cleaned_background_file
     : plan?.background_file || "";
 
-  const backgroundType = (plan?.use_cleaned_background && plan?.cleaned_background_file)
+  const rawBackgroundType = (plan?.use_cleaned_background && plan?.cleaned_background_file)
     ? "image"
     : plan?.background_type || "image";
+
+  const backgroundUrl = sessionBackgroundUrl || rawBackgroundUrl;
+  const backgroundType = (sessionBackgroundType || rawBackgroundType) as "image" | "pdf";
 
   const costEstimatePanel = (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -10898,19 +11303,13 @@ const MAX_HISTORY_STEPS = 50;
                 <span>Plan de situation</span>
                 {planSituation.enabled && <Check className="h-3 w-3 text-emerald-300" />}
               </button>
-              {defaultSheetTemplateActive && (
+              {defaultSheetTemplateActive && canEditDefaultTemplates && (
                 <span
-                  title={canEditDefaultTemplates
-                    ? "L’administrateur vous autorise à déverrouiller et modifier les éléments de ce template par défaut."
-                    : "Seul un administrateur Django peut autoriser la modification de ce template par défaut."}
-                  className={`flex items-center gap-1 rounded px-1.5 py-1 text-[9px] font-bold ${
-                    canEditDefaultTemplates
-                      ? "bg-emerald-500/15 text-emerald-300"
-                      : "bg-amber-500/15 text-amber-300"
-                  }`}
+                  title="Vous êtes administrateur et pouvez enregistrer ce template comme nouveau modèle officiel pour tous les utilisateurs."
+                  className="flex items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-1 text-[9px] font-bold text-emerald-300"
                 >
-                  {canEditDefaultTemplates ? <Unlock className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
-                  {canEditDefaultTemplates ? "Modification autorisée" : "Par défaut protégé"}
+                  <Unlock className="h-3 w-3" />
+                  Template officiel éditable
                 </span>
               )}
               {defaultSheetTemplateActive && canEditDefaultTemplates && (
@@ -10992,15 +11391,38 @@ const MAX_HISTORY_STEPS = 50;
               onQualityChange={setExportQuality}
             />
 
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              title="Sauvegarder le projet"
-              className="flex cursor-pointer items-center gap-1.5 rounded bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-40"
-            >
-              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-              <span>{saveStatus || "Sauvegarder"}</span>
-            </button>
+            <div className="flex items-center">
+              <button
+                type="button"
+                onClick={() => setAutoSaveModalOpen(true)}
+                title={`Paramètres de sauvegarde automatique (${autoSaveEnabled ? `Active : ${autoSaveInterval}s` : "Désactivée"})`}
+                className={`flex cursor-pointer items-center gap-1 rounded-l border-r border-emerald-700/60 px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+                  autoSaveEnabled
+                    ? "bg-emerald-700/90 text-white hover:bg-emerald-600"
+                    : "bg-emerald-900/80 text-emerald-300 hover:bg-emerald-800"
+                }`}
+              >
+                <Settings className="h-3.5 w-3.5" />
+                {autoSaveEnabled && (
+                  <span
+                    className="text-[9px] font-bold text-emerald-200"
+                    title={`Sauvegarde auto : ${autoSaveInterval}s`}
+                  >
+                    {autoSaveInterval}s
+                  </span>
+                )}
+              </button>
+
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                title="Sauvegarder le projet (Ctrl+S)"
+                className="flex cursor-pointer items-center gap-1.5 rounded-r bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-40"
+              >
+                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                <span>{saveStatus || "Sauvegarder"}</span>
+              </button>
+            </div>
 
             </div>
 
@@ -11225,6 +11647,18 @@ const MAX_HISTORY_STEPS = 50;
               )}
             </button>
 
+            {isPlanDeformed && (
+              <button
+                type="button"
+                onClick={handleRestorePlanRatio}
+                title="Le plan est déformé (proportions largeur/hauteur altérées). Cliquer pour restaurer automatiquement ses proportions réelles 1:1."
+                className="flex cursor-pointer items-center gap-1.5 rounded border border-amber-500/60 bg-amber-950/80 px-2.5 py-1.5 text-[11px] font-semibold text-amber-200 hover:bg-amber-900 transition-colors shadow-sm"
+              >
+                <Maximize2 className="h-3.5 w-3.5 text-amber-400" />
+                <span>Restaurer forme d&apos;origine (1:1)</span>
+              </button>
+            )}
+
             {selectedOverlayId && selectedOverlayId !== MAIN_PLAN_ID && (
               <button
                 onClick={handleDeleteSelectedOverlay}
@@ -11427,12 +11861,35 @@ const MAX_HISTORY_STEPS = 50;
                   onIconsChange={handleIconsChange}
                   selectedIconId={selectedIconId}
                   planRotation={effectivePlanRotation}
-                  onSelectIcon={(iconId) => {
+                  onSelectIcon={(iconId, meta) => {
                     if (scaleCalibrationCaptureActive) {
                       setSelectedIconId(null);
                       return;
                     }
                     if (iconId) activateInteractionMode("select");
+                    if (meta?.shiftKey && iconId) {
+                      const alreadySelected = multiSelection.iconIds.includes(iconId);
+                      const currentSelectedIcon = selectedIconId && selectedIconId !== iconId ? [selectedIconId] : [];
+                      const baseIconIds = Array.from(new Set([...multiSelection.iconIds, ...currentSelectedIcon]));
+                      const nextIconIds = alreadySelected
+                        ? baseIconIds.filter((id) => id !== iconId)
+                        : [...baseIconIds, iconId];
+                      const nextSelection = {
+                        ...multiSelection,
+                        iconIds: nextIconIds,
+                      };
+                      setMultiSelection(nextSelection);
+                      const totalCount = nextSelection.iconIds.length + nextSelection.shapeIds.length + nextSelection.textIds.length;
+                      if (totalCount === 1 && nextSelection.iconIds.length === 1) {
+                        setSelectedIconId(nextSelection.iconIds[0]);
+                      } else {
+                        setSelectedIconId(null);
+                      }
+                      setSelectedBatBlock(false);
+                      setSelectedOverlayId(null);
+                      setSelectedBlockId(null);
+                      return;
+                    }
                     setSelectedIconId(iconId);
                     if (iconId) {
                       setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
@@ -11448,7 +11905,10 @@ const MAX_HISTORY_STEPS = 50;
                   isSheetBlockEditable={(block) => Boolean(
                     canEditPlan
                     && (isPlanSituationBlock(block)
-                      ? block.id === PLAN_SITUATION_FRAME_ID
+                      ? (
+                          block.id === PLAN_SITUATION_FRAME_ID
+                          || isPlanSituationMovableElement(block)
+                        )
                       : (
                           canEditActiveSheetTemplate
                           || block.id === PLAN_INFORMATION_BLOCK_ID
@@ -11458,7 +11918,26 @@ const MAX_HISTORY_STEPS = 50;
                   onSheetBlocksChange={canEditSheetCanvas ? handleSheetBlocksChange : undefined}
                   selectedBlockId={selectedBlockId}
                   selectedBlockIds={selectedSheetBlockIds}
-                  onSelectBlock={(blockId) => {
+                  onSelectBlock={(blockId, meta) => {
+                    if (!blockId) {
+                      selectSheetBlock(null);
+                      return;
+                    }
+                    if (meta?.shiftKey) {
+                      const currentSelectedBlock = selectedBlockId && !selectedSheetBlockIds.includes(selectedBlockId)
+                        ? [selectedBlockId]
+                        : [];
+                      const baseBlockIds = Array.from(new Set([...selectedSheetBlockIds, ...currentSelectedBlock]));
+                      const alreadySelected = baseBlockIds.includes(blockId);
+                      const nextBlockIds = alreadySelected
+                        ? baseBlockIds.filter((id) => id !== blockId)
+                        : [...baseBlockIds, blockId];
+                      setSelectedSheetBlockIds(nextBlockIds);
+                      setSelectedBlockId(nextBlockIds.at(-1) ?? null);
+                      setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
+                      setSelectedBatBlock(false);
+                      return;
+                    }
                     selectSheetBlock(blockId);
                     if (blockId) {
                       setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
@@ -11468,7 +11947,9 @@ const MAX_HISTORY_STEPS = 50;
                   onSelectBlocks={(blockIds) => {
                     const normalizedBlockIds = Array.from(new Set(blockIds.map((blockId) => {
                       const block = sheetBlocks.find((candidate) => candidate.id === blockId);
-                      return block && isPlanSituationBlock(block) ? PLAN_SITUATION_FRAME_ID : blockId;
+                      return block && isPlanSituationBlock(block) && !isPlanSituationMovableElement(block)
+                        ? PLAN_SITUATION_FRAME_ID
+                        : blockId;
                     })));
                     setSelectedSheetBlockIds(normalizedBlockIds);
                     setSelectedBlockId(normalizedBlockIds.at(-1) ?? null);
@@ -11500,6 +11981,7 @@ const MAX_HISTORY_STEPS = 50;
                   mainPlanGroupId={mainPlanGroupId}
                   mainPlanGroupingEnabled={mainPlanGroupingEnabled}
                   areaSelectionMode={areaSelectionMode}
+                  onDragStateChange={handleDragStateChange}
                   multiSelection={multiSelection}
                   onMultiSelectionChange={setMultiSelection}
                   onAreaSelectionComplete={handleAreaSelectionComplete}
@@ -11518,6 +12000,8 @@ const MAX_HISTORY_STEPS = 50;
                     }
                   }}
                   keepPlanRatio={keepPlanRatio}
+                  canvasMargin={canvasMargin}
+                  onPlanDeformedChange={setIsPlanDeformed}
                   watermark={watermarkConfig}
                   onWatermarkChange={setWatermarkConfig}
                   selectedBatBlock={selectedBatBlock}
@@ -11540,13 +12024,39 @@ const MAX_HISTORY_STEPS = 50;
                   undoEraseSignal={undoEraseSignal}
                   resetEraseSignal={resetEraseSignal}
                   eraseStrokeTarget={eraseStrokeTarget}
-                  onEraseStrokesChange={setEraseStrokeCount}
+                  onEraseStrokesChange={(count) => {
+                    isEraseDirtyRef.current = true;
+                    setEraseStrokeCount(count);
+                  }}
                   shapes={shapes}
                   onShapesChange={handleShapesChange}
                   selectedShapeId={selectedShapeId}
-                  onSelectShape={(shapeId) => {
+                  onSelectShape={(shapeId, meta) => {
                     if (scaleCalibrationCaptureActive || planSituationTraceMode) {
                       setSelectedShapeId(null);
+                      return;
+                    }
+                    if (meta?.shiftKey && shapeId) {
+                      const alreadySelected = multiSelection.shapeIds.includes(shapeId);
+                      const currentSelectedShape = selectedShapeId && selectedShapeId !== shapeId ? [selectedShapeId] : [];
+                      const baseShapeIds = Array.from(new Set([...multiSelection.shapeIds, ...currentSelectedShape]));
+                      const nextShapeIds = alreadySelected
+                        ? baseShapeIds.filter((id) => id !== shapeId)
+                        : [...baseShapeIds, shapeId];
+                      const nextSelection = {
+                        ...multiSelection,
+                        shapeIds: nextShapeIds,
+                      };
+                      setMultiSelection(nextSelection);
+                      const totalCount = nextSelection.iconIds.length + nextSelection.shapeIds.length + nextSelection.textIds.length;
+                      if (totalCount === 1 && nextSelection.shapeIds.length === 1) {
+                        setSelectedShapeId(nextSelection.shapeIds[0]);
+                      } else {
+                        setSelectedShapeId(null);
+                      }
+                      setSelectedBatBlock(false);
+                      setSelectedOverlayId(null);
+                      setSelectedBlockId(null);
                       return;
                     }
                     setSelectedShapeId(shapeId);
@@ -11571,7 +12081,30 @@ const MAX_HISTORY_STEPS = 50;
                   texts={texts}
                   onTextsChange={handleTextsChange}
                   selectedTextId={selectedTextId}
-                  onSelectText={(textId) => {
+                  onSelectText={(textId, meta) => {
+                    if (meta?.shiftKey && textId) {
+                      const alreadySelected = multiSelection.textIds.includes(textId);
+                      const currentSelectedText = selectedTextId && selectedTextId !== textId ? [selectedTextId] : [];
+                      const baseTextIds = Array.from(new Set([...multiSelection.textIds, ...currentSelectedText]));
+                      const nextTextIds = alreadySelected
+                        ? baseTextIds.filter((id) => id !== textId)
+                        : [...baseTextIds, textId];
+                      const nextSelection = {
+                        ...multiSelection,
+                        textIds: nextTextIds,
+                      };
+                      setMultiSelection(nextSelection);
+                      const totalCount = nextSelection.iconIds.length + nextSelection.shapeIds.length + nextSelection.textIds.length;
+                      if (totalCount === 1 && nextSelection.textIds.length === 1) {
+                        setSelectedTextId(nextSelection.textIds[0]);
+                      } else {
+                        setSelectedTextId(null);
+                      }
+                      setSelectedBatBlock(false);
+                      setSelectedOverlayId(null);
+                      setSelectedBlockId(null);
+                      return;
+                    }
                     setSelectedTextId(textId);
                     if (textId) {
                       setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
@@ -12007,17 +12540,6 @@ const MAX_HISTORY_STEPS = 50;
                       <div className="grid grid-cols-2 gap-2">
                         <label className="block">
                           <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
-                            Trait
-                          </span>
-                          <input
-                            type="color"
-                            value={selectedBlock.stroke || "#000000"}
-                            onChange={(event) => updateSelectedBlock({ stroke: event.target.value })}
-                            className="h-7 w-full cursor-pointer rounded border border-white/10 bg-black/30"
-                          />
-                        </label>
-                        <label className="block">
-                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
                             Remplissage
                           </span>
                           <input
@@ -12025,21 +12547,6 @@ const MAX_HISTORY_STEPS = 50;
                             value={selectedBlock.fill || selectedBlock.stroke || "#000000"}
                             onChange={(event) => updateSelectedBlock({ fill: event.target.value })}
                             className="h-7 w-full cursor-pointer rounded border border-white/10 bg-black/30"
-                          />
-                        </label>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <label className="block">
-                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
-                            Épaisseur
-                          </span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={60}
-                            value={selectedBlock.strokeWidth ?? 3}
-                            onChange={(event) => updateSelectedBlock({ strokeWidth: Number(event.target.value) })}
-                            className="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] text-neutral-100 outline-none focus:border-emerald-500"
                           />
                         </label>
                         <label className="block">
@@ -12054,6 +12561,32 @@ const MAX_HISTORY_STEPS = 50;
                             value={selectedBlock.fillOpacity ?? 0.35}
                             onChange={(event) => updateSelectedBlock({ fillOpacity: Number(event.target.value) })}
                             className="mt-2 w-full accent-emerald-500"
+                          />
+                        </label>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                            Trait
+                          </span>
+                          <input
+                            type="color"
+                            value={selectedBlock.stroke || "#000000"}
+                            onChange={(event) => updateSelectedBlock({ stroke: event.target.value })}
+                            className="h-7 w-full cursor-pointer rounded border border-white/10 bg-black/30"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                            Épaisseur
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={60}
+                            value={selectedBlock.strokeWidth ?? 1}
+                            onChange={(event) => updateSelectedBlock({ strokeWidth: Number(event.target.value) })}
+                            className="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] text-neutral-100 outline-none focus:border-emerald-500"
                           />
                         </label>
                       </div>
@@ -12939,6 +13472,42 @@ const MAX_HISTORY_STEPS = 50;
                           />
                         </div>
 
+                        {/* Leader anchor dot size */}
+                        <div className="mb-2 rounded border border-white/10 bg-white/[0.03] p-2">
+                          <div className="mb-1.5 flex items-center justify-between">
+                            <label
+                              htmlFor="selected-icon-leader-dot-size"
+                              className="text-[10px] font-medium text-neutral-400"
+                            >
+                              Taille du point
+                            </label>
+                            <div className="flex items-center gap-1">
+                              <input
+                                id="selected-icon-leader-dot-size-input"
+                                type="number"
+                                min={MIN_CANVAS_LEADER_DOT_SIZE}
+                                max={MAX_CANVAS_LEADER_DOT_SIZE}
+                                step="0.5"
+                                value={normalizeCanvasLeaderDotSize(selectedIcon.leader_dot_size)}
+                                onChange={(event) => handleUpdateSelectedIcon("leader_dot_size", event.currentTarget.valueAsNumber)}
+                                className="w-12 rounded border border-white/10 bg-black/20 px-1 py-0.5 text-right text-[10px] tabular-nums text-neutral-200 focus:border-emerald-500 focus:outline-none"
+                                aria-label="Taille du point de déport"
+                              />
+                              <span className="text-[10px] text-neutral-500">px</span>
+                            </div>
+                          </div>
+                          <input
+                            id="selected-icon-leader-dot-size"
+                            type="range"
+                            min={MIN_CANVAS_LEADER_DOT_SIZE}
+                            max={MAX_CANVAS_LEADER_DOT_SIZE}
+                            step="0.5"
+                            value={normalizeCanvasLeaderDotSize(selectedIcon.leader_dot_size)}
+                            onChange={(event) => handleUpdateSelectedIcon("leader_dot_size", event.currentTarget.valueAsNumber)}
+                            className="h-1 w-full cursor-pointer accent-emerald-500"
+                          />
+                        </div>
+
                         {/* Leader line colour */}
                         <div className="mb-2 rounded border border-white/10 bg-white/[0.03] p-2">
                           <div className="mb-1.5 flex items-center justify-between">
@@ -13367,124 +13936,6 @@ const MAX_HISTORY_STEPS = 50;
                 </div>
 
                 <div className="space-y-4 p-3">
-                  {/* Stroke Color */}
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
-                        Couleur de contour
-                      </span>
-                      <label className="flex cursor-pointer items-center gap-1.5 text-[10px] text-neutral-400">
-                        <input
-                          type="checkbox"
-                          checked={selectedShape.stroke_width > 0}
-                          onChange={(e) =>
-                            handleUpdateSelectedShape("stroke_width", e.target.checked ? (shapeStrokeWidth || 3) : 0)
-                          }
-                          className="h-3.5 w-3.5 cursor-pointer accent-sky-500"
-                        />
-                        Afficher le contour
-                      </label>
-                    </div>
-                    {selectedShape.stroke_width > 0 && (
-                      <>
-                        <div className="mt-1.5 flex items-center gap-2">
-                          <input
-                            type="color"
-                            value={selectedShape.color || "#000000"}
-                            onChange={(e) => handleUpdateSelectedShape("color", e.target.value)}
-                            className="h-7 w-9 shrink-0 cursor-pointer rounded border border-black/50 bg-transparent"
-                          />
-                          <input
-                            type="text"
-                            value={selectedShape.color || "#000000"}
-                            onChange={(e) => handleUpdateSelectedShape("color", e.target.value)}
-                            className="w-full rounded border border-black/50 bg-[#1b1b1d] px-2 py-1 text-[11px] tabular-nums text-neutral-200 focus:border-sky-500/60 focus:outline-none"
-                          />
-                        </div>
-                        <div className="mt-2.5 grid grid-cols-6 gap-1.5">
-                          {PRESET_COLORS.map((preset) => (
-                            <button
-                              key={`stroke-${preset.hex}`}
-                              type="button"
-                              title={preset.name}
-                              onClick={() => handleUpdateSelectedShape("color", preset.hex)}
-                              className={`h-6 w-full rounded border transition-transform hover:scale-105 focus:outline-none ${
-                                selectedShape.color === preset.hex ? "border-sky-400 ring-2 ring-sky-400/50" : "border-white/20"
-                              }`}
-                              style={{ backgroundColor: preset.hex }}
-                            />
-                          ))}
-                        </div>
-                      </>
-                    )}
-                  </div>
-
-                  {/* Stroke Width */}
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
-                        Épaisseur du contour
-                      </span>
-                      <span className="text-[10px] tabular-nums text-neutral-400">
-                        {selectedShape.stroke_width} px
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={40}
-                      value={selectedShape.stroke_width}
-                      onChange={(e) => handleUpdateSelectedShape("stroke_width", Number(e.target.value))}
-                      className="mt-1.5 h-1 w-full cursor-pointer accent-sky-500"
-                    />
-                  </div>
-
-                  {isPolygonShape(selectedShape.shape_type) && selectedShape.points?.length && (
-                    <div className="rounded border border-white/10 bg-black/15 p-2.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-400">
-                          Points du tracé
-                        </span>
-                        <span className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] tabular-nums text-neutral-500">
-                          {selectedShape.points.length} points
-                        </span>
-                      </div>
-                      <p className="mt-1.5 text-[9px] leading-3.5 text-neutral-500">
-                        Double-cliquez un point blanc sur le plan ou utilisez sa corbeille ci-dessous.
-                      </p>
-                      <div className="mt-2 max-h-36 space-y-1 overflow-y-auto pr-0.5">
-                        {selectedShape.points.map((point, index) => {
-                          const minimumPoints = selectedShape.shape_type === "polyline" ? 2 : 3;
-                          const cannotDelete = Boolean(selectedShape.locked) || selectedShape.points!.length <= minimumPoints;
-                          return (
-                            <div
-                              key={`${selectedShape.tempId}-point-row-${index}`}
-                              className="flex items-center gap-2 rounded border border-white/5 bg-[#1b1b1d] px-2 py-1.5"
-                            >
-                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-sky-400/60 bg-sky-500/10 text-[9px] font-bold text-sky-300">
-                                {pointLabel(index)}
-                              </span>
-                              <span className="min-w-0 flex-1 truncate font-mono text-[9px] text-neutral-500">
-                                X {Math.round(point.x)} · Y {Math.round(point.y)}
-                              </span>
-                              <button
-                                type="button"
-                                disabled={cannotDelete}
-                                onClick={() => handleDeleteSelectedShapePoint(index)}
-                                title={cannotDelete
-                                  ? `Le tracé doit conserver au moins ${minimumPoints} points`
-                                  : `Supprimer le point ${pointLabel(index)}`}
-                                className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-red-400 transition-colors hover:bg-red-500/15 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-25"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
                   {/* Fill Color (Background) */}
                   {selectedShape.shape_type !== "line"
                     && selectedShape.shape_type !== "polyline"
@@ -13559,6 +14010,124 @@ const MAX_HISTORY_STEPS = 50;
                           </div>
                         </>
                       )}
+                    </div>
+                  )}
+
+                  {/* Stroke Width */}
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                        Épaisseur du contour
+                      </span>
+                      <span className="text-[10px] tabular-nums text-neutral-400">
+                        {selectedShape.stroke_width} px
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={40}
+                      value={selectedShape.stroke_width}
+                      onChange={(e) => handleUpdateSelectedShape("stroke_width", Number(e.target.value))}
+                      className="mt-1.5 h-1 w-full cursor-pointer accent-sky-500"
+                    />
+                  </div>
+
+                  {/* Stroke Color */}
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                        Couleur de contour
+                      </span>
+                      <label className="flex cursor-pointer items-center gap-1.5 text-[10px] text-neutral-400">
+                        <input
+                          type="checkbox"
+                          checked={selectedShape.stroke_width > 0}
+                          onChange={(e) =>
+                            handleUpdateSelectedShape("stroke_width", e.target.checked ? (shapeStrokeWidth || 1) : 0)
+                          }
+                          className="h-3.5 w-3.5 cursor-pointer accent-sky-500"
+                        />
+                        Afficher le contour
+                      </label>
+                    </div>
+                    {selectedShape.stroke_width > 0 && (
+                      <>
+                        <div className="mt-1.5 flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={selectedShape.color || "#000000"}
+                            onChange={(e) => handleUpdateSelectedShape("color", e.target.value)}
+                            className="h-7 w-9 shrink-0 cursor-pointer rounded border border-black/50 bg-transparent"
+                          />
+                          <input
+                            type="text"
+                            value={selectedShape.color || "#000000"}
+                            onChange={(e) => handleUpdateSelectedShape("color", e.target.value)}
+                            className="w-full rounded border border-black/50 bg-[#1b1b1d] px-2 py-1 text-[11px] tabular-nums text-neutral-200 focus:border-sky-500/60 focus:outline-none"
+                          />
+                        </div>
+                        <div className="mt-2.5 grid grid-cols-6 gap-1.5">
+                          {PRESET_COLORS.map((preset) => (
+                            <button
+                              key={`stroke-${preset.hex}`}
+                              type="button"
+                              title={preset.name}
+                              onClick={() => handleUpdateSelectedShape("color", preset.hex)}
+                              className={`h-6 w-full rounded border transition-transform hover:scale-105 focus:outline-none ${
+                                selectedShape.color === preset.hex ? "border-sky-400 ring-2 ring-sky-400/50" : "border-white/20"
+                              }`}
+                              style={{ backgroundColor: preset.hex }}
+                            />
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {isPolygonShape(selectedShape.shape_type) && selectedShape.points?.length && (
+                    <div className="rounded border border-white/10 bg-black/15 p-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-400">
+                          Points du tracé
+                        </span>
+                        <span className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] tabular-nums text-neutral-500">
+                          {selectedShape.points.length} points
+                        </span>
+                      </div>
+                      <p className="mt-1.5 text-[9px] leading-3.5 text-neutral-500">
+                        Double-cliquez un point blanc sur le plan ou utilisez sa corbeille ci-dessous.
+                      </p>
+                      <div className="mt-2 max-h-36 space-y-1 overflow-y-auto pr-0.5">
+                        {selectedShape.points.map((point, index) => {
+                          const minimumPoints = selectedShape.shape_type === "polyline" ? 2 : 3;
+                          const cannotDelete = Boolean(selectedShape.locked) || selectedShape.points!.length <= minimumPoints;
+                          return (
+                            <div
+                              key={`${selectedShape.tempId}-point-row-${index}`}
+                              className="flex items-center gap-2 rounded border border-white/5 bg-[#1b1b1d] px-2 py-1.5"
+                            >
+                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-sky-400/60 bg-sky-500/10 text-[9px] font-bold text-sky-300">
+                                {pointLabel(index)}
+                              </span>
+                              <span className="min-w-0 flex-1 truncate font-mono text-[9px] text-neutral-500">
+                                X {Math.round(point.x)} · Y {Math.round(point.y)}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={cannotDelete}
+                                onClick={() => handleDeleteSelectedShapePoint(index)}
+                                title={cannotDelete
+                                  ? `Le tracé doit conserver au moins ${minimumPoints} points`
+                                  : `Supprimer le point ${pointLabel(index)}`}
+                                className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-red-400 transition-colors hover:bg-red-500/15 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-25"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
 
@@ -13725,11 +14294,11 @@ const MAX_HISTORY_STEPS = 50;
                     setShapeTool(nextShapeTool);
                   }}
                   title={kind === "polyline"
-                    ? `${label} — Maj trace à 0°/90°; cliquez le dernier point, Entrée ou double-clic pour terminer; la plume reste active pour la ligne suivante`
+                    ? `${label} — cliquez pour ajouter des points, Maj+Clic ou Entrée pour terminer; la plume reste active pour la ligne suivante`
                     : kind === "curve_polygon_zone"
-                    ? `${label} — les segments restent droits; déplacez une poignée cyan pour les courber; Maj impose un angle de 0°/90°`
+                    ? `${label} — cliquez pour poser les points, Maj+Clic ou Entrée pour terminer; déplacez ensuite les poignées cyan pour courber`
                     : isPolygonTool(kind)
-                    ? `${label} — cliquez pour ajouter des points, puis Entrée ou double-clic pour terminer`
+                    ? `${label} — cliquez pour ajouter des points, Maj+Clic ou Entrée pour terminer`
                     : `${label} — glissez sur le plan ou sur le template pour tracer`}
                   className={`flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
                     shapeTool === kind
@@ -13848,31 +14417,25 @@ const MAX_HISTORY_STEPS = 50;
 
                       <button
                         type="button"
-                        onClick={() => setUndoEraseSignal((signal) => signal + 1)}
-                        disabled={!eraseStrokeCount}
+                        onClick={handleUndo}
+                        disabled={historyIndex <= 0}
                         className="cursor-pointer rounded px-2 py-1 text-[11px] font-medium text-neutral-400 transition-colors hover:bg-white/10 hover:text-neutral-100 disabled:opacity-30"
-                        title="Annuler le dernier trait"
+                        title="Annuler le dernier trait (Ctrl+Z)"
                       >
-                        Annuler
+                        Annuler (Ctrl+Z)
                       </button>
                       <button
                         type="button"
-                        onClick={() => setResetEraseSignal((signal) => signal + 1)}
-                        disabled={!eraseStrokeCount}
+                        onClick={handleRedo}
+                        disabled={historyIndex >= history.length - 1}
                         className="cursor-pointer rounded px-2 py-1 text-[11px] font-medium text-neutral-400 transition-colors hover:bg-white/10 hover:text-neutral-100 disabled:opacity-30"
-                        title="Effacer tous les traits de gomme"
+                        title="Rétablir (Ctrl+Y)"
                       >
-                        Tout rétablir
+                        Rétablir
                       </button>
-                      <button
-                        type="button"
-                        onClick={handleSaveErasedPlan}
-                        disabled={!eraseStrokeCount || savingErase}
-                        className="flex cursor-pointer items-center gap-1.5 rounded bg-amber-600 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-amber-500 disabled:opacity-30"
-                      >
-                        {savingErase ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        Appliquer{eraseStrokeCount ? ` (${eraseStrokeCount})` : ""}
-                      </button>
+                      <span className="text-[10px] text-neutral-400">
+                        {eraseStrokeCount > 0 ? `${eraseStrokeCount} trait${eraseStrokeCount > 1 ? "s" : ""} • Enregistré avec Sauvegarder` : "Ctrl+Z pour annuler"}
+                      </span>
                     </>
                   ) : (
                     <>
@@ -13881,11 +14444,11 @@ const MAX_HISTORY_STEPS = 50;
                       onClick={handleUndo}
                       disabled={historyIndex <= 0}
                       className="cursor-pointer rounded px-2 py-1 text-[11px] font-medium text-neutral-400 transition-colors hover:bg-white/10 hover:text-neutral-100 disabled:opacity-30"
-                      title="Annuler la dernière ouverture"
+                      title="Annuler la dernière ouverture (Ctrl+Z)"
                     >
-                      Annuler l&apos;ouverture
+                      Annuler l&apos;ouverture (Ctrl+Z)
                     </button>
-                    <span className="text-[9px] text-neutral-500">Puis utilisez Sauvegarder</span>
+                    <span className="text-[9px] text-neutral-500">Ctrl+Z pour annuler • Enregistré avec Sauvegarder</span>
                     </>
                   )}
                 </div>
@@ -13909,6 +14472,26 @@ const MAX_HISTORY_STEPS = 50;
                     {value}%
                   </option>
                 ))}
+              </select>
+            </label>
+
+            <span className="h-4 w-px bg-white/10" />
+
+            <label className="flex items-center gap-1.5 text-[11px] text-neutral-500" title="Marge de la zone blanche (canvas) autour du plan pour annoter sans déformer le plan">
+              <span className="hidden sm:inline">Marge blanche</span>
+              <select
+                value={canvasMargin}
+                onChange={(event) => {
+                  setCanvasMargin(Number(event.target.value));
+                  setFitSignal((signal) => signal + 1);
+                }}
+                className="cursor-pointer rounded border border-transparent bg-transparent px-1 py-0.5 text-[11px] font-medium tabular-nums text-neutral-200 hover:border-white/15 focus:border-emerald-500/60 focus:outline-none"
+              >
+                <option value={28} className="bg-[#252527]">Standard (28px)</option>
+                <option value={60} className="bg-[#252527]">Moyenne (60px)</option>
+                <option value={100} className="bg-[#252527]">Large (100px)</option>
+                <option value={160} className="bg-[#252527]">Très large (160px)</option>
+                <option value={240} className="bg-[#252527]">Maximale (240px)</option>
               </select>
             </label>
           </div>
@@ -15808,6 +16391,11 @@ const MAX_HISTORY_STEPS = 50;
           onUseMainPlan={() => void useMainPlanForSituation()}
           onRemoveBackground={() => void removeSituationBackground()}
           onTraceOutline={() => startSituationTrace("building_outline")}
+          onAddAnotherOutline={() => startSituationTrace("building_outline", undefined, true)}
+          onRetraceOutline={(outlineId) => startSituationTrace("building_outline", outlineId, false)}
+          onSelectRepresentedOutline={handleSelectRepresentedOutline}
+          onRemoveOutline={handleRemoveSituationBlock}
+          onUpdateBlockLabel={handleUpdateSituationBlockLabel}
           onRefreshVisibleArea={refreshSituationVisibleArea}
           onTraceZone={() => startSituationTrace("represented_zone")}
           onFitChange={updateSituationFit}
@@ -15854,6 +16442,17 @@ const MAX_HISTORY_STEPS = 50;
           onChange={setWatermarkDraft}
           onApply={applyWatermarkSettings}
           onCancel={() => setWatermarkModalOpen(false)}
+        />
+
+        <AutoSaveModal
+          open={autoSaveModalOpen}
+          enabled={autoSaveEnabled}
+          interval={autoSaveInterval}
+          onToggle={handleToggleAutoSave}
+          onChangeInterval={handleChangeAutoSaveInterval}
+          onClose={() => setAutoSaveModalOpen(false)}
+          secondsUntilNextSave={secondsUntilAutoSave}
+          hasUnsavedChanges={hasUnsavedChanges()}
         />
 
         {/* Classic Crop Modal */}

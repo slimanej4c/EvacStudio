@@ -7,6 +7,11 @@ import { IconType, normalizePictogramColorOverride } from "@/utils/safetyIcons";
 import { buildCurvePathData } from "@/lib/curvePath";
 import { normalizeCanvasIconSizeToAspectRatio } from "@/lib/canvasIconDimensions";
 import { hasVisibleShapeFill, shapeHitStrokeWidth } from "@/lib/shapeFill";
+import {
+  PLAN_SITUATION_FRAME_ID,
+  isPlanSituationBlock,
+  isPlanSituationMovableElement,
+} from "@/lib/planSituation";
 
 export interface SheetLegendEntry {
   type: IconType;
@@ -29,10 +34,12 @@ interface SheetBlockNodeProps {
   interactionScale?: number;
   /** Stable Konva name used to reorder this block with the other sheet layers. */
   layerName?: string;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, meta?: { shiftKey?: boolean; ctrlKey?: boolean }) => void;
   onChange: (id: string, patch: Partial<SheetBlock>) => void;
   /** Double-click opens the in-place text editor on blocks that carry copy. */
   onEditText?: (id: string) => void;
+  /** Notifies parent when dragging handles starts or ends */
+  onDragStateChange?: (dragging: boolean) => void;
 }
 
 const FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
@@ -60,7 +67,8 @@ export function SheetBlockNode({
   layerName,
   onSelect,
   onChange,
-  onEditText
+  onEditText,
+  onDragStateChange,
 }: SheetBlockNodeProps) {
   if (!block.visible) return null;
 
@@ -78,14 +86,21 @@ export function SheetBlockNode({
   const padding = block.padding ?? 8;
   const showInlineSelection = isSelected && !editable;
 
-  const select = () => onSelect(block.id);
+  const select = (e?: any) => {
+    const isMulti = Boolean(e?.evt?.shiftKey || e?.evt?.ctrlKey || e?.evt?.metaKey);
+    onSelect(block.id, { shiftKey: isMulti });
+  };
+
+  const isSituationBlock = isPlanSituationBlock(block);
+  const isSituationFrame = block.id === PLAN_SITUATION_FRAME_ID || block.situationRole === "frame";
+  const isPassiveSituationElement = isSituationBlock && !isPlanSituationMovableElement(block) && !isSituationFrame;
 
   const frame =
     block.kind === "shape" ? null : block.fill || block.stroke ? (
       <Rect
         width={width}
         height={height}
-        fill={block.fill}
+        fill={block.fill ?? (isSituationFrame ? "#ffffff" : "transparent")}
         stroke={block.stroke}
         strokeWidth={block.strokeWidth ?? 0}
         strokeScaleEnabled={false}
@@ -156,7 +171,7 @@ export function SheetBlockNode({
       point.x * width,
       point.y * height
     ]);
-    const strokeWidth = block.strokeWidth ?? 3;
+    const strokeWidth = block.strokeWidth ?? 1;
 
     if (block.shapeType === "circle") {
       content = (
@@ -396,7 +411,6 @@ export function SheetBlockNode({
   const inverseInteractionScale = 1 / Math.max(interactionScale, 0.05);
   const vertexRadius = 5.5 * inverseInteractionScale;
   const curveHandleRadius = 5 * inverseInteractionScale;
-  const handleHitPadding = 26 * inverseInteractionScale;
   const handleStroke = block.stroke ?? block.color ?? "#2563eb";
 
   const updateShapeVertex = (index: number, x: number, y: number) => {
@@ -458,7 +472,6 @@ export function SheetBlockNode({
                 stroke="#ffffff"
                 strokeWidth={1.5}
                 strokeScaleEnabled={false}
-                hitStrokeWidth={handleHitPadding}
                 shadowColor="#000000"
                 shadowBlur={3 * inverseInteractionScale}
                 shadowOpacity={0.3}
@@ -472,6 +485,7 @@ export function SheetBlockNode({
                 }}
                 onDragStart={(event) => {
                   event.cancelBubble = true;
+                  onDragStateChange?.(true);
                   const stage = event.target.getStage();
                   if (stage) stage.container().style.cursor = "grabbing";
                 }}
@@ -484,6 +498,7 @@ export function SheetBlockNode({
                   const stage = event.target.getStage();
                   if (stage) stage.container().style.cursor = "pointer";
                   updateCurveHandle(segmentIndex, event.target.x(), event.target.y());
+                  onDragStateChange?.(false);
                 }}
                 onMouseEnter={(event) => {
                   const stage = event.target.getStage();
@@ -509,7 +524,6 @@ export function SheetBlockNode({
           stroke={handleStroke}
           strokeWidth={2}
           strokeScaleEnabled={false}
-          hitStrokeWidth={handleHitPadding}
           shadowColor="#000000"
           shadowBlur={4 * inverseInteractionScale}
           shadowOpacity={0.3}
@@ -519,6 +533,7 @@ export function SheetBlockNode({
           onClick={(event) => { event.cancelBubble = true; }}
           onDragStart={(event) => {
             event.cancelBubble = true;
+            onDragStateChange?.(true);
             const stage = event.target.getStage();
             if (stage) stage.container().style.cursor = "grabbing";
           }}
@@ -531,6 +546,7 @@ export function SheetBlockNode({
             const stage = event.target.getStage();
             if (stage) stage.container().style.cursor = "grab";
             updateShapeVertex(index, event.target.x(), event.target.y());
+            onDragStateChange?.(false);
           }}
           onMouseEnter={(event) => {
             const stage = event.target.getStage();
@@ -548,20 +564,55 @@ export function SheetBlockNode({
   return (
     <Group
       id={block.id}
-      name={[block.id, layerName].filter(Boolean).join(" ")}
+      name={[block.id, layerName, isSituationBlock ? "situationBlock" : ""].filter(Boolean).join(" ")}
       x={block.x}
       y={block.y}
       rotation={block.rotation}
-      draggable={editable}
+      draggable={editable && !isPassiveSituationElement}
+      listening={!isPassiveSituationElement}
       onMouseDown={select}
       onTouchStart={select}
       onClick={select}
       onTap={select}
       onDblClick={() => block.kind !== "shape" && onEditText?.(block.id)}
       onDblTap={() => block.kind !== "shape" && onEditText?.(block.id)}
-      onDragEnd={(event) =>
-        onChange(block.id, { x: Math.round(event.target.x()), y: Math.round(event.target.y()) })
-      }
+      onDragStart={() => {
+        onDragStateChange?.(true);
+      }}
+      onDragMove={(event) => {
+        if (isSituationFrame) {
+          const dx = event.target.x() - block.x;
+          const dy = event.target.y() - block.y;
+          const stage = event.target.getStage();
+          if (stage) {
+            const situationNodes = stage.find(".situationBlock");
+            situationNodes.forEach((node: any) => {
+              if (node.id() === block.id) return;
+              if (node._origX === undefined) {
+                node._origX = node.x();
+                node._origY = node.y();
+              }
+              node.x(node._origX + dx);
+              node.y(node._origY + dy);
+            });
+            event.target.getLayer()?.batchDraw();
+          }
+        }
+      }}
+      onDragEnd={(event) => {
+        onDragStateChange?.(false);
+        if (isSituationFrame) {
+          const stage = event.target.getStage();
+          if (stage) {
+            const situationNodes = stage.find(".situationBlock");
+            situationNodes.forEach((node: any) => {
+              delete node._origX;
+              delete node._origY;
+            });
+          }
+        }
+        onChange(block.id, { x: Math.round(event.target.x()), y: Math.round(event.target.y()) });
+      }}
       onTransformEnd={(event) => {
         const node = event.target;
         const scaleX = Math.abs(node.scaleX());
@@ -579,12 +630,16 @@ export function SheetBlockNode({
               { width, height }
             )
           : { width: transformedWidth, height: transformedHeight };
+        const transformedFontSize = block.kind === "text" && block.fontSize
+          ? Math.max(6, Math.round(block.fontSize * Math.min(scaleX, scaleY)))
+          : undefined;
         onChange(block.id, {
           x: Math.round(node.x()),
           y: Math.round(node.y()),
           width: transformedSize.width,
           height: transformedSize.height,
-          rotation: node.rotation()
+          rotation: node.rotation(),
+          ...(transformedFontSize ? { fontSize: transformedFontSize } : {})
         });
       }}
     >

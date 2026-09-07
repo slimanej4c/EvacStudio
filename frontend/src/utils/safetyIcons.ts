@@ -16,6 +16,8 @@ export interface SafetyIconDefinition {
   subcategoryLabel?: string;
   /** True only for SVG files uploaded by a user and safe to remove from the library. */
   deletable?: boolean;
+  /** Hidden from the library toolbar and icon selection modals (used for legacy compatibility aliases). */
+  hiddenFromLibrary?: boolean;
 }
 
 /**
@@ -107,6 +109,7 @@ const LEGACY_TEMPLATE_PICTOGRAM_TARGETS: Record<
   point_rassemblement: { standardKey: "nfx08070", fileStem: "rassemblement" },
   "Point de rassemblement": { standardKey: "nfx08070", fileStem: "rassemblement" },
   "Porte coupe-feu": { standardKey: "nfx08070", fileStem: "pcf" },
+  ria: { standardKey: "nfx08070", fileStem: "ria" },
   telephone_rouge_final_corrige: { standardKey: "other", fileStem: "telephone_rouge_final_corrige" },
   "Téléphone de sécurité incendie": { standardKey: "nfx08070", fileStem: "tel-urgence" },
   telephone_vert: { standardKey: "other", fileStem: "telephone_vert" },
@@ -131,11 +134,48 @@ export function withLegacyTemplatePictogramAliases(
       && pictogramLeafKey(definition.fileName || "") === pictogramLeafKey(target.fileStem)
     ));
     if (!match) return;
-    // A real server definition already registered under the old key wins. The
-    // static built-in sketches do not: use the catalogue's current SVG instead.
-    if (result[alias]?.standardKey) return;
-    result[alias] = { ...match, type: alias };
+    // A real server definition already registered under the old key wins if not an alias.
+    if (result[alias]?.standardKey && !result[alias]?.hiddenFromLibrary) return;
+    result[alias] = { ...match, type: alias, hiddenFromLibrary: true };
   });
+
+  return result;
+}
+
+/**
+ * Filters and deduplicates pictograms for presentation in the library toolbar
+ * and icon selection modals. Hides backward-compatibility aliases and ensures that each
+ * pictogram artwork appears exactly once per standard and category folder.
+ */
+export function getLibraryVisibleIcons(
+  definitions: Record<IconType, SafetyIconDefinition>
+): SafetyIconDefinition[] {
+  const rawIcons = Object.values(definitions);
+  const seenKeys = new Set<string>();
+  const result: SafetyIconDefinition[] = [];
+
+  // Sort so canonical catalogue definitions (e.g. 'nfx08070:...' or 'other:...') come first
+  const sorted = [...rawIcons].sort((a, b) => {
+    const aIsCanonical = a.type.includes(":") ? 1 : 0;
+    const bIsCanonical = b.type.includes(":") ? 1 : 0;
+    return bIsCanonical - aIsCanonical;
+  });
+
+  for (const icon of sorted) {
+    if (icon.hiddenFromLibrary) continue;
+    if (icon.type in LEGACY_TEMPLATE_PICTOGRAM_TARGETS) continue;
+
+    const fileStem = icon.fileName ? pictogramLeafKey(icon.fileName) : null;
+    const dedupKey = fileStem && icon.standardKey
+      ? `${icon.standardKey}:${icon.categoryKey || ""}:${fileStem}`
+      : `${icon.standardKey || "general"}:${icon.categoryKey || "uncategorized"}:${icon.type}`;
+
+    if (seenKeys.has(dedupKey)) {
+      continue;
+    }
+    seenKeys.add(dedupKey);
+    result.push(icon);
+  }
 
   return result;
 }
@@ -381,6 +421,7 @@ export const SAFETY_ICONS: Record<IconType, SafetyIconDefinition> = {
     type: "extincteur",
     label: "Extincteur",
     color: SAFETY_RED,
+    hiddenFromLibrary: true,
     svg: `<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="35" y="30" width="30" height="55" rx="5" fill="${SAFETY_RED}" stroke="white" stroke-width="4"/>
       <path d="M42 20H58M50 20V30" stroke="white" stroke-width="5" stroke-linecap="round"/>
@@ -393,6 +434,7 @@ export const SAFETY_ICONS: Record<IconType, SafetyIconDefinition> = {
     type: "ria",
     label: "RIA",
     color: SAFETY_RED,
+    hiddenFromLibrary: true,
     svg: `<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="15" y="15" width="70" height="70" rx="8" fill="${SAFETY_RED}" stroke="white" stroke-width="4"/>
       <circle cx="50" cy="50" r="22" stroke="white" stroke-width="5" fill="none"/>
@@ -404,6 +446,7 @@ export const SAFETY_ICONS: Record<IconType, SafetyIconDefinition> = {
     type: "issue_de_secours",
     label: "Issue de secours",
     color: "#22c55e", // Green
+    hiddenFromLibrary: true,
     svg: `<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="15" y="15" width="70" height="70" rx="8" fill="#22c55e" stroke="white" stroke-width="4"/>
       <rect x="35" y="30" width="30" height="50" fill="white"/>
@@ -416,6 +459,7 @@ export const SAFETY_ICONS: Record<IconType, SafetyIconDefinition> = {
     type: "alarme_incendie",
     label: "Alarme incendie",
     color: SAFETY_RED,
+    hiddenFromLibrary: true,
     svg: `<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="15" y="15" width="70" height="70" rx="8" fill="${SAFETY_RED}" stroke="white" stroke-width="4"/>
       <circle cx="50" cy="45" r="16" fill="white"/>
@@ -447,8 +491,9 @@ export const SAFETY_ICONS: Record<IconType, SafetyIconDefinition> = {
   },
   point_rassemblement: {
     type: "point_rassemblement",
-    label: "Point rassemblement",
+    label: "Point de rassemblement",
     color: "#22c55e",
+    hiddenFromLibrary: true,
     svg: `<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="15" y="15" width="70" height="70" rx="8" fill="#22c55e" stroke="white" stroke-width="4"/>
       <circle cx="50" cy="50" r="12" fill="white"/>
@@ -472,30 +517,75 @@ SAFETY_ICONS["nfx08070:03-lutte:3a-extincteurs:lutte_ext"] = {
   type: "nfx08070:03-lutte:3a-extincteurs:lutte_ext",
   fileName: "lutte_ext.svg",
   standardKey: "nfx08070",
+  hiddenFromLibrary: false,
 };
 SAFETY_ICONS["nfx08070:01-evacuation:is_d"] = {
   ...SAFETY_ICONS.issue_de_secours,
   type: "nfx08070:01-evacuation:is_d",
   fileName: "is_d.svg",
   standardKey: "nfx08070",
+  hiddenFromLibrary: false,
 };
 SAFETY_ICONS["nfx08070:01-evacuation:rassemblement"] = {
   ...SAFETY_ICONS.point_rassemblement,
   type: "nfx08070:01-evacuation:rassemblement",
   fileName: "rassemblement.svg",
   standardKey: "nfx08070",
+  hiddenFromLibrary: false,
 };
 SAFETY_ICONS["nfx08070:02-alerte:dm"] = {
   ...SAFETY_ICONS.alarme_incendie,
   type: "nfx08070:02-alerte:dm",
   fileName: "dm.svg",
   standardKey: "nfx08070",
+  hiddenFromLibrary: false,
 };
 SAFETY_ICONS["nfx08070:03-lutte:ria"] = {
   ...SAFETY_ICONS.ria,
   type: "nfx08070:03-lutte:ria",
   fileName: "ria.svg",
   standardKey: "nfx08070",
+  hiddenFromLibrary: false,
+};
+SAFETY_ICONS["nfx08070:00-reperage:vous-ici"] = {
+  type: "nfx08070:00-reperage:vous-ici",
+  label: "Vous êtes ici",
+  color: "#0b4e82",
+  fileName: "vous-ici.svg",
+  standardKey: "nfx08070",
+  hiddenFromLibrary: false,
+};
+SAFETY_ICONS["nfx08070:06-eau:poteau"] = {
+  type: "nfx08070:06-eau:poteau",
+  label: "Poteau d’incendie",
+  color: "#0b4e82",
+  fileName: "poteau.svg",
+  standardKey: "nfx08070",
+  hiddenFromLibrary: false,
+};
+SAFETY_ICONS["nfx08070:13-fluides:coupure-gaz"] = {
+  type: "nfx08070:13-fluides:coupure-gaz",
+  label: "Coupure gaz",
+  color: "#ffd500",
+  fileName: "coupure-gaz.svg",
+  standardKey: "nfx08070",
+  hiddenFromLibrary: false,
+};
+SAFETY_ICONS["nfx08070:12-elec:coupure-bt"] = {
+  type: "nfx08070:12-elec:coupure-bt",
+  label: "Coupure électricité basse tension",
+  color: "#ffd500",
+  fileName: "coupure-bt.svg",
+  standardKey: "nfx08070",
+  hiddenFromLibrary: false,
+};
+SAFETY_ICONS["nfx08070:03-lutte:barrage-gene"] = {
+  type: "nfx08070:03-lutte:barrage-gene",
+  label: "Barrage général",
+  color: "#dc2626",
+  fileName: "barrage-gene.svg",
+  standardKey: "nfx08070",
+  hiddenFromLibrary: false,
 };
 
 export function getSvgDataUrl(type: IconType): string {

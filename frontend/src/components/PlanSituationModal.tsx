@@ -25,11 +25,12 @@ import {
 import type { PlanDocumentType } from "@/lib/planCompliance";
 import {
   evaluatePlanSituationAudit,
+  getSituationSilhouettes,
   planSituationFrame,
   type PlanSituationRole,
   type PlanSituationState,
 } from "@/lib/planSituation";
-import type { IconType, SafetyIconDefinition } from "@/utils/safetyIcons";
+import { type IconType, type SafetyIconDefinition, getLibraryVisibleIcons } from "@/utils/safetyIcons";
 
 interface PlanSituationModalProps {
   open: boolean;
@@ -47,6 +48,11 @@ interface PlanSituationModalProps {
   onUseMainPlan: () => void;
   onRemoveBackground: () => void;
   onTraceOutline: () => void;
+  onAddAnotherOutline?: () => void;
+  onRetraceOutline?: (outlineId: string) => void;
+  onSelectRepresentedOutline?: (outlineId: string) => void;
+  onRemoveOutline?: (outlineId: string) => void;
+  onUpdateBlockLabel?: (blockId: string, label: string) => void;
   onRefreshVisibleArea: () => void;
   onTraceZone: () => void;
   onFitChange: (changes: Partial<Pick<PlanSituationState, "content_width_percent" | "content_height_percent" | "zone_opacity_percent">>) => void;
@@ -78,6 +84,11 @@ export default function PlanSituationModal({
   onUseMainPlan,
   onRemoveBackground,
   onTraceOutline,
+  onAddAnotherOutline,
+  onRetraceOutline,
+  onSelectRepresentedOutline,
+  onRemoveOutline,
+  onUpdateBlockLabel,
   onRefreshVisibleArea,
   onTraceZone,
   onFitChange,
@@ -90,7 +101,7 @@ export default function PlanSituationModal({
   const inputRef = useRef<HTMLInputElement>(null);
   const [selectedIconType, setSelectedIconType] = useState("");
   const definitions = useMemo(
-    () => Object.values(iconDefinitions).sort((left, right) => left.label.localeCompare(right.label, "fr")),
+    () => getLibraryVisibleIcons(iconDefinitions).sort((left, right) => left.label.localeCompare(right.label, "fr")),
     [iconDefinitions],
   );
   const audit = useMemo(
@@ -99,22 +110,42 @@ export default function PlanSituationModal({
   );
   const frame = planSituationFrame(state);
   const titleVisible = Boolean(frame?.title);
-  const outlinePresent = state.blocks.some((block) => block.situationRole === "building_outline");
+  const silhouettes = useMemo(() => getSituationSilhouettes(state), [state]);
+  const outlinePresent = silhouettes.length > 0;
   const tracedZonePresent = state.blocks.some(
     (block) => block.situationRole === "represented_zone" && (block.situationSourcePoints?.length ?? 0) >= 3,
   );
 
-  const findIcon = (terms: string[]) => definitions.find((definition) => {
-    const haystack = normalize(`${definition.type} ${definition.label}`);
-    return terms.some((term) => haystack.includes(normalize(term)));
-  });
-  const addKnownIcon = (terms: string[], role: PlanSituationRole) => {
-    const definition = findIcon(terms);
-    if (!definition) {
+  const findIcon = (terms: string[], fallbackType?: string) => {
+    // 1. Search in visible library definitions
+    const match = definitions.find((definition) => {
+      const haystack = normalize(`${definition.type} ${definition.label}`);
+      return terms.some((term) => haystack.includes(normalize(term)));
+    });
+    if (match) return match.type;
+
+    // 2. Search in all iconDefinitions (including aliases or unlisted)
+    for (const [type, def] of Object.entries(iconDefinitions)) {
+      const haystack = normalize(`${type} ${def.label || ""}`);
+      if (terms.some((term) => haystack.includes(normalize(term)))) {
+        return type;
+      }
+    }
+
+    // 3. Fallback type if provided and valid
+    if (fallbackType && (iconDefinitions[fallbackType] || fallbackType in iconDefinitions)) {
+      return fallbackType;
+    }
+    return fallbackType || null;
+  };
+
+  const addKnownIcon = (terms: string[], role: PlanSituationRole, defaultFallbackKey?: string) => {
+    const iconType = findIcon(terms, defaultFallbackKey);
+    if (!iconType) {
       alert("Ce pictogramme n’est pas disponible dans la bibliothèque active.");
       return;
     }
-    onAddPictogram(definition.type, role);
+    onAddPictogram(iconType, role);
   };
 
   if (!open) return null;
@@ -242,25 +273,123 @@ export default function PlanSituationModal({
               <div className="flex items-start gap-3">
                 <Waypoints className="mt-0.5 h-5 w-5 shrink-0 text-sky-300" />
                 <div className="min-w-0 flex-1">
-                  <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-sky-200">
-                    Créer depuis le plan principal
-                  </h3>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-sky-200">
+                      Silhouettes du site (bâtiments / zones)
+                    </h3>
+                    {silhouettes.length > 0 && (
+                      <span className="text-[10px] font-semibold text-sky-300">
+                        {silhouettes.length} {silhouettes.length > 1 ? "bâtiments / zones" : "bâtiment"}
+                      </span>
+                    )}
+                  </div>
                   <p className="mt-1 text-[10px] leading-relaxed text-sky-100/70">
-                    Tracez uniquement le contour extérieur. Le bouton d’actualisation calcule ensuite la partie réellement visible dans la fenêtre du plan principal et la remplit en gris. Le résultat reste figé jusqu’à la prochaine actualisation.
+                    Tracez le contour de chaque bâtiment du site. Choisissez ensuite quelle zone est représentée par ce plan d’évacuation (mise en valeur en gris foncé).
                   </p>
+
+                  {/* List of silhouettes when at least one exists */}
+                  {silhouettes.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      {silhouettes.map((silhouette, idx) => {
+                        const isRepresented = silhouette.situationRole === "represented_zone";
+                        return (
+                          <div
+                            key={silhouette.id}
+                            className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border p-2.5 transition-colors ${
+                              isRepresented
+                                ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-100"
+                                : "border-white/10 bg-black/20 text-neutral-200"
+                            }`}
+                          >
+                            <div className="flex min-w-[160px] flex-1 items-center gap-2">
+                              <Building2 className={`h-4 w-4 shrink-0 ${isRepresented ? "text-emerald-300" : "text-sky-300"}`} />
+                              <input
+                                type="text"
+                                value={silhouette.label || `Silhouette ${idx + 1}`}
+                                onChange={(e) => onUpdateBlockLabel?.(silhouette.id, e.target.value)}
+                                className="w-full min-w-0 rounded border border-white/10 bg-black/30 px-2 py-1 text-xs font-semibold text-white placeholder-neutral-500 focus:border-sky-400 focus:outline-none"
+                                placeholder={`Bâtiment ${idx + 1}`}
+                              />
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              {isRepresented ? (
+                                <span className="flex items-center gap-1 rounded-full bg-emerald-500/25 px-2.5 py-1 text-[10px] font-bold text-emerald-200 border border-emerald-400/30">
+                                  <Check className="h-3 w-3" /> Zone représentée
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => onSelectRepresentedOutline?.(silhouette.id)}
+                                  className="flex items-center gap-1 rounded-lg border border-sky-400/30 bg-sky-500/15 px-2.5 py-1 text-[10px] font-bold text-sky-200 hover:bg-sky-500/25"
+                                  title="Définir ce bâtiment comme la zone représentée sur le plan"
+                                >
+                                  Sélectionner comme zone représentée
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => onRetraceOutline?.(silhouette.id)}
+                                className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold text-neutral-300 hover:bg-white/10"
+                                title="Retracer le contour de ce bâtiment"
+                              >
+                                <Waypoints className="h-3 w-3" />
+                                Retracer
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onRemoveOutline?.(silhouette.id)}
+                                className="rounded-lg p-1 text-neutral-400 hover:bg-red-500/20 hover:text-red-300"
+                                title="Supprimer cette silhouette"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
                   <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    <button type="button" onClick={onTraceOutline} className="flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-3 py-2 text-[11px] font-bold text-white hover:bg-sky-500">
-                      <Waypoints className="h-4 w-4" />
-                      {outlinePresent ? "Retracer la silhouette" : "Tracer la silhouette"}
-                    </button>
-                    <button type="button" disabled={!outlinePresent} onClick={onRefreshVisibleArea} className="flex items-center justify-center gap-2 rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-3 py-2 text-[11px] font-bold text-emerald-100 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-35">
-                      <RefreshCw className="h-4 w-4" />
-                      Actualiser le champ visible
-                    </button>
-                    <button type="button" disabled={!outlinePresent} onClick={onTraceZone} className="sm:col-span-2 flex items-center justify-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-[10px] font-semibold text-neutral-300 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35">
-                      <ShieldAlert className="h-3.5 w-3.5" />
-                      {tracedZonePresent ? "Corriger la zone manuellement" : "Tracer la zone manuellement (optionnel)"}
-                    </button>
+                    {silhouettes.length === 0 ? (
+                      <button
+                        type="button"
+                        onClick={onTraceOutline}
+                        className="sm:col-span-2 flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-3 py-2 text-[11px] font-bold text-white hover:bg-sky-500"
+                      >
+                        <Waypoints className="h-4 w-4" />
+                        Tracer la première silhouette du bâtiment
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={onAddAnotherOutline}
+                          className="flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-3 py-2 text-[11px] font-bold text-white hover:bg-sky-500"
+                        >
+                          <Waypoints className="h-4 w-4" />
+                          + Ajouter une autre silhouette
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!outlinePresent}
+                          onClick={onRefreshVisibleArea}
+                          className="flex items-center justify-center gap-2 rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-3 py-2 text-[11px] font-bold text-emerald-100 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-35"
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          Actualiser le champ visible
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!outlinePresent}
+                          onClick={onTraceZone}
+                          className="sm:col-span-2 flex items-center justify-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-[10px] font-semibold text-neutral-300 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35"
+                        >
+                          <ShieldAlert className="h-3.5 w-3.5" />
+                          {tracedZonePresent ? "Corriger la sous-zone manuellement" : "Tracer une sous-zone manuellement (optionnel)"}
+                        </button>
+                      </>
+                    )}
                   </div>
 
                   <label className="mt-3 flex cursor-pointer items-center gap-2 text-[11px] font-semibold text-neutral-200">
@@ -304,8 +433,28 @@ export default function PlanSituationModal({
             <section className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4">
               <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-neutral-400">Éléments</h3>
               <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
-                <button type="button" onClick={() => addKnownIcon(["point de rassemblement"], "assembly_point")} className="situation-tool"><MapPin className="h-4 w-4" />Point de rassemblement</button>
-                <button type="button" onClick={() => addKnownIcon(["vous etes ici"], "observer")} className="situation-tool"><Compass className="h-4 w-4" />Vous êtes ici</button>
+                <button
+                  type="button"
+                  onClick={() => addKnownIcon(
+                    ["point de rassemblement", "point rassemblement", "rassemblement", "assembly"],
+                    "assembly_point",
+                    "nfx08070:01-evacuation:rassemblement"
+                  )}
+                  className="situation-tool"
+                >
+                  <MapPin className="h-4 w-4" />Point de rassemblement
+                </button>
+                <button
+                  type="button"
+                  onClick={() => addKnownIcon(
+                    ["vous etes ici", "vous-ici", "observateur", "observer"],
+                    "observer",
+                    "nfx08070:00-reperage:vous-ici"
+                  )}
+                  className="situation-tool"
+                >
+                  <Compass className="h-4 w-4" />Vous êtes ici
+                </button>
                 <button type="button" onClick={() => onAddElement("represented_zone")} className="situation-tool"><ShieldAlert className="h-4 w-4" />Zone représentée</button>
                 <button type="button" onClick={() => onAddElement("road")} className="situation-tool"><Route className="h-4 w-4" />Route</button>
                 <button type="button" onClick={() => onAddElement("parking")} className="situation-tool"><SquareParking className="h-4 w-4" />Parking</button>
@@ -315,15 +464,55 @@ export default function PlanSituationModal({
                 <button type="button" onClick={() => onAddElement("arrow")} className="situation-tool"><span className="text-lg">➜</span>Flèche</button>
                 {documentType === "intervention" && (
                   <>
-                    <button type="button" onClick={() => addKnownIcon(["poteau d'incendie", "poteau incendie"], "remote_equipment")} className="situation-tool">Poteau incendie</button>
-                    <button type="button" onClick={() => addKnownIcon(["coupure gaz"], "remote_equipment")} className="situation-tool">Coupure gaz</button>
-                    <button type="button" onClick={() => addKnownIcon(["coupure electricite"], "remote_equipment")} className="situation-tool">Coupure électrique</button>
-                    <button type="button" onClick={() => addKnownIcon(["barrage"], "remote_equipment")} className="situation-tool">Barrage</button>
+                    <button
+                      type="button"
+                      onClick={() => addKnownIcon(
+                        ["poteau d'incendie", "poteau incendie", "poteau", "bouche d'incendie", "bouche incendie", "bouche", "hydrant"],
+                        "remote_equipment",
+                        "nfx08070:06-eau:poteau"
+                      )}
+                      className="situation-tool"
+                    >
+                      Poteau incendie
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => addKnownIcon(
+                        ["coupure gaz", "gaz"],
+                        "remote_equipment",
+                        "nfx08070:13-fluides:coupure-gaz"
+                      )}
+                      className="situation-tool"
+                    >
+                      Coupure gaz
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => addKnownIcon(
+                        ["coupure electricite", "coupure electrique", "electricite", "tgbt", "coupure-bt", "coupure-ht", "coupure-urgence"],
+                        "remote_equipment",
+                        "nfx08070:12-elec:coupure-bt"
+                      )}
+                      className="situation-tool"
+                    >
+                      Coupure électrique
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => addKnownIcon(
+                        ["barrage", "barrage general", "barrage partiel", "barrage-gene", "barrage-part", "eau incendie", "eau-incendie"],
+                        "remote_equipment",
+                        "nfx08070:03-lutte:barrage-gene"
+                      )}
+                      className="situation-tool"
+                    >
+                      Barrage
+                    </button>
                   </>
                 )}
               </div>
               <p className="mt-3 text-[10px] leading-relaxed text-neutral-400">
-                Les éléments sont placés automatiquement et protégés contre les déplacements à la souris. Sur la feuille, sélectionnez le cadre extérieur puis agrandissez-le pour créer de la place pour le parking et les points de rassemblement.
+                Les silhouettes de bâtiment et zones représentées restent fixes et protégées. Sur la feuille, vous pouvez déplacer et redimensionner librement les pictogrammes, parkings, flèches et points de rassemblement.
               </p>
               <div className="mt-3 flex gap-2">
                 <select value={selectedIconType} onChange={(event) => setSelectedIconType(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#171719] px-3 py-2 text-[11px] text-neutral-200">

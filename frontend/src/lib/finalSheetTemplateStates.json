@@ -884,7 +884,7 @@
           "lineHeight": 1,
           "padding": 8,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-conformity",
@@ -904,7 +904,7 @@
           "verticalAlign": "middle",
           "padding": 0,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-fire-title",
@@ -928,7 +928,7 @@
           "letterSpacing": 0.5,
           "padding": 15,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-fire-copy",
@@ -949,7 +949,7 @@
           "lineHeight": 1.24,
           "padding": 4,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-evacuation-title",
@@ -973,7 +973,7 @@
           "letterSpacing": 0.5,
           "padding": 15,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-evacuation-copy",
@@ -994,7 +994,7 @@
           "lineHeight": 1.24,
           "padding": 4,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-prevention-title",
@@ -1018,7 +1018,7 @@
           "letterSpacing": 0.5,
           "padding": 15,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-prevention-copy",
@@ -1039,7 +1039,7 @@
           "lineHeight": 1.24,
           "padding": 4,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-assembly-box",
@@ -1063,7 +1063,7 @@
           "lineHeight": 1.2,
           "padding": 12,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-114",
@@ -1087,7 +1087,7 @@
           "lineHeight": 1.2,
           "padding": 8,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-studio-logo",
@@ -1100,7 +1100,7 @@
           "height": 116,
           "rotation": 0,
           "visible": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-plan",
@@ -1117,7 +1117,7 @@
           "stroke": "#d4d4d4",
           "strokeWidth": 0,
           "cornerRadius": 0,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-level",
@@ -1140,7 +1140,7 @@
           "verticalAlign": "middle",
           "padding": 5,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-client-logo",
@@ -1153,7 +1153,7 @@
           "height": 108,
           "rotation": 0,
           "visible": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-site",
@@ -1174,7 +1174,7 @@
           "lineHeight": 1.25,
           "padding": 2,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "evac-green-legend",
@@ -1199,7 +1199,7 @@
           "color": "#171717",
           "fontSize": 10.5,
           "padding": 7,
-          "locked": true
+          "locked": false
         },
         {
           "id": "picto-1787341010762-9r5ilv",
@@ -1227,7 +1227,7 @@
           "visible": true,
           "flipY": false,
           "flipX": false,
-          "locked": true
+          "locked": false
         },
         {
           "id": "picto-1787341110270-th1vn8",
@@ -1253,7 +1253,7 @@
           "height": 73,
           "rotation": 0,
           "visible": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "sheet-shape-1787341276018-5qocf5k",
@@ -1310,7 +1310,7 @@
           "strokeWidth": 1,
           "fill": "#3b82f6",
           "fillOpacity": 0,
-          "locked": true
+          "locked": false
         }
       ],
       "planPlacement": {
@@ -1546,7 +1546,7 @@
           "lineHeight": 1,
           "padding": 10,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-conformity",
@@ -1567,7 +1567,7 @@
           "lineHeight": 1.2,
           "padding": 0,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-fire-title",
@@ -1591,7 +1591,7 @@
           "letterSpacing": 1,
           "padding": 8,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-fire",
@@ -1613,7 +1613,7 @@
           "letterSpacing": 0,
           "padding": 4,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-fire-numbers",
@@ -1643,7 +1643,7 @@
           "lineHeight": 1.3,
           "padding": 8,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-evacuation-title",
@@ -1667,7 +1667,7 @@
           "letterSpacing": 1,
           "padding": 8,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-evacuation",
@@ -1689,7 +1689,7 @@
           "letterSpacing": 0,
           "padding": 4,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-medical-title",
@@ -1711,7 +1711,7 @@
           "letterSpacing": 0,
           "padding": 4,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-prevention-title",
@@ -1735,7 +1735,7 @@
           "letterSpacing": 1,
           "padding": 8,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-prevention",
@@ -1757,7 +1757,7 @@
           "letterSpacing": 0,
           "padding": 4,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-studio-logo",
@@ -1770,7 +1770,7 @@
           "height": 66,
           "rotation": 0,
           "visible": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-plan",
@@ -1787,7 +1787,7 @@
           "stroke": "#1a1a1a",
           "strokeWidth": 0,
           "cornerRadius": 0,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-client-logo",
@@ -1800,7 +1800,7 @@
           "height": 104,
           "rotation": 0,
           "visible": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "sheet-shape-1787104927264-0fp60sg",
@@ -1817,7 +1817,7 @@
           "stroke": "#ff1d0c",
           "strokeWidth": 1,
           "fillOpacity": 0.15,
-          "locked": true,
+          "locked": false,
           "fill": "#feffff"
         },
         {
@@ -1842,7 +1842,7 @@
           "verticalAlign": "middle",
           "lineHeight": 1.3,
           "padding": 8,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-site",
@@ -1863,7 +1863,7 @@
           "lineHeight": 1.35,
           "padding": 0,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "nf-legend",
@@ -1888,7 +1888,7 @@
           "color": "#1a1a1a",
           "fontSize": 11,
           "padding": 8,
-          "locked": true
+          "locked": false
         },
         {
           "id": "picto-1787102688634-ehnwyu",
@@ -1914,7 +1914,7 @@
           "height": 30,
           "rotation": 0,
           "visible": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "picto-1787271512963-b9hscy",
@@ -1927,7 +1927,7 @@
           "height": 95,
           "rotation": 0,
           "visible": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "picto-1787339946763-u5gct7",
@@ -1940,7 +1940,7 @@
           "height": 70,
           "rotation": 0,
           "visible": true,
-          "locked": true
+          "locked": false
         }
       ],
       "planPlacement": {
@@ -2004,6 +2004,30 @@
           "visible": true,
           "fill": "#ffffff",
           "strokeWidth": 0
+        },
+        {
+          "id": "official_a2_pay_pi-client-logo",
+          "kind": "image",
+          "label": "Logo client",
+          "imageKey": "clientLogo",
+          "x": 1370,
+          "y": 146,
+          "width": 170,
+          "height": 70,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": "official_a2_pay_pi-studio-logo",
+          "kind": "image",
+          "label": "Logo créateur",
+          "imageKey": "studioLogo",
+          "x": 60,
+          "y": 146,
+          "width": 170,
+          "height": 70,
+          "rotation": 0,
+          "visible": true
         }
       ],
       "planPlacement": {
@@ -3214,6 +3238,30 @@
           "flipY": false,
           "visible": true,
           "color": "#fbfff7"
+        },
+        {
+          "id": "official_a3_pe_pay-modern-landscape-client-logo",
+          "kind": "image",
+          "label": "Logo client",
+          "imageKey": "clientLogo",
+          "x": 1370,
+          "y": 160,
+          "width": 170,
+          "height": 70,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": "official_a3_pe_pay-modern-landscape-studio-logo",
+          "kind": "image",
+          "label": "Logo créateur",
+          "imageKey": "studioLogo",
+          "x": 350,
+          "y": 160,
+          "width": 170,
+          "height": 70,
+          "rotation": 0,
+          "visible": true
         }
       ],
       "planPlacement": {
@@ -3236,7 +3284,8 @@
           "rotation": 0,
           "visible": true,
           "fill": "#ffffff",
-          "strokeWidth": 0
+          "strokeWidth": 0,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-02-bandeau-plan-de-securite-incendie",
@@ -3258,7 +3307,8 @@
           "verticalAlign": "middle",
           "lineHeight": 1,
           "padding": 8,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-03-mention-de-conformite",
@@ -3278,7 +3328,8 @@
           "verticalAlign": "middle",
           "lineHeight": 1,
           "padding": 0,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-04-sortie-dans-le-bandeau",
@@ -3291,7 +3342,8 @@
           "height": 55,
           "rotation": 0,
           "visible": true,
-          "color": "#00a650"
+          "color": "#00a650",
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-05-bandeau-consignes-de-securite",
@@ -3313,7 +3365,8 @@
           "verticalAlign": "middle",
           "lineHeight": 1,
           "padding": 10,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-06-separateur-de-consignes",
@@ -3337,7 +3390,8 @@
             }
           ],
           "stroke": "#555555",
-          "strokeWidth": 1
+          "strokeWidth": 1,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-07-separateur-de-consignes",
@@ -3361,7 +3415,8 @@
             }
           ],
           "stroke": "#555555",
-          "strokeWidth": 1
+          "strokeWidth": 1,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-08-appel-des-services-de-secours",
@@ -3381,7 +3436,8 @@
           "verticalAlign": "top",
           "lineHeight": 1.18,
           "padding": 0,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-09-numeros-pompiers",
@@ -3405,7 +3461,8 @@
           "fill": "#ffffff",
           "stroke": "#f51b27",
           "strokeWidth": 1.5,
-          "cornerRadius": 4
+          "cornerRadius": 4,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-10-combine-telephone",
@@ -3417,7 +3474,8 @@
           "width": 18,
           "height": 18,
           "rotation": 0,
-          "visible": true
+          "visible": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-11-precision-de-l-appel",
@@ -3437,7 +3495,8 @@
           "verticalAlign": "top",
           "lineHeight": 1,
           "padding": 0,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-14-incendie-declare-chez-vous",
@@ -3457,7 +3516,8 @@
           "verticalAlign": "top",
           "lineHeight": 1.13,
           "padding": 0,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-15-incendie-au-dessous-du-palier",
@@ -3477,7 +3537,8 @@
           "verticalAlign": "top",
           "lineHeight": 1.12,
           "padding": 0,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-16-incendie-au-dessus-du-palier",
@@ -3497,7 +3558,8 @@
           "verticalAlign": "top",
           "lineHeight": 1.14,
           "padding": 0,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-17-premiers-secours",
@@ -3510,7 +3572,8 @@
           "height": 63,
           "rotation": 0,
           "visible": true,
-          "color": "#00a651"
+          "color": "#00a651",
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-18-accident-ou-malaise",
@@ -3530,7 +3593,8 @@
           "verticalAlign": "top",
           "lineHeight": 1,
           "padding": 0,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-19-numeros-medicaux",
@@ -3554,7 +3618,8 @@
           "fill": "#ffffff",
           "stroke": "#00a651",
           "strokeWidth": 1.4,
-          "cornerRadius": 4
+          "cornerRadius": 4,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-20-telephone-medical",
@@ -3567,7 +3632,8 @@
           "height": 20,
           "rotation": 0,
           "visible": true,
-          "color": "#00a651"
+          "color": "#00a651",
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-21-precision-de-l-appel-medical",
@@ -3587,7 +3653,8 @@
           "verticalAlign": "top",
           "lineHeight": 1,
           "padding": 0,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-22-appel-d-urgence-114",
@@ -3607,7 +3674,8 @@
           "verticalAlign": "top",
           "lineHeight": 1.08,
           "padding": 0,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-23-numero-114",
@@ -3631,7 +3699,8 @@
           "fill": "#ffffff",
           "stroke": "#4169bd",
           "strokeWidth": 1.3,
-          "cornerRadius": 4
+          "cornerRadius": 4,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-24-conduite-a-tenir-dans-les-fumees",
@@ -3651,7 +3720,8 @@
           "verticalAlign": "top",
           "lineHeight": 1.15,
           "padding": 0,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-25-fermeture-des-portes-coupe-feu",
@@ -3663,7 +3733,8 @@
           "width": 29,
           "height": 29,
           "rotation": 0,
-          "visible": true
+          "visible": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-26-limiter-la-propagation-des-flammes",
@@ -3683,7 +3754,8 @@
           "verticalAlign": "top",
           "lineHeight": 1.12,
           "padding": 0,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-27-issue-finale-panneau-complet",
@@ -3697,7 +3769,8 @@
           "rotation": 0,
           "flipX": false,
           "flipY": false,
-          "visible": true
+          "visible": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-28-cheminement-evacuation",
@@ -3711,7 +3784,8 @@
           "rotation": 0,
           "flipX": false,
           "flipY": false,
-          "visible": true
+          "visible": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-29-urgence-05",
@@ -3725,7 +3799,8 @@
           "rotation": 0,
           "flipX": false,
           "flipY": false,
-          "visible": true
+          "visible": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-30-urgence-02",
@@ -3739,7 +3814,8 @@
           "rotation": 0,
           "flipX": false,
           "flipY": false,
-          "visible": true
+          "visible": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-31-urgence-01",
@@ -3753,7 +3829,8 @@
           "rotation": 0,
           "flipX": false,
           "flipY": false,
-          "visible": true
+          "visible": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-32-telephone-de-securite-incendie",
@@ -3767,7 +3844,8 @@
           "rotation": 0,
           "flipX": false,
           "flipY": false,
-          "visible": true
+          "visible": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-35-zone-courbe-6",
@@ -3804,7 +3882,8 @@
           "stroke": "#3b82f6",
           "strokeWidth": 0,
           "fill": "#ed1c24",
-          "fillOpacity": 1
+          "fillOpacity": 1,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-36-texte-42",
@@ -3824,7 +3903,8 @@
           "verticalAlign": "middle",
           "lineHeight": 1.3,
           "padding": 6,
-          "uppercase": false
+          "uppercase": false,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-37-zone-courbe-6-copie",
@@ -3882,7 +3962,8 @@
           "verticalAlign": "middle",
           "lineHeight": 1,
           "padding": 1,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-39-zone-courbe-6-copie",
@@ -3941,7 +4022,7 @@
           "lineHeight": 1,
           "padding": 1,
           "uppercase": true,
-          "locked": true
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-fire-extinguisher",
@@ -3954,7 +4035,8 @@
           "height": 30,
           "rotation": 0,
           "visible": true,
-          "color": "#e63329"
+          "color": "#e63329",
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-fire-extinguisher-copy",
@@ -3974,7 +4056,8 @@
           "verticalAlign": "middle",
           "lineHeight": 1.14,
           "padding": 0,
-          "uppercase": true
+          "uppercase": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-studio-logo",
@@ -3986,7 +4069,8 @@
           "width": 180,
           "height": 65,
           "rotation": 0,
-          "visible": true
+          "visible": true,
+          "locked": false
         },
         {
           "id": "official_a3_pe_ph_por-pe-update",
@@ -4006,7 +4090,45 @@
           "verticalAlign": "middle",
           "lineHeight": 1,
           "padding": 0,
-          "uppercase": false
+          "uppercase": false,
+          "locked": false
+        },
+        {
+          "id": "official_a3_pe_ph_por-pe-client-logo",
+          "kind": "image",
+          "label": "Logo client",
+          "imageKey": "clientLogo",
+          "x": 890,
+          "y": 195,
+          "width": 165,
+          "height": 65,
+          "rotation": 0,
+          "visible": true,
+          "locked": false
+        },
+        {
+          "id": "official_a3_pe_ph_por-automatic-legend",
+          "kind": "legend",
+          "label": "Légende",
+          "x": 755,
+          "y": 1000,
+          "width": 300,
+          "height": 300,
+          "rotation": 0,
+          "visible": true,
+          "title": "LÉGENDE",
+          "titleColor": "#1a1a1a",
+          "titleFontSize": 15,
+          "titleHeight": 30,
+          "titleAlign": "center",
+          "titleRule": true,
+          "fill": "#ffffff",
+          "stroke": "#1a1a1a",
+          "strokeWidth": 1,
+          "color": "#1a1a1a",
+          "fontSize": 11,
+          "padding": 8,
+          "locked": false
         }
       ],
       "planPlacement": {
@@ -4086,6 +4208,18 @@
           "height": 70,
           "rotation": 0,
           "visible": true
+        },
+        {
+          "id": "official_a3_pi_pay-studio-logo",
+          "kind": "image",
+          "label": "Logo créateur",
+          "imageKey": "studioLogo",
+          "x": 60,
+          "y": 146,
+          "width": 170,
+          "height": 70,
+          "rotation": 0,
+          "visible": true
         }
       ],
       "planPlacement": {
@@ -4159,6 +4293,18 @@
           "label": "Logo client",
           "imageKey": "clientLogo",
           "x": 927,
+          "y": 126,
+          "width": 150,
+          "height": 62,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": "official_a3_pi_port-studio-logo",
+          "kind": "image",
+          "label": "Logo créateur",
+          "imageKey": "studioLogo",
+          "x": 54,
           "y": 126,
           "width": 150,
           "height": 62,
@@ -5375,6 +5521,30 @@
           "flipX": false,
           "flipY": false,
           "visible": true
+        },
+        {
+          "id": "official_pe_a3_port-modern-client-logo",
+          "kind": "image",
+          "label": "Logo client",
+          "imageKey": "clientLogo",
+          "x": 927,
+          "y": 180,
+          "width": 150,
+          "height": 62,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": "official_pe_a3_port-modern-studio-logo",
+          "kind": "image",
+          "label": "Logo créateur",
+          "imageKey": "studioLogo",
+          "x": 54,
+          "y": 180,
+          "width": 150,
+          "height": 62,
+          "rotation": 0,
+          "visible": true
         }
       ],
       "planPlacement": {
@@ -5807,6 +5977,18 @@
           "flipY": false,
           "visible": true,
           "locked": false
+        },
+        {
+          "id": "official_ph_pe_a3_pay-pe-landscape-client-logo",
+          "kind": "image",
+          "label": "Logo client",
+          "imageKey": "clientLogo",
+          "x": 1340,
+          "y": 146,
+          "width": 170,
+          "height": 70,
+          "rotation": 0,
+          "visible": true
         }
       ],
       "planPlacement": {
@@ -5907,6 +6089,18 @@
           "padding": 0,
           "uppercase": true,
           "locked": false
+        },
+        {
+          "id": "official_ph_pi_a3_pay-studio-logo",
+          "kind": "image",
+          "label": "Logo créateur",
+          "imageKey": "studioLogo",
+          "x": 60,
+          "y": 146,
+          "width": 170,
+          "height": 70,
+          "rotation": 0,
+          "visible": true
         }
       ],
       "planPlacement": {
@@ -5980,6 +6174,18 @@
           "label": "Logo client",
           "imageKey": "clientLogo",
           "x": 927,
+          "y": 126,
+          "width": 150,
+          "height": 62,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": "official_pi_a2_port-studio-logo",
+          "kind": "image",
+          "label": "Logo créateur",
+          "imageKey": "studioLogo",
+          "x": 54,
           "y": 126,
           "width": 150,
           "height": 62,
@@ -6063,6 +6269,30 @@
           "lineHeight": 1,
           "padding": 0,
           "uppercase": true
+        },
+        {
+          "id": "official_pi_a3_ph_por-pi-portrait-client-logo",
+          "kind": "image",
+          "label": "Logo client",
+          "imageKey": "clientLogo",
+          "x": 927,
+          "y": 195,
+          "width": 150,
+          "height": 62,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": "official_pi_a3_ph_por-pi-portrait-studio-logo",
+          "kind": "image",
+          "label": "Logo créateur",
+          "imageKey": "studioLogo",
+          "x": 54,
+          "y": 195,
+          "width": 150,
+          "height": 62,
+          "rotation": 0,
+          "visible": true
         }
       ],
       "planPlacement": {
@@ -6248,6 +6478,18 @@
           "y": 146,
           "width": 170,
           "height": 70,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": "official_psi_a3_ph_pay-studio-logo",
+          "kind": "image",
+          "label": "Logo créateur",
+          "imageKey": "studioLogo",
+          "x": 70,
+          "y": 1035,
+          "width": 220,
+          "height": 66,
           "rotation": 0,
           "visible": true
         }
@@ -7043,7 +7285,19 @@
           "lineHeight": 1,
           "padding": 1,
           "uppercase": true,
-          "locked": true
+          "locked": false
+        },
+        {
+          "id": "official_psi_ph_a3_por-psi-client-logo",
+          "kind": "image",
+          "label": "Logo client",
+          "imageKey": "clientLogo",
+          "x": 890,
+          "y": 195,
+          "width": 165,
+          "height": 65,
+          "rotation": 0,
+          "visible": true
         }
       ],
       "planPlacement": {

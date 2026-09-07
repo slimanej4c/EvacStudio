@@ -329,6 +329,8 @@ class PlanIcon(models.Model):
     leader_points = models.JSONField(default=list, blank=True)
     # Stroke width of the leader line (defaults to 2). Editable per icon.
     leader_width = models.FloatField(default=2.0)
+    # Radius / size of the anchor dot at the start of the leader line (defaults to 1.0 px). Editable per icon.
+    leader_dot_size = models.FloatField(default=1.0)
     # Manual color override for the leader line, as '#rrggbb'. Blank defaults
     # to the icon's own color (either explicit color or regulatory/definition color).
     leader_color = models.CharField(max_length=7, blank=True, default='')

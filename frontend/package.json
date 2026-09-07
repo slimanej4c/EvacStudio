@@ -9,7 +9,10 @@
     "start": "next start",
     "lint": "eslint",
     "test:plan-situation": "node --experimental-strip-types scripts/test-plan-situation.mjs",
-    "test:plan-legend": "node --experimental-strip-types scripts/test-plan-legend.mjs"
+    "test:plan-legend": "node --experimental-strip-types scripts/test-plan-legend.mjs",
+    "test:template-logos": "node --experimental-strip-types scripts/test-template-logos.mjs",
+    "test:plan-template-lock": "node --experimental-strip-types scripts/test-plan-template-lock.mjs",
+    "test:plan-reframe": "node --experimental-strip-types scripts/test-plan-reframe.mjs"
   },
   "dependencies": {
     "jspdf": "^4.2.1",

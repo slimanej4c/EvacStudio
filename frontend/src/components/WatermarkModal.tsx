@@ -126,6 +126,66 @@ export function WatermarkModal({
               </label>
             ))}
           </div>
+
+          {value.show_bat_block && (
+            <div className="sm:col-span-2 rounded-lg border border-white/10 bg-black/20 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-400">
+                  Dimensions du bloc Bon à Tirer
+                </span>
+                {(value.block_width || value.block_height) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChange({
+                        ...value,
+                        block_width: undefined,
+                        block_height: undefined,
+                      });
+                    }}
+                    className="text-[10px] text-amber-400 hover:text-amber-300 hover:underline"
+                  >
+                    Rétablir la taille automatique
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label>
+                  <span className="mb-1 block text-[10px] text-neutral-400">Largeur (px)</span>
+                  <input
+                    type="number"
+                    min={100}
+                    max={2000}
+                    placeholder="Auto"
+                    value={value.block_width ?? ""}
+                    onChange={(e) => {
+                      const val = e.target.value ? Math.max(100, Number(e.target.value)) : undefined;
+                      update("block_width", val as unknown as number);
+                    }}
+                    className="w-full rounded border border-white/10 bg-black/30 px-3 py-2 text-xs text-white outline-none focus:border-emerald-500"
+                  />
+                </label>
+                <label>
+                  <span className="mb-1 block text-[10px] text-neutral-400">Hauteur (px)</span>
+                  <input
+                    type="number"
+                    min={70}
+                    max={2000}
+                    placeholder="Auto"
+                    value={value.block_height ?? ""}
+                    onChange={(e) => {
+                      const val = e.target.value ? Math.max(70, Number(e.target.value)) : undefined;
+                      update("block_height", val as unknown as number);
+                    }}
+                    className="w-full rounded border border-white/10 bg-black/30 px-3 py-2 text-xs text-white outline-none focus:border-emerald-500"
+                  />
+                </label>
+              </div>
+              <p className="mt-2 text-[10px] text-neutral-500">
+                Vous pouvez également sélectionner le bloc BAT directement sur le plan pour l’étirer, le déformer et le redimensionner à la souris avec les poignées.
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="flex justify-end gap-2 border-t border-white/10 px-5 py-4">

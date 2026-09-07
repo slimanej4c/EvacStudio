@@ -2,7 +2,7 @@
 
 import React, { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { SAFETY_ICONS, IconType, SafetyIconDefinition } from "@/utils/safetyIcons";
+import { SAFETY_ICONS, IconType, SafetyIconDefinition, getLibraryVisibleIcons } from "@/utils/safetyIcons";
 import { SafetyIconArtwork } from "@/components/SafetyIconArtwork";
 import { FileCode2, Loader2, Pencil, Plus, Search, Trash2, Type, Upload, X } from "lucide-react";
 
@@ -100,7 +100,7 @@ export default function IconToolbar({
   const [libraryError, setLibraryError] = useState("");
   const svgFileInputRef = useRef<HTMLInputElement>(null);
 
-  const allIcons = useMemo(() => Object.values(iconDefinitions), [iconDefinitions]);
+  const allIcons = useMemo(() => getLibraryVisibleIcons(iconDefinitions), [iconDefinitions]);
 
   const standardOptions = useMemo(() => {
     const standards = new Map<string, { key: string; label: string; count: number }>();
