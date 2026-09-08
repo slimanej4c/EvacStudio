@@ -3,7 +3,7 @@ import {
   SHEET_TEMPLATES,
   type SheetDocumentTypeKey,
   type SheetTemplateKey,
-} from "./sheetTemplates.ts";
+} from "./sheetTemplates";
 
 export const EXPORT_PAPER_SIZES = {
   a4: { label: "A4", widthMm: 297, heightMm: 210 },
