@@ -882,7 +882,7 @@ function PlanCanvas({
   canvasRef
 }: PlanCanvasProps & { canvasRef?: React.Ref<PlanCanvasHandle> }) {
   const stageRef = useRef<Konva.Stage | null>(null);
-  const transformerRef = useRef<any>(null);
+  const transformerRef = useRef<Konva.Transformer | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [bgImage, setBgImage] = useState<HTMLImageElement | null>(null);
@@ -922,6 +922,8 @@ function PlanCanvas({
     };
   }, [watermark.client_logo, watermark.creator_logo]);
 
+  // Release decoded image cache entries when overlays disappear; preserve the cache when its live IDs are unchanged.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!planOverlays || planOverlays.length === 0) {
       overlaySourcesRef.current = {};
@@ -966,6 +968,7 @@ function PlanCanvas({
       return next;
     });
   }, [planOverlays]);
+  /* eslint-enable react-hooks/set-state-in-effect */
   const [imageSize, setImageSize] = useState({ width: 800, height: 600 });
   // Width/height equal to zero is the persisted marker for "natural size".
   // As soon as the user manipulates the plan, the resolved dimensions are sent
@@ -1020,7 +1023,7 @@ function PlanCanvas({
   // The background is raster, so erasing means painting white onto a working
   // copy of it. Strokes are kept so they can be undone by replaying them over a
   // fresh copy of the original image.
-  const layerRef = useRef<any>(null);
+  const layerRef = useRef<Konva.Layer | null>(null);
   const [editedBackground, setEditedBackground] = useState<HTMLCanvasElement | null>(null);
   const strokesRef = useRef<{ points: number[]; size: number; shape: EraserShape }[]>([]);
   const activeStrokeRef = useRef<{ points: number[]; size: number; shape: EraserShape } | null>(null);
@@ -1078,6 +1081,8 @@ function PlanCanvas({
   }, []);
 
   // A fresh working copy whenever the source background changes.
+  // Reset the editable raster and stroke history when an external image finishes loading.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!bgImage) {
       strokesRef.current = [];
@@ -1097,6 +1102,7 @@ function PlanCanvas({
     setEditedBackground(canvas);
     onEraseStrokesChangeRef.current?.(0);
   }, [bgImage]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // ── Shape drawing ───────────────────────────────────────────────────────
   // The draft lives in a ref, mirrored into state only for rendering: mouse
@@ -1214,7 +1220,7 @@ function PlanCanvas({
    * keep using that coordinate space, so a path can cross the plan frame
    * without jumping between plan and sheet coordinates.
    */
-  const pointerForNewDrawing = (stage: any): { point: ShapePoint; space: "plan" | "sheet" } | null => {
+  const pointerForNewDrawing = (stage: Konva.Stage | null): { point: ShapePoint; space: "plan" | "sheet" } | null => {
     if (sheet) {
       const sheetPoint = pointerInSheetCoords(stage);
       if (sheetPoint && !isInsidePlanWindow(sheetPoint)) {
@@ -1229,12 +1235,12 @@ function PlanCanvas({
     return planPoint ? { point: planPoint, space: "plan" } : null;
   };
 
-  const pointerForDrawingSpace = (stage: any, space: "plan" | "sheet") =>
+  const pointerForDrawingSpace = (stage: Konva.Stage | null, space: "plan" | "sheet") =>
     space === "sheet"
       ? pointerInSheetCoords(stage)
       : (sheet ? (pointerInSceneCoords(stage) ?? pointerInPlanCoords(stage)) : pointerInPlanCoords(stage));
 
-  const beginShape = (stage: any) => {
+  const beginShape = (stage: Konva.Stage | null) => {
     if (!shapeTool || isPolygonTool(shapeTool)) return;
     const drawing = pointerForNewDrawing(stage);
     if (!drawing) return;
@@ -1259,7 +1265,7 @@ function PlanCanvas({
     });
   };
 
-  const extendShape = (stage: any) => {
+  const extendShape = (stage: Konva.Stage | null) => {
     const origin = draftOriginRef.current;
     const current = draftShapeRef.current;
     if (!origin || !current || !shapeTool) return;
@@ -1547,7 +1553,7 @@ function PlanCanvas({
     return match.point;
   };
 
-  const addPolygonPoint = (stage: any, shiftPressed: boolean = false) => {
+  const addPolygonPoint = (stage: Konva.Stage | null, shiftPressed: boolean = false) => {
     const currentPoints = draftPolygonPointsRef.current;
     const drawing = currentPoints.length === 0
       ? pointerForNewDrawing(stage)
@@ -1611,7 +1617,7 @@ function PlanCanvas({
     setDraftPolygonPoints(nextPoints);
   };
 
-  const updatePolygonCursor = (stage: any, shiftPressed: boolean = false) => {
+  const updatePolygonCursor = (stage: Konva.Stage | null, shiftPressed: boolean = false) => {
     const drawing = draftPolygonPointsRef.current.length
       ? null
       : pointerForNewDrawing(stage);
@@ -1731,34 +1737,34 @@ function PlanCanvas({
             shadowBlur={3 * inverseZoom}
             shadowOpacity={0.3}
             draggable={mode === "select" && !shapeTool && !shape.locked}
-            onMouseEnter={(e: any) => {
+            onMouseEnter={(e) => {
               const stage = e.target.getStage();
               if (stage) stage.container().style.cursor = "pointer";
             }}
-            onMouseLeave={(e: any) => {
+            onMouseLeave={(e) => {
               const stage = e.target.getStage();
               if (stage) stage.container().style.cursor = "default";
             }}
-            onMouseDown={(e: any) => {
+            onMouseDown={(e) => {
               e.cancelBubble = true;
             }}
-            onTouchStart={(e: any) => {
+            onTouchStart={(e) => {
               e.cancelBubble = true;
             }}
-            onDblClick={(e: any) => {
+            onDblClick={(e) => {
               e.cancelBubble = true;
               if (shape.locked) return;
               updatePolygonControlPoint(shape.tempId, index, null, null);
             }}
-            onDragStart={(e: any) => {
+            onDragStart={(e) => {
               onDragStateChange?.(true);
               const stage = e.target.getStage();
               if (stage) stage.container().style.cursor = "grabbing";
             }}
-            onDragMove={(e: any) => {
+            onDragMove={(e) => {
               updatePolygonControlPoint(shape.tempId, index, e.target.x(), e.target.y());
             }}
-            onDragEnd={(e: any) => {
+            onDragEnd={(e) => {
               const stage = e.target.getStage();
               if (stage) stage.container().style.cursor = "pointer";
               updatePolygonControlPoint(shape.tempId, index, e.target.x(), e.target.y());
@@ -1790,33 +1796,33 @@ function PlanCanvas({
           shadowBlur={4 * inverseZoom}
           shadowOpacity={0.3}
           draggable={mode === "select" && !shapeTool && !shape.locked}
-          onMouseEnter={(e: any) => {
+          onMouseEnter={(e) => {
             const stage = e.target.getStage();
             if (stage) stage.container().style.cursor = "grab";
           }}
-          onMouseLeave={(e: any) => {
+          onMouseLeave={(e) => {
             const stage = e.target.getStage();
             if (stage) stage.container().style.cursor = "default";
           }}
-          onMouseDown={(e: any) => {
+          onMouseDown={(e) => {
             e.cancelBubble = true;
           }}
-          onTouchStart={(e: any) => {
+          onTouchStart={(e) => {
             e.cancelBubble = true;
           }}
-          onDblClick={(e: any) => {
+          onDblClick={(e) => {
             e.cancelBubble = true;
             deletePolygonVertex(shape.tempId, index);
           }}
-          onDragStart={(e: any) => {
+          onDragStart={(e) => {
             onDragStateChange?.(true);
             const stage = e.target.getStage();
             if (stage) stage.container().style.cursor = "grabbing";
           }}
-          onDragMove={(e: any) => {
+          onDragMove={(e) => {
             updatePolygonVertex(shape.tempId, index, e.target.x(), e.target.y());
           }}
-          onDragEnd={(e: any) => {
+          onDragEnd={(e) => {
             const stage = e.target.getStage();
             if (stage) stage.container().style.cursor = "grab";
             updatePolygonVertex(shape.tempId, index, e.target.x(), e.target.y());
@@ -1911,7 +1917,7 @@ function PlanCanvas({
               onSelectShape?.(shape.tempId, { shiftKey: isMulti });
             }}
             onTap={() => !options.isDraft && !(sheet && shape.locked) && onSelectShape?.(shape.tempId)}
-            onDragEnd={(e: any) => {
+            onDragEnd={(e) => {
               if (options.isDraft) return;
               const node = e.target;
               const dx = node.x();
@@ -1950,7 +1956,7 @@ function PlanCanvas({
               onSelectShape?.(shape.tempId, { shiftKey: isMulti });
             }}
             onTap={() => !options.isDraft && !(sheet && shape.locked) && onSelectShape?.(shape.tempId)}
-            onDragEnd={(e: any) => {
+            onDragEnd={(e) => {
               if (options.isDraft) return;
               const node = e.target;
               const dx = node.x();
@@ -2030,7 +2036,7 @@ function PlanCanvas({
    * resized. A pictogram, a zone or a label marks a real spot in the building:
    * leaving them where they were would silently move every piece of equipment.
    */
-  const moveMainPlanContent = ({
+  function moveMainPlanContent({
     dx,
     dy,
     scaleX,
@@ -2044,7 +2050,7 @@ function PlanCanvas({
     scaleY: number;
     originX: number;
     originY: number;
-  }) => {
+  }) {
     if (!dx && !dy && scaleX === 1 && scaleY === 1) return;
 
     const mapX = (x: number) => originX + dx + (x - originX) * scaleX;
@@ -2106,7 +2112,7 @@ function PlanCanvas({
           }) : text)
       );
     }
-  };
+  }
 
   /**
    * Applies a secondary plan's move/resize/rotation to the annotations attached
@@ -2463,7 +2469,7 @@ function PlanCanvas({
 
   /** Pointer in sheet units. Blocks sit straight on the layer, so this is the
    *  stage transform — no plan placement involved. */
-  const pointerInSheetCoords = (stage: any) => {
+  const pointerInSheetCoords = (stage: Konva.Stage | null) => {
     const pointer = stage?.getPointerPosition();
     if (!stage || !pointer) return null;
     return stage.getAbsoluteTransform().copy().invert().point(pointer);
@@ -2485,9 +2491,12 @@ function PlanCanvas({
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
   const editingBlock = sheet ? sheet.blocks.find((block) => block.id === editingBlockId) ?? null : null;
 
+  // Close the canvas text editor when its sheet is removed so it cannot reopen with a stale selection.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!sheet) setEditingBlockId(null);
   }, [sheet]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const editorBox = React.useMemo(() => {
     if (!editingBlock) return null;
@@ -2568,7 +2577,7 @@ function PlanCanvas({
    * window and scaled to fit it, so the stage transform is no longer the one
    * that maps a click onto the plan: the placement group's is.
    */
-  const pointerInPlanCoords = (stage: any) => {
+  const pointerInPlanCoords = (stage: Konva.Stage | null) => {
     const pointer = stage?.getPointerPosition();
     if (!stage || !pointer) return null;
     const placement = sheet ? stage.findOne(".planPlacement") : null;
@@ -2576,7 +2585,7 @@ function PlanCanvas({
   };
 
   /** Pointer in the unrotated coordinate system shared by annotations. */
-  const pointerInSceneCoords = (stage: any) => {
+  const pointerInSceneCoords = (stage: Konva.Stage | null) => {
     const pointer = stage?.getPointerPosition();
     if (!stage || !pointer) return null;
     const scene = stage.findOne(".planScene");
@@ -2588,7 +2597,7 @@ function PlanCanvas({
    * area-selection mode always may, and a plain drag on empty canvas may too,
    * so the toolbar toggle is a convenience rather than a prerequisite.
    */
-  const startMarquee = (stage: any) => {
+  const startMarquee = (stage: Konva.Stage | null) => {
     const point = sheet ? pointerInSheetCoords(stage) : pointerInSceneCoords(stage);
     if (!point) return false;
     marqueeOriginRef.current = point;
@@ -2606,12 +2615,12 @@ function PlanCanvas({
     return true;
   };
 
-  const beginAreaSelection = (stage: any) => {
+  const beginAreaSelection = (stage: Konva.Stage | null) => {
     if (!areaSelectionMode) return false;
     return startMarquee(stage);
   };
 
-  const extendAreaSelection = (stage: any) => {
+  const extendAreaSelection = (stage: Konva.Stage | null) => {
     const origin = marqueeOriginRef.current;
     if (!origin) return;
     const point = sheet ? pointerInSheetCoords(stage) : pointerInSceneCoords(stage);
@@ -2722,7 +2731,7 @@ function PlanCanvas({
    * no longer the scene's. Strokes are stored at the image's natural size, so
    * they stay put whatever the plan does afterwards.
    */
-  const pointerInBackgroundCoords = (stage: any) => {
+  const pointerInBackgroundCoords = (stage: Konva.Stage | null) => {
     const pointer = stage?.getPointerPosition();
     if (!stage || !pointer) return null;
 
@@ -2740,7 +2749,7 @@ function PlanCanvas({
   const eraserSizeInBackground = () =>
     eraserSize * (imageSize.width / Math.max(1, mainPlanTransform.width));
 
-  const beginEraseStroke = (stage: any) => {
+  const beginEraseStroke = (stage: Konva.Stage | null) => {
     if (eraserTarget === "lines") {
       const point = pointerInSceneCoords(stage);
       if (point) activeVectorEraseStrokeRef.current = [{ x: point.x, y: point.y }];
@@ -2760,7 +2769,7 @@ function PlanCanvas({
     layerRef.current?.batchDraw();
   };
 
-  const extendEraseStroke = (stage: any) => {
+  const extendEraseStroke = (stage: Konva.Stage | null) => {
     if (eraserTarget === "lines") {
       const stroke = activeVectorEraseStrokeRef.current;
       const point = pointerInSceneCoords(stage);
@@ -3143,11 +3152,6 @@ function PlanCanvas({
   // selection box, whose ratio is locked to the artwork while it is resized.
   useEffect(() => {
     const types = Object.keys(iconDefinitions) as IconType[];
-    if (types.length === 0) {
-      setIconImages({});
-      return;
-    }
-
     let cancelled = false;
     void Promise.all(
       types.map(async (type) => {
@@ -3171,6 +3175,8 @@ function PlanCanvas({
     };
   }, [iconDefinitions]);
 
+  // Synchronize drawing refs and their visible preview when the tool changes; preserve an explicitly restored undo draft.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (restoringDraftRef.current) {
       restoringDraftRef.current = false;
@@ -3185,6 +3191,7 @@ function PlanCanvas({
       draftStraightSegmentsRef.current = [];
     }
   }, [shapeTool]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Konva normally follows the fixed JSX category order. Reorder the direct
   // children of planScene from the shared z-index so plans, shapes, icons and
@@ -3291,12 +3298,12 @@ function PlanCanvas({
           transformerRef.current.nodes([selectedNode]);
           transformerRef.current.moveToTop();
           transformerRef.current.forceUpdate();
-          transformerRef.current.getLayer().batchDraw();
+          transformerRef.current.getLayer()?.batchDraw();
           return;
         }
       }
       transformerRef.current.nodes([]);
-      transformerRef.current.getLayer().batchDraw();
+      transformerRef.current.getLayer()?.batchDraw();
     }
   }, [selectedIconId, selectedShapeId, selectedTextId, selectedBlockId, selectedBlockIds, selectedOverlayId, selectedBatBlock, watermark.block_locked, watermark.block_width, watermark.block_height, watermark.enabled, icons, shapes, texts, sheet, planOverlays, mainPlanLocked, mainPlanTransform, zoom, stagePos, planRotation, planReframeMode, planBlock]);
 
@@ -3370,12 +3377,12 @@ function PlanCanvas({
     };
   }, [selectedIconId, selectedShapeId, selectedTextId, selectedBlockIds, multiSelection, icons, shapes, texts, sheet, onSheetBlocksChange, onSelectBlock, onSelectBlocks, onIconsChange, onSelectIcon, onShapesChange, onSelectShape, onTextsChange, onSelectText, onMultiSelectionChange, shapeTool, draftPolygonPoints, removeLastPolygonPoint]);
 
-  const handleStageMouseDown = (e: any) => {
+  const handleStageMouseDown = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
     // Navigation must remain available while a guided polygon trace is armed.
     // In pan mode the stage owns the drag; no point is added underneath it.
     if (mode === "pan") return;
     const stage = e.target.getStage();
-    let targetNode = e.target;
+    let targetNode: Konva.Node | null = e.target;
     while (targetNode && targetNode !== stage) {
       const targetId = typeof targetNode.id === "function" ? targetNode.id() : "";
       if (targetId && icons.some((icon) => icon.tempId === targetId)) {
@@ -3541,7 +3548,7 @@ function PlanCanvas({
     }
   };
 
-  const handleStageDrag = (e: any) => {
+  const handleStageDrag = (e: Konva.KonvaEventObject<DragEvent>) => {
     if (mode === "pan") {
       setStagePos({
         x: e.target.x(),
@@ -3550,7 +3557,7 @@ function PlanCanvas({
     }
   };
 
-  const handleWheel = (e: any) => {
+  const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     const event = e.evt as WheelEvent;
     event.preventDefault();
 
@@ -3813,7 +3820,7 @@ function PlanCanvas({
         onMouseDown={handleStageMouseDown}
         onTouchStart={handleStageMouseDown}
         onDblClick={() => {}}
-        onMouseMove={(e: any) => {
+        onMouseMove={(e) => {
           if (mode === "pan") return;
           if (mode === "erase") {
             if (eraserTarget === "lines") {
@@ -3825,7 +3832,7 @@ function PlanCanvas({
           else if (isPolygonTool(shapeTool)) updatePolygonCursor(e.target.getStage(), Boolean(e.evt?.shiftKey));
           else if (shapeTool) extendShape(e.target.getStage());
         }}
-        onTouchMove={(e: any) => {
+        onTouchMove={(e) => {
           if (mode === "pan") return;
           if (mode === "erase") extendEraseStroke(e.target.getStage());
           else if (marqueeOriginRef.current) extendAreaSelection(e.target.getStage());
@@ -3941,7 +3948,7 @@ function PlanCanvas({
                 onSelectBlock?.(planBlock.id);
                 onSelectBatBlock?.(false);
               }}
-              onDragEnd={(event: any) => {
+              onDragEnd={(event) => {
                 if (!sheet || !planBlock || planBlock.locked) return;
                 const node = event.target;
                 const dx = node.x() - planBlock.x;
@@ -3952,7 +3959,7 @@ function PlanCanvas({
                   y: Math.round(node.y())
                 });
               }}
-              onTransformEnd={(event: any) => {
+              onTransformEnd={(event) => {
                 if (planBlock.locked) return;
                 const node = event.target;
                 const scaleX = Math.abs(node.scaleX()) || 1;
@@ -3978,13 +3985,13 @@ function PlanCanvas({
             name={`planWindowClip planWindow${planBlock ? ` ${sheetLayerNodeName(planBlock.id)}` : ""}`}
             clipFunc={
               sheet && planBlock && planBlock.visible
-                ? (context: any) => {
+                ? (context) => {
                     context.rect(planBlock.x, planBlock.y, planBlock.width, planBlock.height);
                   }
                 : undefined
             }
             draggable={Boolean(sheet) && sheetEditingEnabled && mode === "select" && planBlockSelected && !planBlock?.locked && !planReframeMode}
-            onDragEnd={(event: any) => {
+            onDragEnd={(event) => {
               if (!sheet || !planBlock) return;
               const node = event.target;
               if (!node.hasName("planWindowClip")) return;
@@ -4005,19 +4012,19 @@ function PlanCanvas({
               scaleX={sheet ? planTransform.scale : 1}
               scaleY={sheet ? planTransform.scale : 1}
               draggable={Boolean(sheet) && sheetEditingEnabled && mode === "select" && (planBlockSelected || planReframeMode) && (!planBlock?.locked || planReframeMode) && Boolean(onPlanPlacementChange)}
-              onMouseEnter={(e: any) => {
+              onMouseEnter={(e) => {
                 if (planReframeMode) {
                   const stage = e.target.getStage();
                   if (stage) stage.container().style.cursor = "grab";
                 }
               }}
-              onMouseLeave={(e: any) => {
+              onMouseLeave={(e) => {
                 if (planReframeMode) {
                   const stage = e.target.getStage();
                   if (stage) stage.container().style.cursor = "default";
                 }
               }}
-              onDragStart={(event: any) => {
+              onDragStart={(event) => {
                 const stage = event.target.getStage();
                 if (stage) stage.container().style.cursor = "grabbing";
                 // Both the window and the plan inside it are draggable, and Konva
@@ -4029,7 +4036,7 @@ function PlanCanvas({
                 node.stopDrag();
                 node.getParent()?.startDrag(event.evt);
               }}
-              onDragEnd={(event: any) => {
+              onDragEnd={(event) => {
                 const stage = event.target.getStage();
                 if (stage) stage.container().style.cursor = planReframeMode ? "grab" : "default";
                 if (!sheet || !onPlanPlacementChange) return;
@@ -4105,7 +4112,7 @@ function PlanCanvas({
               draggable={!areaSelectionMode && !sheet && mode === "select" && !shapeTool && !mainPlanLocked && selectedOverlayId === MAIN_PLAN_ID}
               onClick={selectMainPlan}
               onTap={selectMainPlan}
-              onDragEnd={(e: any) => {
+              onDragEnd={(e) => {
                 const node = e.target;
                 const dx = node.x() - mainPlanTransform.x;
                 const dy = node.y() - mainPlanTransform.y;
@@ -4113,7 +4120,7 @@ function PlanCanvas({
                 setMainPlanTransform((prev) => ({ ...prev, x: node.x(), y: node.y() }));
                 moveMainPlanContent({ dx, dy, scaleX: 1, scaleY: 1, originX: 0, originY: 0 });
               }}
-              onTransformEnd={(e: any) => {
+              onTransformEnd={(e) => {
                 const node = e.target;
                 const rawScaleX = Math.abs(node.scaleX()) || 1;
                 const rawScaleY = Math.abs(node.scaleY()) || 1;
@@ -4195,7 +4202,7 @@ function PlanCanvas({
                 onTouchStart={() => !sheet && !overlay.locked && selectPlanOverlay(overlay.tempId)}
                 onClick={() => !sheet && !overlay.locked && selectPlanOverlay(overlay.tempId)}
                 onTap={() => !sheet && !overlay.locked && selectPlanOverlay(overlay.tempId)}
-                onDragEnd={(e: any) => {
+                onDragEnd={(e) => {
                   if (!onPlanOverlaysChange) return;
                   const nextOverlay = { ...overlay, x: e.target.x(), y: e.target.y() };
                   moveOverlayGroupedContent(overlay, nextOverlay);
@@ -4206,7 +4213,7 @@ function PlanCanvas({
                   );
                   onPlanOverlaysChange(updated);
                 }}
-                onTransformEnd={(e: any) => {
+                onTransformEnd={(e) => {
                   if (!onPlanOverlaysChange) return;
                   const node = e.target;
                   const rawScaleX = Math.abs(node.scaleX()) || 1;
@@ -4289,7 +4296,7 @@ function PlanCanvas({
               rotation: shape.rotation,
               listening: !areaSelectionMode && (!sheet || !shape.locked),
               draggable: !areaSelectionMode && !sheet && mode === "select" && !shapeTool && !shape.locked,
-              onClick: (e: any) => {
+              onClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
                 if (sheet && shape.locked) return;
                 const isMulti = Boolean(e?.evt?.shiftKey || e?.evt?.ctrlKey || e?.evt?.metaKey);
                 onSelectShape?.(shape.tempId, { shiftKey: isMulti });
@@ -4297,7 +4304,7 @@ function PlanCanvas({
               onTap: () => !(sheet && shape.locked) && onSelectShape?.(shape.tempId),
               // Only the hidden hit area grows; the visible contour stays exact.
               hitStrokeWidth: shapeHitStrokeWidth(shape.stroke_width, zoom),
-              onDragEnd: (e: any) => {
+              onDragEnd: (e: Konva.KonvaEventObject<Event>) => {
                 const dx = e.target.x() - shape.x;
                 const dy = e.target.y() - shape.y;
                 if (!moveObjectGroup(shape.object_group_id, dx, dy)) {
@@ -4309,7 +4316,7 @@ function PlanCanvas({
                   }
                 }
               },
-              onTransformEnd: (e: any) => {
+              onTransformEnd: (e: Konva.KonvaEventObject<Event>) => {
                 const node = e.target;
                 const scaleX = Math.abs(node.scaleX());
                 const scaleY = Math.abs(node.scaleY());
@@ -4356,7 +4363,7 @@ function PlanCanvas({
                   fillEnabled={hasFill}
                   fillOpacity={hasFill ? fillOpacity : undefined}
                   globalCompositeOperation={shouldMultiplyFill(fill) ? "multiply" : undefined}
-                  onDragEnd={(e: any) => {
+                  onDragEnd={(e) => {
                     const dx = e.target.x() - (shape.x + shape.width / 2);
                     const dy = e.target.y() - (shape.y + shape.height / 2);
                     if (!moveObjectGroup(shape.object_group_id, dx, dy)) {
@@ -4554,7 +4561,7 @@ function PlanCanvas({
                   draggable={!areaSelectionMode && !sheet && mode === "select" && !shapeTool && !icon.locked}
                   onClick={() => !(sheet && icon.locked) && onSelectIcon(icon.tempId)}
                   onTap={() => !(sheet && icon.locked) && onSelectIcon(icon.tempId)}
-                  onDragEnd={(e: any) => {
+                  onDragEnd={(e) => {
                     onIconsChange(
                       icons.map((item) =>
                         item.tempId === icon.tempId
@@ -4864,7 +4871,7 @@ function PlanCanvas({
               dash={[8 / Math.max(zoom, 0.1), 5 / Math.max(zoom, 0.1)]}
               draggable={mode === "select"}
               listening={mode === "select"}
-              onDragEnd={(event: any) => {
+              onDragEnd={(event) => {
                 const dx = event.target.x() - (selectedContentBounds.x - 7 / Math.max(zoom, 0.05));
                 const dy = event.target.y() - (selectedContentBounds.y - 7 / Math.max(zoom, 0.05));
                 translateContent(dx, dy, multiSelection);
@@ -4968,7 +4975,7 @@ function PlanCanvas({
               dash={[8 / Math.max(zoom, 0.1), 5 / Math.max(zoom, 0.1)]}
               draggable={sheetEditingEnabled && mode === "select"}
               listening={sheetEditingEnabled && mode === "select"}
-              onDragEnd={(event: any) => {
+              onDragEnd={(event) => {
                 const originX = selectedSheetBounds.x - 7 / Math.max(zoom, 0.05);
                 const originY = selectedSheetBounds.y - 7 / Math.max(zoom, 0.05);
                 translateSheetSelection(event.target.x() - originX, event.target.y() - originY);
@@ -5121,7 +5128,7 @@ function PlanCanvas({
                       block_y: Math.min(1, Math.max(0, nextY)),
                     });
                   }}
-                  onTransformEnd={(event: any) => {
+                  onTransformEnd={(event) => {
                     if (watermark.block_locked) return;
                     const node = event.target;
                     const scaleX = Math.abs(node.scaleX()) || 1;

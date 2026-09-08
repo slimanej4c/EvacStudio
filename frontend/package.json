@@ -8,11 +8,14 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "npm run test:plan-situation && npm run test:plan-legend && npm run test:icon-compliance && npm run test:template-logos && npm run test:plan-template-lock && npm run test:plan-reframe && npm run test:auto-save",
     "test:plan-situation": "node --experimental-strip-types scripts/test-plan-situation.mjs",
     "test:plan-legend": "node --experimental-strip-types scripts/test-plan-legend.mjs",
+    "test:icon-compliance": "node --experimental-strip-types scripts/test-icon-compliance.mjs",
     "test:template-logos": "node --experimental-strip-types scripts/test-template-logos.mjs",
     "test:plan-template-lock": "node --experimental-strip-types scripts/test-plan-template-lock.mjs",
-    "test:plan-reframe": "node --experimental-strip-types scripts/test-plan-reframe.mjs"
+    "test:plan-reframe": "node --experimental-strip-types scripts/test-plan-reframe.mjs",
+    "test:auto-save": "node --experimental-strip-types --test scripts/test-auto-save.mjs"
   },
   "dependencies": {
     "jspdf": "^4.2.1",

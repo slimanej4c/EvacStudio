@@ -1207,6 +1207,7 @@ class TestXaiKeyView(APIView):
 
         # A minimal Grok chat call is the most direct way to confirm the key is
         # accepted by xAI. We send a tiny prompt so the request is cheap.
+        error_detail = None
         try:
             from xai_sdk import Client
             from xai_sdk.chat import user
@@ -1224,14 +1225,28 @@ class TestXaiKeyView(APIView):
                 except Exception:  # pragma: no cover - defensive
                     pass
                 code_name = getattr(code, "name", str(code)) if code is not None else "UNKNOWN"
-                logger.warning("xai_test_key.failed code=%s", code_name,
+                details = getattr(exc, "details", lambda: str(exc))()
+                logger.warning("xai_test_key.failed code=%s details=%s", code_name, details,
                                extra={"user_id": request.user.id})
+                if code_name in ("UNAUTHENTICATED", "PERMISSION_DENIED"):
+                    result = "invalide"
+                    error_detail = "Clé API refusée par xAI (non autorisée)."
+                elif code_name in ("UNAVAILABLE", "DEADLINE_EXCEEDED"):
+                    result = "invalide"
+                    error_detail = "Serveurs xAI temporairement inaccessibles ou problème de connexion/DNS."
+                else:
+                    result = "invalide"
+                    error_detail = f"Erreur xAI ({code_name})"
             else:
-                logger.warning("xai_test_key.failed class=%s", exc.__class__.__name__,
+                logger.warning("xai_test_key.failed class=%s: %s", exc.__class__.__name__, exc,
                                extra={"user_id": request.user.id})
-            result = "invalide"
+                result = "invalide"
+                error_detail = str(exc)
 
-        return Response({"result": result}, status=status.HTTP_200_OK)
+        payload = {"result": result}
+        if error_detail:
+            payload["detail"] = error_detail
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 def _looks_like_grpc_error(exc: Exception) -> bool:

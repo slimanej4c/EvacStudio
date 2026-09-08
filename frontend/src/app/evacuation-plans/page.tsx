@@ -170,12 +170,15 @@ export default function EvacuationPlansPage() {
     }
   };
 
+  // Start a server reload and its loading indicator when the account or archive filter changes.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const storedToken = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     if (!authLoading && (token || storedToken)) {
       void fetchPlans();
     }
   }, [authLoading, token, showArchived]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     const handleRefreshPlans = () => {

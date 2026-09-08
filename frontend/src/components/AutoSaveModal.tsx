@@ -12,6 +12,7 @@ interface AutoSaveModalProps {
   onClose: () => void;
   secondsUntilNextSave?: number;
   hasUnsavedChanges?: boolean;
+  pauseReason?: string;
 }
 
 const PRESET_INTERVALS = [10, 15, 20, 30, 45, 60, 120];
@@ -25,6 +26,7 @@ export function AutoSaveModal({
   onClose,
   secondsUntilNextSave,
   hasUnsavedChanges,
+  pauseReason,
 }: AutoSaveModalProps) {
   if (!open) return null;
 
@@ -89,6 +91,7 @@ export function AutoSaveModal({
             <label className="relative inline-flex cursor-pointer items-center">
               <input
                 type="checkbox"
+                aria-label="Activer la sauvegarde automatique"
                 checked={enabled}
                 onChange={(e) => onToggle(e.target.checked)}
                 className="peer sr-only"
@@ -98,7 +101,7 @@ export function AutoSaveModal({
           </div>
 
           {/* Interval Setting */}
-          <div className={`space-y-3 transition-opacity ${enabled ? "opacity-100" : "pointer-events-none opacity-40"}`}>
+          <fieldset disabled={!enabled} className={`space-y-3 transition-opacity ${enabled ? "opacity-100" : "opacity-40"}`}>
             <div className="flex items-center justify-between">
               <label className="text-[10px] font-semibold uppercase tracking-wider text-neutral-400">
                 Fréquence de sauvegarde (secondes)
@@ -129,6 +132,7 @@ export function AutoSaveModal({
               <div className="relative flex-1">
                 <input
                   type="number"
+                  aria-label="Fréquence de sauvegarde en secondes"
                   min={5}
                   max={600}
                   value={interval}
@@ -174,7 +178,7 @@ export function AutoSaveModal({
                 </button>
               ))}
             </div>
-          </div>
+          </fieldset>
 
           {/* Status badge */}
           <div className="rounded-lg border border-white/5 bg-black/20 p-3 text-[11px] text-neutral-400 flex items-center justify-between">
@@ -182,7 +186,9 @@ export function AutoSaveModal({
               <Clock className="h-3.5 w-3.5 text-neutral-400" />
               <span>
                 {enabled ? (
-                  hasUnsavedChanges ? (
+                  pauseReason ? (
+                    <span>{pauseReason}</span>
+                  ) : hasUnsavedChanges ? (
                     <span>
                       Modifications en cours • Prochaine sauvegarde dans{" "}
                       <strong className="text-emerald-400">

@@ -19,7 +19,7 @@ interface AuthContextType {
   login: (username: string, password: string) => Promise<AuthResult>;
   register: (username: string, email: string, password: string, firstName?: string, lastName?: string) => Promise<AuthResult>;
   logout: () => Promise<void>;
-  getAuthHeaders: () => { Authorization: string } | {};
+  getAuthHeaders: () => Record<string, string>;
   authenticatedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }
 
@@ -115,6 +115,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return fetch(input, { ...init, credentials: "include", headers: retryHeaders });
   };
 
+  // Hydrate browser-only credentials once after mounting; the server has no access to localStorage.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const storedToken = localStorage.getItem("token");
     if (storedToken) {
@@ -124,6 +126,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
     }
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Le jeton d'accès dure 30 minutes. `authenticatedFetch` sait rejouer un 401,
   // mais l'éditeur émet la plupart de ses requêtes avec `fetch` brut : sans
@@ -139,7 +142,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => window.clearInterval(timer);
   }, [token]);
 
-  const fetchUser = async (authToken: string) => {
+  async function fetchUser(authToken: string) {
     try {
       let res = await fetch(buildApiUrl(`/api/auth/me/`), {
         credentials: "include",
@@ -170,7 +173,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   const login = async (username: string, password: string): Promise<AuthResult> => {
     try {
@@ -254,7 +257,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     router.push("/login");
   };
 
-  const getAuthHeaders = () => {
+  const getAuthHeaders = (): Record<string, string> => {
     const currentToken = localStorage.getItem("token") || token;
     return currentToken ? { Authorization: `Bearer ${currentToken}` } : {};
   };

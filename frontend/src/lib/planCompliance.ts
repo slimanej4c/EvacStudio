@@ -3,7 +3,7 @@ import {
   SHEET_TEMPLATES,
   type SheetDocumentTypeKey,
   type SheetTemplateKey,
-} from "@/lib/sheetTemplates";
+} from "./sheetTemplates.ts";
 
 export const EXPORT_PAPER_SIZES = {
   a4: { label: "A4", widthMm: 297, heightMm: 210 },
@@ -194,3 +194,101 @@ export function evaluateExportCompliance({
     paperDimensionTolerancePercent: PAPER_DIMENSION_TOLERANCE_PERCENT,
   };
 }
+
+export const NF_X08_070_ICON_TOOLTIP =
+  "Norme NF X08-070 : Les pictogrammes de sécurité doivent mesurer au minimum 7 mm à l'échelle d'impression (seuil critique toléré à 5 mm). Les symboles de la légende doivent avoir exactement la même taille que sur le plan.";
+
+export interface IconComplianceResult {
+  case: 1 | 2 | 3 | 4;
+  status: "compliant" | "warning" | "non_compliant";
+  badgeEmoji: string;
+  badgeLabel: string;
+  description: string;
+  borderColor: string;
+  bgColor: string;
+  textColor: string;
+  badgeText: string;
+}
+
+export function evaluateIconCompliance({
+  sizeMm,
+  isYouAreHere = false,
+}: {
+  sizeMm: number;
+  isYouAreHere?: boolean;
+}): IconComplianceResult {
+  // Cas 4 : Cas particulier "Vous êtes ici" (Si < 8 mm)
+  if (isYouAreHere) {
+    if (sizeMm < 8) {
+      return {
+        case: 4,
+        status: "warning",
+        badgeEmoji: "⚠️",
+        badgeLabel: "⚠️ Repère \"Vous êtes ici\" trop petit",
+        description:
+          "La norme exige une mise en évidence immédiate (taille recommandée : 8 mm à 10 mm).",
+        borderColor: "border-amber-500/35",
+        bgColor: "bg-amber-500/10",
+        textColor: "text-amber-200",
+        badgeText: "text-amber-300",
+      };
+    }
+    return {
+      case: 1,
+      status: "compliant",
+      badgeEmoji: "✅",
+      badgeLabel: "✅ Conforme NF X08-070",
+      description: "Taille optimale pour impression (recommandé : 8 mm à 10 mm).",
+      borderColor: "border-emerald-500/35",
+      bgColor: "bg-emerald-500/10",
+      textColor: "text-emerald-200",
+      badgeText: "text-emerald-300",
+    };
+  }
+
+  // Cas 1 : Conforme (Taille >= 7 mm)
+  if (sizeMm >= 7) {
+    return {
+      case: 1,
+      status: "compliant",
+      badgeEmoji: "✅",
+      badgeLabel: "✅ Conforme NF X08-070",
+      description: "Taille optimale pour impression (recommandé : ≥ 7 mm).",
+      borderColor: "border-emerald-500/35",
+      bgColor: "bg-emerald-500/10",
+      textColor: "text-emerald-200",
+      badgeText: "text-emerald-300",
+    };
+  }
+
+  // Cas 2 : Toléré / Avertissement (Entre 5 mm et 6.9 mm)
+  if (sizeMm >= 5) {
+    return {
+      case: 2,
+      status: "warning",
+      badgeEmoji: "⚠️",
+      badgeLabel: "⚠️ Conformité minimale (5 mm - 6.9 mm)",
+      description:
+        "Taille autorisée uniquement sur formats réduits (A4). Privilégiez 7 mm pour une lisibilité optimale.",
+      borderColor: "border-amber-500/35",
+      bgColor: "bg-amber-500/10",
+      textColor: "text-amber-200",
+      badgeText: "text-amber-300",
+    };
+  }
+
+  // Cas 3 : Non conforme (Taille < 5 mm)
+  return {
+    case: 3,
+    status: "non_compliant",
+    badgeEmoji: "❌",
+    badgeLabel: "❌ Non conforme NF X08-070",
+    description:
+      "Taille inférieure au seuil légal (minimum absolu : 5 mm à l'impression). Risque de rejet lors du contrôle de sécurité.",
+    borderColor: "border-red-500/35",
+    bgColor: "bg-red-500/10",
+    textColor: "text-red-200",
+    badgeText: "text-red-300",
+  };
+}
+

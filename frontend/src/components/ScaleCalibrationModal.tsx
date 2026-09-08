@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { Ruler, Save, X } from "lucide-react";
 
 interface ScaleCalibrationModalProps {
@@ -10,22 +10,17 @@ interface ScaleCalibrationModalProps {
   onCancel: () => void;
 }
 
-export default function ScaleCalibrationModal({
-  open,
+export default function ScaleCalibrationModal(props: ScaleCalibrationModalProps) {
+  return props.open ? <ScaleCalibrationForm key={props.initialDistanceM ?? "new"} {...props} /> : null;
+}
+
+function ScaleCalibrationForm({
   initialDistanceM,
   onSave,
   onCancel,
 }: ScaleCalibrationModalProps) {
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(initialDistanceM ? String(initialDistanceM) : "");
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!open) return;
-    setValue(initialDistanceM ? String(initialDistanceM) : "");
-    setError("");
-  }, [open, initialDistanceM]);
-
-  if (!open) return null;
 
   const submit = () => {
     const distance = Number(value.trim().replace(",", "."));

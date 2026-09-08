@@ -1,6 +1,7 @@
 "use client";
 
-import React from "react";
+import React, { useRef } from "react";
+import type Konva from "konva";
 import { Group, Rect, Text, Line, Ellipse, Circle, Image as KonvaImage, Path } from "react-konva";
 import { SheetBlock } from "@/lib/sheetTemplates";
 import { IconType, normalizePictogramColorOverride } from "@/utils/safetyIcons";
@@ -70,6 +71,7 @@ export function SheetBlockNode({
   onEditText,
   onDragStateChange,
 }: SheetBlockNodeProps) {
+  const situationDragOrigins = useRef(new WeakMap<Konva.Node, { x: number; y: number }>());
   if (!block.visible) return null;
 
   const width = Math.max(1, block.width);
@@ -86,7 +88,7 @@ export function SheetBlockNode({
   const padding = block.padding ?? 8;
   const showInlineSelection = isSelected && !editable;
 
-  const select = (e?: any) => {
+  const select = (e?: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
     const isMulti = Boolean(e?.evt?.shiftKey || e?.evt?.ctrlKey || e?.evt?.metaKey);
     onSelect(block.id, { shiftKey: isMulti });
   };
@@ -577,6 +579,7 @@ export function SheetBlockNode({
       onDblClick={() => block.kind !== "shape" && onEditText?.(block.id)}
       onDblTap={() => block.kind !== "shape" && onEditText?.(block.id)}
       onDragStart={() => {
+        situationDragOrigins.current = new WeakMap();
         onDragStateChange?.(true);
       }}
       onDragMove={(event) => {
@@ -586,14 +589,11 @@ export function SheetBlockNode({
           const stage = event.target.getStage();
           if (stage) {
             const situationNodes = stage.find(".situationBlock");
-            situationNodes.forEach((node: any) => {
+            situationNodes.forEach((node) => {
               if (node.id() === block.id) return;
-              if (node._origX === undefined) {
-                node._origX = node.x();
-                node._origY = node.y();
-              }
-              node.x(node._origX + dx);
-              node.y(node._origY + dy);
+              const origin = situationDragOrigins.current.get(node) ?? node.position();
+              situationDragOrigins.current.set(node, origin);
+              node.position({ x: origin.x + dx, y: origin.y + dy });
             });
             event.target.getLayer()?.batchDraw();
           }
@@ -602,14 +602,7 @@ export function SheetBlockNode({
       onDragEnd={(event) => {
         onDragStateChange?.(false);
         if (isSituationFrame) {
-          const stage = event.target.getStage();
-          if (stage) {
-            const situationNodes = stage.find(".situationBlock");
-            situationNodes.forEach((node: any) => {
-              delete node._origX;
-              delete node._origY;
-            });
-          }
+          situationDragOrigins.current = new WeakMap();
         }
         onChange(block.id, { x: Math.round(event.target.x()), y: Math.round(event.target.y()) });
       }}

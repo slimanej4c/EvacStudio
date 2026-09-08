@@ -1,6 +1,8 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useAutoSave } from "@/hooks/useAutoSave";
+import { createEditorSnapshot, reconcileSavedOverlays } from "@/lib/editorPersistence";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter, useParams } from "next/navigation";
@@ -66,14 +68,17 @@ import {
 import {
   A2_MAX_SCALE_DENOMINATOR,
   EXPORT_PAPER_SIZES,
+  NF_X08_070_ICON_TOOLTIP,
   RECOMMENDED_SCALE_DENOMINATOR,
   STANDARD_MAX_SCALE_DENOMINATOR,
   documentTypeLabel,
   evaluateExportCompliance,
+  evaluateIconCompliance,
   paperOptionsForDocumentType,
   recommendedPaperForTemplate,
   templateDocumentType,
   type ExportPaperFormat,
+  type IconComplianceResult,
   type PlanDocumentType,
   type ScaleCalibrationMeasurement,
 } from "@/lib/planCompliance";
@@ -134,7 +139,7 @@ const PlanCanvas = dynamic(() => import("@/components/PlanCanvas"), {
     <div className="flex-1 h-[calc(100vh-150px)] bg-white flex items-center justify-center border border-slate-200 rounded-2xl">
       <div className="flex flex-col items-center space-y-4">
         <Loader2 className="h-10 w-10 animate-spin text-safety-green" />
-        <p className="text-slate-500 text-sm">Chargement de l'éditeur graphique...</p>
+        <p className="text-slate-500 text-sm">Chargement de l&apos;éditeur graphique...</p>
       </div>
     </div>
   )
@@ -143,6 +148,7 @@ const PlanCanvas = dynamic(() => import("@/components/PlanCanvas"), {
 const ZoomControls = dynamic(() => import("@/components/ZoomControls"), { ssr: false });
 const ExportButtons = dynamic(() => import("@/components/ExportButtons"), { ssr: false });
 const IconToolbar = dynamic(() => import("@/components/IconToolbar"), { ssr: false });
+const SheetOptionsDropdown = dynamic(() => import("@/components/SheetOptionsDropdown"), { ssr: false });
 
 // Ceilings a browser canvas can honour. Chrome caps a canvas at 16 384 px a
 // side, and a page that has already allocated a few hundred megabytes of canvas
@@ -1065,6 +1071,7 @@ export default function PlanEditorPage() {
   // default; cutting editor-drawn lines remains available through Ouvertures.
   const [eraserTarget, setEraserTarget] = useState<EraserTarget>("background");
   const [eraseStrokeCount, setEraseStrokeCount] = useState(0);
+  const [eraseRevision, setEraseRevision] = useState(0);
   const [undoEraseSignal, setUndoEraseSignal] = useState(0);
   const [resetEraseSignal, setResetEraseSignal] = useState(0);
   // Stroke count undo/redo wants the eraser to be at, so it shares one timeline.
@@ -1079,6 +1086,7 @@ export default function PlanEditorPage() {
   const [sessionBackgroundUrl, setSessionBackgroundUrl] = useState<string | null>(null);
   const [sessionBackgroundType, setSessionBackgroundType] = useState<"image" | "pdf" | null>(null);
   const isEraseDirtyRef = useRef(false);
+  const eraseRevisionRef = useRef(0);
   const [savingErase, setSavingErase] = useState(false);
   const [clipboardHasIcon, setClipboardHasIcon] = useState(() =>
     typeof window !== "undefined" && Boolean(window.localStorage.getItem(ICON_CLIPBOARD_KEY))
@@ -1116,7 +1124,7 @@ export default function PlanEditorPage() {
   const [selectedBatBlock, setSelectedBatBlock] = useState(false);
   // Sheet state lives above the shared history stack because sheet edits use
   // the same Ctrl/Cmd+Z timeline as objects placed directly on the plan.
-  const [sheetTemplate, setSheetTemplate] = useState<SheetTemplateKey | "none">("none");
+  const [sheetTemplate, updateSheetTemplate] = useState<SheetTemplateKey | "none">("none");
   const [sheetBlocks, setSheetBlocks] = useState<SheetBlock[]>([]);
   const [planSituation, setPlanSituation] = useState<PlanSituationState>(() => ({
     ...EMPTY_PLAN_SITUATION,
@@ -1162,10 +1170,11 @@ export default function PlanEditorPage() {
     setMainPlanLocked((current) => (current === locked ? current : locked));
   }, []);
 
-  useEffect(() => {
-    const shouldLock = sheetTemplate !== "none";
-    setPlanObjectsLockState(shouldLock);
-  }, [sheetTemplate, setPlanObjectsLockState]);
+  const setSheetTemplate = (template: SheetTemplateKey | "none") => {
+    if (template === sheetTemplate) return;
+    updateSheetTemplate(template);
+    setPlanObjectsLockState(template !== "none");
+  };
 
   const activateInteractionMode = useCallback((nextMode: "select" | "pan" | "erase") => {
     // Permanent tools are exclusive. Without this reset, a stale drawing tool
@@ -1395,7 +1404,11 @@ const MAX_HISTORY_STEPS = 50;
     setPlanSituation(target.planSituation ?? { ...EMPTY_PLAN_SITUATION });
     setEraseStrokeCount(target.eraseStrokeCount ?? 0);
     requestEraseStrokeTarget(target.eraseStrokeCount ?? 0);
-    isEraseDirtyRef.current = true;
+    if ((target.eraseStrokeCount ?? 0) !== eraseStrokeCount) {
+      isEraseDirtyRef.current = true;
+      eraseRevisionRef.current += 1;
+      setEraseRevision(eraseRevisionRef.current);
+    }
     setAreaSelectionMode(false);
     setMultiSelection((current) => ({
       iconIds: current.iconIds.filter((id) => target.icons.some((i) => i.tempId === id)),
@@ -1466,7 +1479,11 @@ const MAX_HISTORY_STEPS = 50;
     setPlanSituation(target.planSituation ?? { ...EMPTY_PLAN_SITUATION });
     setEraseStrokeCount(target.eraseStrokeCount ?? 0);
     requestEraseStrokeTarget(target.eraseStrokeCount ?? 0);
-    isEraseDirtyRef.current = true;
+    if ((target.eraseStrokeCount ?? 0) !== eraseStrokeCount) {
+      isEraseDirtyRef.current = true;
+      eraseRevisionRef.current += 1;
+      setEraseRevision(eraseRevisionRef.current);
+    }
     setAreaSelectionMode(false);
     setMultiSelection((current) => ({
       iconIds: current.iconIds.filter((id) => target.icons.some((i) => i.tempId === id)),
@@ -1647,37 +1664,8 @@ const MAX_HISTORY_STEPS = 50;
   const [savedSnapshot, setSavedSnapshot] = useState("");
   const [pendingNav, setPendingNav] = useState(false);
 
-  // Auto-save preferences and status: active by default, 20 seconds by default
-  const [autoSaveEnabled, setAutoSaveEnabled] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    const stored = window.localStorage.getItem("evacstudio_autosave_enabled");
-    return stored !== null ? stored === "true" : true;
-  });
-  const [autoSaveInterval, setAutoSaveInterval] = useState<number>(() => {
-    if (typeof window === "undefined") return 20;
-    const stored = window.localStorage.getItem("evacstudio_autosave_interval");
-    const parsed = stored ? parseInt(stored, 10) : 20;
-    return Number.isFinite(parsed) && parsed >= 5 ? parsed : 20;
-  });
   const [autoSaveModalOpen, setAutoSaveModalOpen] = useState(false);
-  const [secondsUntilAutoSave, setSecondsUntilAutoSave] = useState<number>(20);
-  const isAutoSavingRef = useRef(false);
-
-  const handleToggleAutoSave = (enabled: boolean) => {
-    setAutoSaveEnabled(enabled);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("evacstudio_autosave_enabled", String(enabled));
-    }
-  };
-
-  const handleChangeAutoSaveInterval = (interval: number) => {
-    const clamped = Math.max(5, Math.min(600, interval));
-    setAutoSaveInterval(clamped);
-    setSecondsUntilAutoSave(clamped);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("evacstudio_autosave_interval", String(clamped));
-    }
-  };
+  const saveInFlightRef = useRef(false);
   // ── Studio sheet mode ──────────────────────────────────────────────────────
   // "plan" keeps the bare plan on screen, the way the editor has always worked;
   // a template shows the printed sheet around it, editable in place.
@@ -1765,15 +1753,15 @@ const MAX_HISTORY_STEPS = 50;
   const [exportLegendFontSize, setExportLegendFontSize] = useState(16);
   const [exportPlanScale, setExportPlanScale] = useState(100);
   const [exportPlanAreaScale, setExportPlanAreaScale] = useState(100);
-  const [exportPlanRotation, setExportPlanRotation] = useState(0);
+  const [exportRotationOverride, setExportRotationOverride] = useState<{ source: number; angle: number } | null>(null);
   const [exportPlanOffsetX, setExportPlanOffsetX] = useState(0);
   const [exportPlanOffsetY, setExportPlanOffsetY] = useState(0);
   const [exportDisablePlanClipping, setExportDisablePlanClipping] = useState(false);
   // Logos overlaid on the export sheet: the client's brand (left of the header)
   // and our studio's brand (right of the header). Uploaded files are stored as
   // data URLs; the built-in PREV' INC & CIE logo uses its application URL.
-  const [exportClientLogo, setExportClientLogo] = useState("");
-  const [exportStudioLogo, setExportStudioLogo] = useState(DEFAULT_STUDIO_LOGO);
+  const exportClientLogo = watermarkConfig.client_logo || "";
+  const exportStudioLogo = watermarkConfig.creator_logo || DEFAULT_STUDIO_LOGO;
   const [logoSettingsError, setLogoSettingsError] = useState("");
   // Size and position of each logo, relative to the slot the theme gives it:
   // 100% and (0, 0) is the automatic placement, so a sheet that already looks
@@ -2236,8 +2224,6 @@ const MAX_HISTORY_STEPS = 50;
           setMainPlanGroupingEnabled(Boolean(data.main_plan_grouping_enabled));
           setWatermarkConfig(loadedWatermarkWithLogos);
           setWatermarkDraft(loadedWatermarkWithLogos);
-          setExportClientLogo(loadedWatermark.client_logo || "");
-          setExportStudioLogo(studioLogo);
           const loadedPaperFormat = data.export_paper_format || "a3";
           const loadedScaleDenominator = data.print_scale_denominator || RECOMMENDED_SCALE_DENOMINATOR;
           setExportPaperFormat(loadedPaperFormat);
@@ -2246,19 +2232,11 @@ const MAX_HISTORY_STEPS = 50;
           // Baseline for the unsaved-changes guard: the freshly loaded state.
           // The very same fields as buildEditableSnapshot, or the editor would
           // report unsaved changes before the user has touched anything.
-          setSavedSnapshot(JSON.stringify({
-            icons: canvasIcons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_dot_size, leader_color, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
-              icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_dot_size: normalizeCanvasLeaderDotSize(leader_dot_size), leader_color: leader_color || "", framed, flip_x, flip_y, locked: initialTemplateActive, visible, z_index, group_id, object_group_id, color,
-            })),
-            shapes: canvasShapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m }) => ({
-              shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked: initialTemplateActive, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m,
-            })),
-            texts: canvasTexts.map(({ text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id }) => ({
-              text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked: initialTemplateActive, visible, z_index, group_id, object_group_id,
-            })),
-            overlays: canvasOverlays.map(({ url, x, y, width, height, rotation, label, locked, visible, z_index, group_id }) => ({
-              url, x, y, width, height, rotation, label, locked: initialTemplateActive, visible, z_index, group_id,
-            })),
+          setSavedSnapshot(createEditorSnapshot({
+            icons: canvasIcons,
+            shapes: canvasShapes,
+            texts: canvasTexts,
+            overlays: canvasOverlays,
             mainPlanTransform: loadedMainPlanTransform,
             mainPlanLocked: initialTemplateActive,
             mainPlanVisible: loadedMainPlanVisible,
@@ -2270,6 +2248,8 @@ const MAX_HISTORY_STEPS = 50;
             hiddenLegendIconTypes: Array.isArray(data.legend_hidden_icon_types) ? data.legend_hidden_icon_types : [],
             sheetPlanPlacement: loadedSheetPlanPlacement,
             sheetTemplate: data.active_sheet_template_key || "none",
+            sheetBlocks: data.active_sheet_template_key && data.active_sheet_template_key !== "none"
+              ? data.template_snapshot?.blocks ?? [] : [],
             activeSheetTemplateVersionId: data.active_sheet_template_version_id || "",
             activeSheetTemplateName: data.active_sheet_template_name || "Plan seul",
             documentType: data.document_type || "",
@@ -2327,21 +2307,6 @@ const MAX_HISTORY_STEPS = 50;
       }
     };
   }, [exportPreviewUrl]);
-
-  // Warn the user through the browser's native dialog when they close the tab
-  // or navigate away while there are unsaved edits. The latest state is read
-  // inside the handler so the listener never goes stale.
-  useEffect(() => {
-    const handler = (e: BeforeUnloadEvent) => {
-      const current = buildEditableSnapshot();
-      if (current !== savedSnapshot) {
-        e.preventDefault();
-        e.returnValue = "";
-      }
-    };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, [icons, shapes, texts, planOverlays, mainPlanTransform, mainPlanLocked, mainPlanGroupId, mainPlanGroupingEnabled, watermarkConfig, planSituation, sheetPlanPlacement, sheetTemplate, activeSheetTemplateVersionId, storedSheetTemplateVersions, exportPaperFormat, printScaleDenominator, scaleMeasurement, plan?.document_type, savedSnapshot]);
 
   useEffect(() => {
     if (!placementIconType) return;
@@ -2453,8 +2418,7 @@ const MAX_HISTORY_STEPS = 50;
     const fetchXaiSettings = async () => {
       setXaiSettingsLoading(true);
       try {
-        const res = await fetch(buildApiUrl(`/api/xai-settings/`), {
-          headers: getPlanAuthHeaders(),
+        const res = await authenticatedFetch(buildApiUrl(`/api/xai-settings/`), {
           cache: "no-store",
         });
         if (!res.ok) return;
@@ -2606,19 +2570,11 @@ const MAX_HISTORY_STEPS = 50;
   // Serialise the editable layers (without volatile client-only fields like
   // tempId/id) so a deep-equality check detects any real change.
   const buildEditableSnapshot = () =>
-    JSON.stringify({
-      icons: icons.map(({ icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_dot_size, leader_color, framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color }) => ({
-        icon_type, x, y, width, height, rotation, label, anchor_x, anchor_y, leader_points, leader_width, leader_dot_size: normalizeCanvasLeaderDotSize(leader_dot_size), leader_color: leader_color || "", framed, flip_x, flip_y, locked, visible, z_index, group_id, object_group_id, color,
-      })),
-      shapes: shapes.map(({ shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m }) => ({
-        shape_type, x, y, width, height, rotation, stroke_width, color, fill_color, fill_opacity, tension, control_points, points, closed, straight_segments, locked, visible, z_index, group_id, object_group_id, is_scale_calibration, calibration_real_distance_m,
-      })),
-      texts: texts.map(({ text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id }) => ({
-        text, x, y, font_size, font_family, align, color, bold, italic, background_color, rotation, locked, visible, z_index, group_id, object_group_id,
-      })),
-      overlays: planOverlays.map(({ url, x, y, width, height, rotation, label, locked, visible, z_index, group_id }) => ({
-        url, x, y, width, height, rotation, label, locked, visible, z_index, group_id,
-      })),
+    createEditorSnapshot({
+      icons,
+      shapes,
+      texts,
+      overlays: planOverlays,
       mainPlanTransform,
       mainPlanLocked,
       mainPlanVisible,
@@ -2630,6 +2586,7 @@ const MAX_HISTORY_STEPS = 50;
       hiddenLegendIconTypes,
       sheetPlanPlacement,
       sheetTemplate,
+      sheetBlocks: sheetTemplate === "none" ? [] : sheetBlocks,
       activeSheetTemplateVersionId,
       activeSheetTemplateName: sheetTemplate === "none" ? "Plan seul" : activeSheetTemplateLabel,
       documentType: activeDocumentType,
@@ -2637,9 +2594,22 @@ const MAX_HISTORY_STEPS = 50;
       printScaleDenominator,
       measuredScaleDenominator: scaleMeasurement?.measuredScaleDenominator ?? null,
       eraseStrokeCount,
+      eraseRevision,
     });
 
   const hasUnsavedChanges = () => buildEditableSnapshot() !== savedSnapshot;
+
+  const warnBeforeUnload = useEffectEvent((event: BeforeUnloadEvent) => {
+    if (!loading && canEditPlan && hasUnsavedChanges()) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+  });
+  useEffect(() => {
+    const handler = (event: BeforeUnloadEvent) => warnBeforeUnload(event);
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
 
   /**
    * Draws an image onto a canvas, fitted inside what the browser can actually
@@ -2681,14 +2651,15 @@ const MAX_HISTORY_STEPS = 50;
     canvas.height = 0;
   };
 
-  const loadImage = (source: string): Promise<HTMLImageElement> =>
-    new Promise((resolve, reject) => {
+  function loadImage(source: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
       const img = new Image();
       img.crossOrigin = imageCrossOrigin(source);
       img.onload = () => resolve(img);
       img.onerror = () => reject(new Error("Image illisible"));
       img.src = source;
     });
+  }
 
   /**
    * Any image the browser can load -> a base64 data URL the API accepts.
@@ -2936,7 +2907,8 @@ const MAX_HISTORY_STEPS = 50;
     setPolygonCropModalOpen(true);
   };
 
-  const handleSave = async () => {
+  const handleSave = async (options?: { automatic?: boolean }) => {
+    if (saveInFlightRef.current) return null;
     if (!canEditPlan) {
       setSaveStatus("Lecture seule");
       window.setTimeout(() => setSaveStatus(""), 2500);
@@ -2949,34 +2921,35 @@ const MAX_HISTORY_STEPS = 50;
       );
       return false;
     }
+    saveInFlightRef.current = true;
+    const submittedSnapshot = buildEditableSnapshot();
+    const submittedOverlays = planOverlays;
     setSaving(true);
     setSaveStatus("Sauvegarde...");
     try {
       if (isEraseDirtyRef.current) {
+        const submittedEraseRevision = eraseRevisionRef.current;
         const canvas = planCanvasRef.current?.getEditedBackground();
-        if (canvas) {
-          try {
-            const eraseRes = await fetch(buildApiUrl(`/api/plans/${id}/apply-manual-edit/`), {
-              method: "POST",
-              headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
-              body: JSON.stringify({ image_data: canvas.toDataURL("image/png") }),
-            });
-            if (eraseRes.ok) {
-              const updatedFromErase = await eraseRes.json();
-              const currentRawBg = (plan?.use_cleaned_background && plan?.cleaned_background_file)
-                ? plan.cleaned_background_file
-                : plan?.background_file || "";
-              const currentRawType = (plan?.use_cleaned_background && plan?.cleaned_background_file)
-                ? "image"
-                : plan?.background_type || "image";
-              setSessionBackgroundUrl((current) => current || currentRawBg);
-              setSessionBackgroundType((current) => current || (currentRawType as "image" | "pdf"));
-              setPlan(updatedFromErase);
-              isEraseDirtyRef.current = false;
-            }
-          } catch (eraseErr) {
-            console.error("Auto-apply erase failed during save:", eraseErr);
-          }
+        if (!canvas) throw new Error("Le fond modifié n’est pas encore prêt à être enregistré.");
+        const eraseRes = await fetch(buildApiUrl(`/api/plans/${id}/apply-manual-edit/`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getPlanAuthHeaders() },
+          body: JSON.stringify({ image_data: canvas.toDataURL("image/png") }),
+        });
+        if (!eraseRes.ok) throw new Error(await describeApiError(eraseRes));
+        const updatedFromErase = await eraseRes.json();
+        const currentRawBg = (plan?.use_cleaned_background && plan?.cleaned_background_file)
+          ? plan.cleaned_background_file
+          : plan?.background_file || "";
+        const currentRawType = (plan?.use_cleaned_background && plan?.cleaned_background_file)
+          ? "image"
+          : plan?.background_type || "image";
+        setSessionBackgroundUrl((current) => current || currentRawBg);
+        setSessionBackgroundType((current) => current || (currentRawType as "image" | "pdf"));
+        setPlan(updatedFromErase);
+        // Do not clear newer eraser edits made while this request was pending.
+        if (eraseRevisionRef.current === submittedEraseRevision) {
+          isEraseDirtyRef.current = false;
         }
       }
       const planInformationLayouts = { ...(plan?.plan_information_layout ?? {}) };
@@ -3064,9 +3037,7 @@ const MAX_HISTORY_STEPS = 50;
       });
 
       if (!response.ok) {
-        setSaveStatus("Erreur");
-        alert(`Sauvegarde impossible : ${await describeApiError(response)}`);
-        return false;
+        throw new Error(await describeApiError(response));
       }
 
       const savedPlan: EvacuationPlanBackend = await response.json();
@@ -3080,27 +3051,21 @@ const MAX_HISTORY_STEPS = 50;
       setSessionBackgroundType((current) => current || (currentRawType as "image" | "pdf"));
       setPlan(savedPlan);
       setPlanOverlays((current) =>
-        current.map((overlay, index) => {
-          const serverId = savedPlan.overlay_ids?.[index] ?? overlay.serverId;
-          const savedOverlay = savedPlan.overlays?.find((item) => item.id === serverId);
-          return {
-            ...overlay,
-            serverId,
-            imageChanged: false,
-            isOriginal: savedOverlay?.is_original ?? overlay.isOriginal,
-            canRevertOriginal: savedOverlay?.can_revert_original ?? overlay.canRevertOriginal,
-          };
-        })
+        reconcileSavedOverlays(current, submittedOverlays, savedPlan)
       );
-      setSaveStatus("Sauvegardé !");
+      setSaveStatus(options?.automatic ? "Sauvegardé auto !" : "Sauvegardé !");
       setTimeout(() => setSaveStatus(""), 2000);
-      setSavedSnapshot(buildEditableSnapshot());
+      setSavedSnapshot(submittedSnapshot);
       return savedPlan;
     } catch (err) {
       console.error(err);
-      setSaveStatus("Erreur");
+      setSaveStatus("Échec de sauvegarde — modifications non enregistrées");
+      if (!options?.automatic) {
+        alert(`Sauvegarde impossible : ${err instanceof Error ? err.message : "Erreur de connexion"}`);
+      }
       return null;
     } finally {
+      saveInFlightRef.current = false;
       setSaving(false);
     }
   };
@@ -3352,16 +3317,19 @@ const MAX_HISTORY_STEPS = 50;
     setXaiKeyTesting(true);
     setXaiKeyStatus(xaiApiKey.trim() ? "Test de la clé saisie..." : "Test de la clé sauvegardée...");
     try {
-      const res = await fetch(buildApiUrl(`/api/xai/test-key/`), {
+      const res = await authenticatedFetch(buildApiUrl(`/api/xai/test-key/`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...getPlanAuthHeaders(),
         },
         body: JSON.stringify(xaiApiKey.trim() ? { api_key: xaiApiKey.trim() } : {}),
       });
       const data = await res.json();
-      setXaiKeyStatus(data.result === "valide" ? "Clé valide." : "Clé invalide.");
+      if (data.result === "valide") {
+        setXaiKeyStatus("Clé valide.");
+      } else {
+        setXaiKeyStatus(data.detail ? `Clé invalide : ${data.detail}` : "Clé invalide.");
+      }
     } catch (err) {
       console.error(err);
       setXaiKeyStatus("Test impossible.");
@@ -3379,11 +3347,10 @@ const MAX_HISTORY_STEPS = 50;
     setXaiKeySaving(true);
     setXaiKeyStatus(xaiHasSavedKey ? "Remplacement en cours..." : "Sauvegarde en cours...");
     try {
-      const res = await fetch(buildApiUrl(`/api/xai-settings/save/`), {
+      const res = await authenticatedFetch(buildApiUrl(`/api/xai-settings/save/`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...getPlanAuthHeaders(),
         },
         body: JSON.stringify({ api_key: xaiApiKey.trim() }),
       });
@@ -3410,9 +3377,8 @@ const MAX_HISTORY_STEPS = 50;
     setXaiKeyDeleting(true);
     setXaiKeyStatus("Suppression en cours...");
     try {
-      const res = await fetch(buildApiUrl(`/api/xai-settings/delete/`), {
+      const res = await authenticatedFetch(buildApiUrl(`/api/xai-settings/delete/`), {
         method: "DELETE",
-        headers: getPlanAuthHeaders(),
       });
 
       if (!res.ok && res.status !== 204) {
@@ -3644,7 +3610,7 @@ const MAX_HISTORY_STEPS = 50;
     }).format(new Date(value));
   };
 
-  const fetchCleaningHistory = async (overlayIdOverride?: number) => {
+  async function fetchCleaningHistory(overlayIdOverride?: number) {
     if (!id) return;
     const selectedOverlay = planOverlays.find((overlay) => overlay.tempId === selectedCleanTargetId);
     const overlayId = overlayIdOverride ?? selectedOverlay?.serverId;
@@ -3667,7 +3633,7 @@ const MAX_HISTORY_STEPS = 50;
     } finally {
       setCleaningHistoryLoading(false);
     }
-  };
+  }
 
   const handleUseHistory = async (historyItem: CleaningHistoryItem) => {
     const selectedOverlay = planOverlays.find((overlay) => overlay.tempId === selectedCleanTargetId);
@@ -3795,7 +3761,7 @@ const MAX_HISTORY_STEPS = 50;
 
   const selectedShape = shapes.find((s) => s.tempId === selectedShapeId);
 
-  const handleUpdateSelectedShape = (key: keyof CanvasShape, value: any) => {
+  const handleUpdateSelectedShape = <K extends keyof CanvasShape,>(key: K, value: CanvasShape[K]) => {
     if (!selectedShapeId) return;
     const styleAppliesToGroup = key === "color" || key === "stroke_width";
     const objectGroupId = styleAppliesToGroup ? selectedShape?.object_group_id : "";
@@ -3838,15 +3804,18 @@ const MAX_HISTORY_STEPS = 50;
    */
   const effectivePlanRotation = ((canvasRotation - (planReadingAngle ?? 0)) % 360 + 360) % 360;
 
-  // Keep the export's own angle — the compass needle, the render cache key — on
-  // the same value the studio is displaying, so the two can never disagree.
-  useEffect(() => {
-    setExportPlanRotation(effectivePlanRotation);
-  }, [effectivePlanRotation]);
+  // Follow the canvas immediately; a manual export angle applies to this orientation.
+  const exportPlanRotation = exportRotationOverride?.source === effectivePlanRotation
+    ? exportRotationOverride.angle : effectivePlanRotation;
+  const setExportPlanRotation = (angle: number) => {
+    setExportRotationOverride({ source: effectivePlanRotation, angle });
+  };
 
   const lastSituationOrientationRef = useRef<number | null>(null);
 
   // Synchronise situation plan silhouette and traces with the main plan reading orientation ("Vous êtes ici" or canvas rotation)
+  // The observer orientation updates editable geometry recorded in undo history; this guarded synchronization persists the transformed traces.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!planSituation.enabled) return;
     const targetOrientation = effectivePlanRotation;
@@ -3872,6 +3841,7 @@ const MAX_HISTORY_STEPS = 50;
     planSituation.orientation,
     planSituation.orientation_mode,
   ]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const usedIconTypes = Array.from(new Set(
     icons.filter((icon) => icon.visible !== false).map((icon) => icon.icon_type)
@@ -4153,58 +4123,26 @@ const MAX_HISTORY_STEPS = 50;
     ), plan?.plan_legend_layout?.[template] ?? null), planSituation)
   );
 
-  // ── Auto-save timer effect (20s default) ──────────────────────────────────
-  useEffect(() => {
-    if (!autoSaveEnabled) {
-      setSecondsUntilAutoSave(autoSaveInterval);
-      return;
-    }
+  const {
+    enabled: autoSaveEnabled,
+    interval: autoSaveInterval,
+    secondsUntilNextSave: secondsUntilAutoSave,
+    setEnabled: handleToggleAutoSave,
+    setInterval: handleChangeAutoSaveInterval,
+  } = useAutoSave({
+    scope: String(id),
+    blocked: loading || saving || !canEditPlan || !rememberedTemplateReady
+      || (sheetTemplate !== "none" && missingPlanInformationCount > 0),
+    isDirty: hasUnsavedChanges,
+    onSave: () => handleSave({ automatic: true }),
+  });
 
-    const timer = window.setInterval(() => {
-      if (loading || !canEditPlan) return;
-      if (saving || isAutoSavingRef.current) return;
-
-      // Do not trigger auto-save if required template fields are incomplete
-      if (sheetTemplate !== "none" && missingPlanInformationCount > 0) return;
-
-      if (!hasUnsavedChanges()) {
-        setSecondsUntilAutoSave(autoSaveInterval);
-        return;
-      }
-
-      setSecondsUntilAutoSave((prev) => {
-        if (prev <= 1) {
-          if (!isAutoSavingRef.current && !saving && hasUnsavedChanges()) {
-            isAutoSavingRef.current = true;
-            void (async () => {
-              try {
-                const res = await handleSave();
-                if (res) {
-                  setSaveStatus("Sauvegardé auto !");
-                  setTimeout(() => setSaveStatus(""), 2500);
-                }
-              } catch (err) {
-                console.error("Auto-save error:", err);
-              } finally {
-                isAutoSavingRef.current = false;
-              }
-            })();
-          }
-          return autoSaveInterval;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => window.clearInterval(timer);
-  }, [autoSaveEnabled, autoSaveInterval, loading, saving, canEditPlan, savedSnapshot, icons, shapes, texts, planOverlays, mainPlanTransform, watermarkConfig, sheetPlanPlacement, sheetTemplate, missingPlanInformationCount]);
-
-  const openPlanInformationSettings = () => {
+  function openPlanInformationSettings() {
     setPlanInformationDraft({ ...savedPlanInformation });
     setPlanInformationVisibilityDraft({ ...savedPlanInformationVisibility });
     setPlanInformationError("");
     setPlanInformationModalOpen(true);
-  };
+  }
 
   const savePlanInformation = async () => {
     if (!plan || !canEditPlan) return;
@@ -4255,6 +4193,8 @@ const MAX_HISTORY_STEPS = 50;
 
   // The traceability block belongs to this plan, never to the reusable
   // template. Refresh it whenever the server-side metadata changes.
+  // Merge server metadata into editable template blocks; keep the existing state when the layout is unchanged.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!plan || sheetTemplate === "none") return;
     setSheetBlocks((current) => {
@@ -4269,6 +4209,7 @@ const MAX_HISTORY_STEPS = 50;
       return JSON.stringify(next) === JSON.stringify(current) ? current : next;
     });
   }, [plan, sheetTemplate]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const activeSheetSize = useMemo(() => {
     if (sheetTemplate === "none") return { width: SHEET_WIDTH, height: SHEET_HEIGHT };
@@ -4501,7 +4442,7 @@ const MAX_HISTORY_STEPS = 50;
     }
   };
 
-  const useMainPlanForSituation = async () => {
+  const handleUseMainPlanForSituation = async () => {
     const source = planCanvasRef.current?.getBackgroundDataUrl();
     if (!source) {
       alert("Le fond du plan principal n’est pas encore disponible.");
@@ -4648,7 +4589,6 @@ const MAX_HISTORY_STEPS = 50;
   useEffect(() => {
     const source = plan?.plan_situation_background_file || "";
     if (!source) {
-      setPlanSituationBackgroundImage(null);
       return;
     }
     let cancelled = false;
@@ -4671,9 +4611,10 @@ const MAX_HISTORY_STEPS = 50;
       ...sheetLogoImages,
       ...sheetTemplateAssetImages,
       ...projectTemplateAssetImages,
-      [PLAN_SITUATION_IMAGE_KEY]: planSituationBackgroundImage,
+      [PLAN_SITUATION_IMAGE_KEY]: planSituationBackgroundImage?.getAttribute("src") === plan?.plan_situation_background_file
+        ? planSituationBackgroundImage : null,
     }),
-    [sheetLogoImages, sheetTemplateAssetImages, projectTemplateAssetImages, planSituationBackgroundImage]
+    [sheetLogoImages, sheetTemplateAssetImages, projectTemplateAssetImages, planSituationBackgroundImage, plan?.plan_situation_background_file]
   );
 
   const selectedBlock = useMemo(
@@ -4692,7 +4633,72 @@ const MAX_HISTORY_STEPS = 50;
     && canEditPlan
     && !protectedPdfBackgroundSelected
   );
+  const [planPlacementScale, setPlanPlacementScale] = useState<number>(1);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      if (!sheetActive) {
+        setPlanPlacementScale(1);
+        return;
+      }
+      const testUnits = planCanvasRef.current?.getPlanDistanceInSheetUnits(100);
+      if (testUnits && Number.isFinite(testUnits) && testUnits > 0) {
+        const nextScale = testUnits / 100;
+        setPlanPlacementScale((prev) => (Math.abs(prev - nextScale) > 0.0001 ? nextScale : prev));
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [sheetActive, activeSheetSize, exportPaperFormat, sheetBlocks, sheetPlanPlacement, mainPlanTransform, effectivePlanRotation]);
 
+  const selectedIconPrintedMm = useMemo(() => {
+    if (!selectedIcon) return null;
+    const paper = EXPORT_PAPER_SIZES[exportPaperFormat] ?? EXPORT_PAPER_SIZES.a3;
+    const physicalSheetWidthMm = activeSheetSize.width >= activeSheetSize.height
+      ? paper.widthMm
+      : paper.heightMm;
+    const sheetWidth = sheetActive ? (activeSheetSize.width || EXPORT_CANVAS_WIDTH) : EXPORT_CANVAS_WIDTH;
+    const minPx = Math.min(selectedIcon.width, selectedIcon.height);
+    const liveSheetDistance = planCanvasRef.current?.getPlanDistanceInSheetUnits(minPx);
+    const sheetDistance = (liveSheetDistance && Number.isFinite(liveSheetDistance) && liveSheetDistance > 0)
+      ? liveSheetDistance
+      : minPx * planPlacementScale;
+    const sizeMm = (sheetDistance * physicalSheetWidthMm) / sheetWidth;
+    return {
+      sizeMm: Number.isFinite(sizeMm) ? sizeMm : 0,
+      paperFormat: exportPaperFormat,
+    };
+  }, [selectedIcon, exportPaperFormat, activeSheetSize, sheetActive, planPlacementScale]);
+
+  const selectedIconCompliance = useMemo(() => {
+    if (!selectedIcon || !selectedIconPrintedMm) return null;
+    const isObserver = isYouAreHereIcon(selectedIcon.icon_type, iconDefinitions);
+    return evaluateIconCompliance({
+      sizeMm: selectedIconPrintedMm.sizeMm,
+      isYouAreHere: isObserver,
+    });
+  }, [selectedIcon, selectedIconPrintedMm, iconDefinitions]);
+
+  const selectedBlockPictoCompliance = useMemo(() => {
+    if (!selectedBlock || selectedBlock.kind !== "picto" || !selectedBlock.iconType) return null;
+    const paper = EXPORT_PAPER_SIZES[exportPaperFormat] ?? EXPORT_PAPER_SIZES.a3;
+    const physicalSheetWidthMm = activeSheetSize.width >= activeSheetSize.height
+      ? paper.widthMm
+      : paper.heightMm;
+    const sheetWidth = activeSheetSize.width || EXPORT_CANVAS_WIDTH;
+    const minPx = Math.min(selectedBlock.width, selectedBlock.height);
+    const sizeMm = (minPx * physicalSheetWidthMm) / sheetWidth;
+    const isObserver = isYouAreHereIcon(selectedBlock.iconType, iconDefinitions);
+    const compliance = evaluateIconCompliance({
+      sizeMm: Number.isFinite(sizeMm) ? sizeMm : 0,
+      isYouAreHere: isObserver,
+    });
+    return {
+      compliance,
+      sizeMm: Number.isFinite(sizeMm) ? sizeMm : 0,
+    };
+  }, [selectedBlock, exportPaperFormat, activeSheetSize, iconDefinitions]);
+
+  // Normalize group selection after undo, deletion or template replacement; preserve an already valid selection.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const currentSelectedBlock = selectedBlockId
       ? sheetBlocks.find((block) => block.id === selectedBlockId)
@@ -4721,6 +4727,7 @@ const MAX_HISTORY_STEPS = 50;
       return [selectedBlockId];
     });
   }, [selectedBlockId, sheetBlocks]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const selectSheetBlock = (blockId: string | null) => {
     if (!blockId) {
@@ -4939,6 +4946,8 @@ const MAX_HISTORY_STEPS = 50;
   // Old saved drafts and imported PDF templates may predate the automatic
   // legend. Add it once when such a sheet is opened. Existing legends — even a
   // legend the user deliberately hid — are never reset by this migration.
+  // One-time compatibility migration for templates without a legend; the presence guard prevents repeated updates.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (
       sheetTemplate === "none"
@@ -4955,6 +4964,7 @@ const MAX_HISTORY_STEPS = 50;
       );
     });
   }, [sheetTemplate, sheetBlocks, defaultSheetTemplateActive, plan?.plan_legend_layout]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleToggleLayerLock = (item: EditorLayerItem) => {
     const targetSheetBlock = sheetActive
@@ -5713,14 +5723,12 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const setClientLogoForPlan = (source: string) => {
-    setExportClientLogo(source);
     setWatermarkConfig((current) => ({ ...current, client_logo: source }));
     setLogoSettingsError("");
   };
 
   const setStudioLogoPreference = (source: string) => {
     const resolved = source || DEFAULT_STUDIO_LOGO;
-    setExportStudioLogo(resolved);
     setWatermarkConfig((current) => ({ ...current, creator_logo: resolved }));
     storeStudioLogo(resolved);
     setLogoSettingsError("");
@@ -5754,8 +5762,6 @@ const MAX_HISTORY_STEPS = 50;
       creator_logo: watermarkDraft.creator_logo || DEFAULT_STUDIO_LOGO,
     };
     setWatermarkConfig(next);
-    setExportClientLogo(next.client_logo);
-    setExportStudioLogo(next.creator_logo);
     storeStudioLogo(next.creator_logo);
     setWatermarkModalOpen(false);
   };
@@ -6362,6 +6368,8 @@ const MAX_HISTORY_STEPS = 50;
       ? readStoredSheetTemplateVersions().find((version) => version.id === `draft:${template}`)
       : undefined;
 
+  // Invalidate readiness before loading permissions and templates for the authenticated account.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (authLoading || !user) return;
     let cancelled = false;
@@ -6453,6 +6461,7 @@ const MAX_HISTORY_STEPS = 50;
       cancelled = true;
     };
   }, [id, authLoading, token, user?.id]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     if (authLoading || !user) return;
@@ -6499,6 +6508,8 @@ const MAX_HISTORY_STEPS = 50;
     };
   }, [id, authLoading, token, user?.id]);
 
+  // Migrate the persisted template library only when a built-in definition changes, preserving user-edited drafts.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!sheetTemplateLibraryReady || !templatePermissionLoaded || !canEditDefaultTemplates) return;
     const versions = readStoredSheetTemplateVersions();
@@ -6550,6 +6561,7 @@ const MAX_HISTORY_STEPS = 50;
 
     if (changed) writeStoredSheetTemplateVersions(nextVersions);
   }, [sheetTemplateLibraryReady, templatePermissionLoaded, canEditDefaultTemplates, storedSheetTemplateVersions]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     if (sheetTemplate === "none" || !sheetBlocks.length) return;
@@ -6989,6 +7001,8 @@ const MAX_HISTORY_STEPS = 50;
 
   // Restore the current display mode and independently load the last real
   // template chosen for this plan. Saving in bare-plan mode must not erase it.
+  // Hydrate the plan-owned template after the library loads, once per plan via rememberedTemplatePlanIdRef.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (
       !plan
@@ -7054,6 +7068,7 @@ const MAX_HISTORY_STEPS = 50;
     canEditDefaultTemplates,
     storedSheetTemplateVersions,
   ]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Recadrage propre au plan : le template pose d'abord son cadrage par défaut,
   // puis ce réglage enregistré reprend le dessus une seule fois au chargement.
@@ -7632,13 +7647,6 @@ const MAX_HISTORY_STEPS = 50;
     applySheetTemplate("official_pi_a3_ph_por");
   }, [sheetTemplate, sheetBlocks, activeSheetTemplateVersionId]);
 
-  // Logo fields belong to the saved project state. Keeping the export preview
-  // derived from them also makes undo/redo restore the correct artwork.
-  useEffect(() => {
-    setExportClientLogo(watermarkConfig.client_logo || "");
-    setExportStudioLogo(watermarkConfig.creator_logo || getStoredStudioLogo());
-  }, [watermarkConfig.client_logo, watermarkConfig.creator_logo]);
-
   // Logos live as data URLs in the export settings; the sheet needs them decoded.
   useEffect(() => {
     let cancelled = false;
@@ -7674,7 +7682,7 @@ const MAX_HISTORY_STEPS = 50;
       ),
     [sheetBlocks]
   );
-  const usedIconTypesKey = Array.from(new Set([...usedIconTypes, ...sheetPictoTypes])).join("|");
+  const usedIconTypesKey = usedIconTypes.join("|");
   const sheetPictoTypesKey = sheetPictoTypes.join("|");
   useEffect(() => {
     if (!sheetActive) return;
@@ -7914,11 +7922,13 @@ const MAX_HISTORY_STEPS = 50;
     setMultiSelection({ iconIds: [], shapeIds: [], textIds: [] });
   };
 
-  const handleUpdateSelectedIcon = (field: keyof CanvasIcon, value: any) => {
+  const handleUpdateSelectedIcon = <K extends keyof CanvasIcon,>(field: K, value: CanvasIcon[K]) => {
     if (!selectedIconId) return;
     if (field === "width" || field === "height") {
       if (!Number.isFinite(Number(value))) return;
-      const currentDimension = selectedIcon?.[field] ?? defaultIconSize[field];
+      const currentDimension = field === "width"
+        ? selectedIcon?.width ?? defaultIconSize.width
+        : selectedIcon?.height ?? defaultIconSize.height;
       const dimension = normalizeCanvasIconDimension(value, currentDimension);
       const currentWidth = selectedIcon?.width ?? defaultIconSize.width;
       const currentHeight = selectedIcon?.height ?? defaultIconSize.height;
@@ -8343,8 +8353,6 @@ const MAX_HISTORY_STEPS = 50;
   };
 
   const openLogoManager = () => {
-    setExportClientLogo((current) => current || watermarkConfig.client_logo);
-    setExportStudioLogo((current) => current || getStoredStudioLogo(watermarkConfig.creator_logo || DEFAULT_STUDIO_LOGO));
     setLogoSettingsError("");
     setLogoManagerOpen(true);
   };
@@ -10634,6 +10642,8 @@ const MAX_HISTORY_STEPS = 50;
     return pdf;
   };
 
+  // Synchronize loading/clearing with the debounced canvas preview job, including cancellation when its modal closes.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!exportModalOpen || loading || cleaning) {
       setExportAdjustmentPreviewUrl("");
@@ -10724,6 +10734,7 @@ const MAX_HISTORY_STEPS = 50;
     exportEvacBodyFontSize,
     iconDefinitions,
   ]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const handlePreviewPdf = async () => {
     setPreviewing(true);
@@ -10766,9 +10777,9 @@ const MAX_HISTORY_STEPS = 50;
     }
   };
 
-  const getStageInstance = () => {
+  function getStageInstance() {
     return planCanvasRef.current?.getStage() ?? null;
-  };
+  }
 
   /** Capture of the studio sheet, exactly as laid out, at the print resolution. */
   const captureSheetImage = (targetLongEdgePx: number, maxPixelRatio: number) => {
@@ -11017,7 +11028,7 @@ const MAX_HISTORY_STEPS = 50;
             Modèle grok-imagine-image-quality · résolution 2K · analyse grok-4.5 incluse.
           </p>
           <p className="mt-3 text-xs leading-5 text-slate-500">
-            Estimation indicative. Le montant réel facturé par xAI peut varier selon la taille de l'image et les éventuelles nouvelles tentatives.
+            Estimation indicative. Le montant réel facturé par xAI peut varier selon la taille de l&apos;image et les éventuelles nouvelles tentatives.
           </p>
         </>
       ) : (
@@ -11052,7 +11063,7 @@ const MAX_HISTORY_STEPS = 50;
       {cleaningHistoryLoading ? (
         <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-500">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          Chargement de l'historique...
+          Chargement de l&apos;historique...
         </div>
       ) : cleaningHistory.length === 0 ? (
         <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-medium text-slate-500">
@@ -11114,8 +11125,9 @@ const MAX_HISTORY_STEPS = 50;
         className="studio-shell flex min-h-0 min-w-0 flex-col bg-[#1b1b1d] text-neutral-200"
       >
         {/* ───────────────── Top bar ───────────────── */}
-        <header className="flex min-h-16 w-full max-w-full min-w-0 shrink-0 items-center justify-between gap-2 overflow-hidden border-b border-brand-orange/40 bg-[#2d2d30] px-2 py-0.5 shadow-[inset_0_2px_0_rgba(255,116,0,0.85)]">
-          <div className="flex w-56 min-w-[200px] shrink-0 items-center gap-2">
+        <header className="flex min-h-16 w-full max-w-full min-w-0 shrink-0 items-center justify-between gap-2.5 overflow-hidden border-b border-brand-orange/40 bg-[#2d2d30] px-2.5 py-1 shadow-[inset_0_2px_0_rgba(255,116,0,0.85)]">
+          {/* Left Column: Brand, Navigation, Docks, Title */}
+          <div className="flex w-52 min-w-[190px] max-w-[240px] shrink-0 items-center gap-1.5">
             <BrandLogo compact className="h-8 w-8 shrink-0" priority />
             <button
               type="button"
@@ -11150,7 +11162,7 @@ const MAX_HISTORY_STEPS = 50;
               <PanelRight className="h-4 w-4" />
             </button>
             <span className="h-5 w-px shrink-0 bg-white/10" />
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <h1 className="truncate text-[13px] font-semibold leading-tight text-neutral-100">
                 {plan?.title || "Plan d'évacuation"}
               </h1>
@@ -11160,113 +11172,121 @@ const MAX_HISTORY_STEPS = 50;
             </div>
           </div>
 
-          <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 overflow-hidden">
+          {/* Center Column: Two-row action bars */}
+          <div className="flex min-w-0 flex-1 flex-col justify-center gap-1 overflow-hidden">
+            {/* Row 1: History, Rotation, Sheet View & Template Controls */}
             <div className="flex min-h-7 min-w-0 items-center gap-1.5 whitespace-nowrap overflow-x-auto no-scrollbar scroll-smooth [&>*]:shrink-0">
-            {/* Undo / Redo */}
-            <div className="flex items-center gap-0.5 rounded bg-black/25 p-0.5">
-              <button
-                type="button"
-                onClick={handleUndo}
-                disabled={historyIndex <= 0}
-                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:pointer-events-none"
-                title="Annuler la dernière action (Cmd+Z / Ctrl+Z)"
-              >
-                <Undo2 className="h-3.5 w-3.5" />
-                <span>Annuler</span>
-              </button>
-              <button
-                type="button"
-                onClick={handleRedo}
-                disabled={historyIndex < 0 || historyIndex >= history.length - 1}
-                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:pointer-events-none"
-                title="Rétablir l'action annulée (Cmd+Shift+Z / Ctrl+Y)"
-              >
-                <Redo2 className="h-3.5 w-3.5" />
-                <span>Rétablir</span>
-              </button>
-            </div>
-
-            {/* Canvas Rotation */}
-            <div className="flex items-center gap-1 rounded bg-black/25 px-1.5 py-0.5">
-              <span className="text-[10px] font-semibold text-neutral-400">Plan:</span>
-              <button
-                type="button"
-                onClick={() => setCanvasRotation((r) => (r - 90 + 360) % 360)}
-                className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
-                title="Pivoter le plan de -90° (Sens anti-horaire)"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setCanvasRotation(0)}
-                disabled={canvasRotation === 0}
-                className={`rounded px-1.5 py-0.5 text-[10px] font-bold transition-colors ${
-                  canvasRotation === 0
-                    ? "text-neutral-500 cursor-default"
-                    : "bg-sky-500/20 text-sky-300 hover:bg-sky-500/40 cursor-pointer"
-                }`}
-                title={
-                  planReadingAngle === null
-                    ? "Remettre la rotation du plan à 0° (Réinitialiser)"
-                    : `Rotation totale ${effectivePlanRotation}° = ${canvasRotation}° manuels ${
-                        planReadingAngle >= 0 ? "−" : "+"
-                      } ${Math.abs(Math.round(planReadingAngle))}° du repère « Vous êtes ici ». Cliquez pour remettre la part manuelle à 0°.`
-                }
-              >
-                {effectivePlanRotation}°{planReadingAngle !== null ? " ↻" : ""}
-              </button>
-              <button
-                type="button"
-                onClick={() => setCanvasRotation((r) => (r + 90) % 360)}
-                className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
-                title="Pivoter le plan de +90° (Sens horaire)"
-              >
-                <RotateCw className="h-3.5 w-3.5" />
-              </button>
-            </div>
-
-            {/* Affichage: bare plan, or the printed sheet edited in place */}
-            <div className="flex items-center gap-1 rounded bg-black/25 px-1.5 py-0.5">
-              <Eye className="h-3.5 w-3.5 text-neutral-400" />
-              <span className="text-[10px] font-semibold text-neutral-400">Affichage :</span>
-              <div className="flex items-center rounded bg-black/30 p-0.5">
+              {/* Undo / Redo */}
+              <div className="flex items-center gap-0.5 rounded bg-black/25 p-0.5">
                 <button
                   type="button"
-                  onClick={() => applySheetTemplate("none")}
-                  className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
-                    sheetTemplate === "none"
-                      ? "bg-sky-500/25 text-sky-200"
-                      : "text-neutral-400 hover:bg-white/10 hover:text-white"
-                  }`}
-                  title="Afficher uniquement le plan sans oublier le dernier template choisi"
+                  onClick={handleUndo}
+                  disabled={historyIndex <= 0}
+                  className="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:pointer-events-none"
+                  title="Annuler la dernière action (Cmd+Z / Ctrl+Z)"
                 >
-                  Plan seul
+                  <Undo2 className="h-3.5 w-3.5" />
+                  <span>Annuler</span>
                 </button>
                 <button
                   type="button"
-                  onClick={showRememberedSheetTemplate}
-                  className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
-                    sheetTemplate !== "none"
-                      ? "bg-sky-500/25 text-sky-200"
-                      : "text-neutral-400 hover:bg-white/10 hover:text-white"
-                  }`}
-                  title={lastSheetTemplateSelection
-                    ? `Réafficher directement : ${lastSheetTemplateSelection.name}`
-                    : "Choisir le premier template de ce plan"}
+                  onClick={handleRedo}
+                  disabled={historyIndex < 0 || historyIndex >= history.length - 1}
+                  className="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:pointer-events-none"
+                  title="Rétablir l'action annulée (Cmd+Shift+Z / Ctrl+Y)"
                 >
-                  Template
+                  <Redo2 className="h-3.5 w-3.5" />
+                  <span>Rétablir</span>
                 </button>
               </div>
+
+              {/* Canvas Rotation */}
+              <div className="flex items-center gap-1 rounded bg-black/25 px-1.5 py-0.5">
+                <span className="text-[10px] font-semibold text-neutral-400">Plan:</span>
+                <button
+                  type="button"
+                  onClick={() => setCanvasRotation((r) => (r - 90 + 360) % 360)}
+                  className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
+                  title="Pivoter le plan de -90° (Sens anti-horaire)"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCanvasRotation(0)}
+                  disabled={canvasRotation === 0}
+                  className={`rounded px-1.5 py-0.5 text-[10px] font-bold transition-colors ${
+                    canvasRotation === 0
+                      ? "text-neutral-500 cursor-default"
+                      : "bg-sky-500/20 text-sky-300 hover:bg-sky-500/40 cursor-pointer"
+                  }`}
+                  title={
+                    planReadingAngle === null
+                      ? "Remettre la rotation du plan à 0° (Réinitialiser)"
+                      : `Rotation totale ${effectivePlanRotation}° = ${canvasRotation}° manuels ${
+                          planReadingAngle >= 0 ? "−" : "+"
+                        } ${Math.abs(Math.round(planReadingAngle))}° du repère « Vous êtes ici ». Cliquez pour remettre la part manuelle à 0°.`
+                  }
+                >
+                  {effectivePlanRotation}°{planReadingAngle !== null ? " ↻" : ""}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCanvasRotation((r) => (r + 90) % 360)}
+                  className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"
+                  title="Pivoter le plan de +90° (Sens horaire)"
+                >
+                  <RotateCw className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              <span className="h-4 w-px bg-white/10 shrink-0" />
+
+              {/* Affichage: Plan seul / Template */}
+              <div className="flex items-center gap-1 rounded bg-black/25 px-1.5 py-0.5">
+                <Eye className="h-3.5 w-3.5 text-neutral-400" />
+                <span className="text-[10px] font-semibold text-neutral-400">Affichage :</span>
+                <div className="flex items-center rounded bg-black/30 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => applySheetTemplate("none")}
+                    className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                      sheetTemplate === "none"
+                        ? "bg-sky-500/25 text-sky-200"
+                        : "text-neutral-400 hover:bg-white/10 hover:text-white"
+                    }`}
+                    title="Afficher uniquement le plan sans oublier le dernier template choisi"
+                  >
+                    Plan seul
+                  </button>
+                  <button
+                    type="button"
+                    onClick={showRememberedSheetTemplate}
+                    className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                      sheetTemplate !== "none"
+                        ? "bg-sky-500/25 text-sky-200"
+                        : "text-neutral-400 hover:bg-white/10 hover:text-white"
+                    }`}
+                    title={lastSheetTemplateSelection
+                      ? `Réafficher directement : ${lastSheetTemplateSelection.name}`
+                      : "Choisir le premier template de ce plan"}
+                  >
+                    Template
+                  </button>
+                </div>
+              </div>
+
+              {/* Template controls */}
               <button
                 type="button"
                 onClick={() => setTemplateLibraryOpen(true)}
-                title="Ouvrir la bibliothèque pour choisir un autre template"
+                title="Ouvrir la bibliothèque pour choisir un template"
                 className="flex cursor-pointer items-center gap-1.5 rounded bg-white/[0.04] px-2 py-1 text-[10px] font-semibold text-neutral-200 transition-colors hover:bg-white/10 hover:text-white"
               >
                 <Library className="h-3.5 w-3.5 shrink-0 text-brand-orange" />
                 <span>{lastSheetTemplateSelection ? "Changer de template" : "Choisir un template"}</span>
               </button>
+
               {sheetActive && (
                 <button
                   type="button"
@@ -11279,7 +11299,7 @@ const MAX_HISTORY_STEPS = 50;
                   }`}
                 >
                   <Settings className="h-3.5 w-3.5" />
-                  <span>Informations du plan</span>
+                  <span>Infos plan</span>
                   {missingPlanInformationCount > 0 ? (
                     <span className="rounded bg-amber-400/20 px-1 text-[9px] font-bold">
                       {missingPlanInformationCount}
@@ -11289,6 +11309,7 @@ const MAX_HISTORY_STEPS = 50;
                   )}
                 </button>
               )}
+
               <button
                 type="button"
                 onClick={() => setPlanSituationModalOpen(true)}
@@ -11303,71 +11324,326 @@ const MAX_HISTORY_STEPS = 50;
                 <span>Plan de situation</span>
                 {planSituation.enabled && <Check className="h-3 w-3 text-emerald-300" />}
               </button>
-              {defaultSheetTemplateActive && canEditDefaultTemplates && (
-                <span
-                  title="Vous êtes administrateur et pouvez enregistrer ce template comme nouveau modèle officiel pour tous les utilisateurs."
-                  className="flex items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-1 text-[9px] font-bold text-emerald-300"
-                >
-                  <Unlock className="h-3 w-3" />
-                  Template officiel éditable
-                </span>
-              )}
-              {defaultSheetTemplateActive && canEditDefaultTemplates && (
+
+              {/* Sheet options dropdown (Logos, BAT, Reset, Admin Publish) */}
+              <SheetOptionsDropdown
+                openLogoManager={openLogoManager}
+                openWatermarkSettings={openWatermarkSettings}
+                watermarkConfig={watermarkConfig}
+                disableWatermark={disableWatermark}
+                sheetActive={sheetActive}
+                restoreCurrentSheetTemplateDefault={restoreCurrentSheetTemplateDefault}
+                defaultSheetTemplateActive={defaultSheetTemplateActive}
+                canEditDefaultTemplates={canEditDefaultTemplates}
+                publishCurrentTemplateAsDefault={publishCurrentTemplateAsDefault}
+              />
+            </div>
+
+            {/* Row 2: Plan & Canvas tools */}
+            <div className="flex min-h-7 min-w-0 items-center gap-1.5 whitespace-nowrap overflow-x-auto no-scrollbar [&>*]:shrink-0">
+              <input
+                type="file"
+                ref={changePlanInputRef}
+                accept="image/*,application/pdf"
+                onChange={handleChangePlanFile}
+                className="hidden"
+              />
+
+              <input
+                type="file"
+                ref={planOverlayInputRef}
+                accept="image/*,application/pdf"
+                multiple
+                onChange={handleAddPlanOverlayFile}
+                className="hidden"
+              />
+
+              <button
+                onClick={() => changePlanInputRef.current?.click()}
+                disabled={changingBackground || cleaning || grokCleaning}
+                title="Importer un autre plan d'arrière-plan principal (Image ou PDF)"
+                className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
+              >
+                {changingBackground ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />
+                ) : (
+                  <FileUp className="h-3.5 w-3.5 text-sky-400" />
+                )}
+                <span>Changer le plan</span>
+              </button>
+
+              <button
+                onClick={() => planOverlayInputRef.current?.click()}
+                disabled={importingOverlays}
+                title="Insérer une ou plusieurs images/PDF sur le canvas (chaque page PDF devient un plan manipulable)"
+                className="flex cursor-pointer items-center gap-1.5 rounded border border-sky-600/40 bg-sky-950/60 px-2 py-1 text-[11px] font-semibold text-sky-200 transition-colors hover:bg-sky-900/80 hover:text-white"
+              >
+                {importingOverlays ? <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" /> : <FileUp className="h-3.5 w-3.5 text-sky-400" />}
+                <span>{importingOverlays ? "Import..." : "+ Insérer des plans"}</span>
+              </button>
+
+              {selectedOverlayId && selectedOverlayId !== MAIN_PLAN_ID && (
                 <button
-                  type="button"
-                  onClick={publishCurrentTemplateAsDefault}
-                  title="Enregistrer définitivement comme nouveau template officiel par défaut pour TOUS les utilisateurs"
-                  className="flex cursor-pointer items-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/20 px-2 py-1 text-[10px] font-bold text-emerald-300 shadow-sm transition-colors hover:bg-emerald-500/30 hover:text-white"
+                  onClick={() => {
+                    setSelectedCleanTargetId(selectedOverlayId);
+                    setCleanModalOpen(true);
+                  }}
+                  disabled={cleaning || grokCleaning}
+                  title="Nettoyer directement le plan secondaire actuellement sélectionné"
+                  className="flex cursor-pointer items-center gap-1.5 rounded border border-emerald-600/40 bg-emerald-950/60 px-2 py-1 text-[11px] font-semibold text-emerald-200 transition-colors hover:bg-emerald-900/80 hover:text-white"
                 >
-                  <Save className="h-3 w-3" />
-                  <span>Enregistrer par défaut (tous)</span>
+                  <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
+                  <span>Nettoyer ce plan</span>
                 </button>
               )}
-              {sheetActive && (
+
+              <span className="h-4 w-px bg-white/10 shrink-0" />
+
+              <button
+                type="button"
+                onClick={activateAreaSelection}
+                title={sheetActive
+                  ? "Tracer un rectangle avec la souris pour sélectionner plusieurs éléments du template"
+                  : "Tracer un rectangle avec la souris pour sélectionner plusieurs pictogrammes, formes et textes"}
+                className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-semibold transition-colors ${
+                  areaSelectionMode
+                    ? "border-sky-400 bg-sky-900/80 text-sky-100"
+                    : (sheetActive ? sheetSelectionCount : multiSelectionCount) > 0
+                      ? "border-sky-600/50 bg-sky-950/70 text-sky-200 hover:bg-sky-900/80"
+                      : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <BoxSelect className="h-3.5 w-3.5" />
+                <span>{areaSelectionMode ? "Tracez la zone…" : (sheetActive ? sheetSelectionCount : multiSelectionCount) > 0 ? `${sheetActive ? sheetSelectionCount : multiSelectionCount} sélectionnés` : "Sélection par zone"}</span>
+              </button>
+
+              {sheetActive && sheetSelectionCount >= 2 && (
                 <button
                   type="button"
-                  onClick={restoreCurrentSheetTemplateDefault}
-                  title="Revenir à l’état par défaut de ce template"
-                  className="flex cursor-pointer items-center justify-center rounded p-1 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+                  onClick={handleGroupSheetSelection}
+                  title="Regrouper les éléments sélectionnés du template"
+                  className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-semibold transition-colors ${
+                    sharedSheetObjectGroupId
+                      ? "border-violet-500/50 bg-violet-950/70 text-violet-200 hover:bg-violet-900/80"
+                      : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
+                  }`}
                 >
-                  <RefreshCw className="h-3 w-3" />
+                  <GroupIcon className="h-3.5 w-3.5" />
+                  <span>{sharedSheetObjectGroupId ? "Groupe actif" : "Regrouper"}</span>
+                </button>
+              )}
+              {sheetActive && sheetSelectionCount > 0 && selectedSheetObjectGroupIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleUngroupSheetSelection}
+                  title="Dissocier le groupe sans supprimer ses éléments"
+                  className="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  <Ungroup className="h-3.5 w-3.5" />
+                  <span>Dissocier</span>
+                </button>
+              )}
+
+              {!sheetActive && multiSelectionCount >= 2 && (
+                <button
+                  type="button"
+                  onClick={handleGroupMultiSelection}
+                  title="Créer un groupe indépendant avec les objets sélectionnés"
+                  className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-semibold transition-colors ${
+                    sharedObjectGroupId
+                      ? "border-violet-500/50 bg-violet-950/70 text-violet-200 hover:bg-violet-900/80"
+                      : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  <GroupIcon className="h-3.5 w-3.5" />
+                  <span>{sharedObjectGroupId ? "Groupe actif" : "Regrouper"}</span>
+                </button>
+              )}
+              {!sheetActive && multiSelectionCount > 0 && selectedMultiObjectGroupIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleUngroupMultiSelection}
+                  title="Dissocier le groupe d’objets sans supprimer ses éléments"
+                  className="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  <Ungroup className="h-3.5 w-3.5" />
+                  <span>Dissocier</span>
+                </button>
+              )}
+              {!sheetActive && multiSelectionCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleExportSelectedGroupSvg}
+                  title="Exporter la sélection ou le groupe d’objets en SVG"
+                  className="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span>Exporter SVG</span>
+                </button>
+              )}
+
+              {selectedOverlayId && (
+                <button
+                  type="button"
+                  onClick={handleGroupSelectedPlan}
+                  title="Associer au plan sélectionné les pictogrammes, zones et textes placés visuellement dessus"
+                  className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-semibold transition-colors ${
+                    selectedPlanGroupId
+                      ? "border-indigo-500/50 bg-indigo-950/70 text-indigo-200 hover:bg-indigo-900/80"
+                      : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  <GroupIcon className="h-3.5 w-3.5" />
+                  <span>{selectedPlanGroupId ? "Groupe actif" : "Regrouper avec le plan"}</span>
+                </button>
+              )}
+              {selectedOverlayId && selectedPlanGroupId && (
+                <button
+                  type="button"
+                  onClick={handleUngroupSelectedPlan}
+                  title="Dissocier uniquement les éléments regroupés, sans les supprimer"
+                  className="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  <Ungroup className="h-3.5 w-3.5" />
+                  <span>Dissocier</span>
+                </button>
+              )}
+
+              {hasLockableSelection && (
+                <button
+                  type="button"
+                  disabled={Boolean(
+                    selectedBlock && (!canEditSelectedSheetBlock || protectedPdfBackgroundSelected)
+                  )}
+                  onClick={toggleSelectedObjectLock}
+                  title={protectedPdfBackgroundSelected
+                    ? "Le fond PDF reste verrouillé pour protéger la mise en page"
+                    : selectedBlock && !canEditSelectedSheetBlock
+                      ? "Déverrouillage interdit : autorisation administrateur requise"
+                    : selectedObjectLocked
+                      ? "Déverrouiller l’objet sélectionné"
+                      : "Verrouiller l’objet sélectionné pour éviter un déplacement accidentel"}
+                  className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${
+                    selectedObjectLocked
+                      ? "border-amber-500/50 bg-amber-950/70 text-amber-200 hover:bg-amber-900/80"
+                      : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  {selectedObjectLocked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+                  <span>{selectedObjectLocked ? "Verrouillé" : "Verrouiller"}</span>
+                </button>
+              )}
+
+              <span className="h-4 w-px bg-white/10 shrink-0" />
+
+              <button
+                onClick={() => setKeepPlanRatio((prev) => !prev)}
+                title={
+                  keepPlanRatio
+                    ? "Mode d'agrandissement actuel : Proportions réelles conservées (🔒 Garder ratio). Cliquer pour passer en Déformation libre."
+                    : "Mode d'agrandissement actuel : Déformation libre (🔓 Déformer). Cliquer pour verrouiller les proportions réelles."
+                }
+                className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-semibold transition-colors ${
+                  keepPlanRatio
+                    ? "border-emerald-600/40 bg-emerald-950/60 text-emerald-200 hover:bg-emerald-900/80"
+                    : "border-amber-600/40 bg-amber-950/60 text-amber-200 hover:bg-amber-900/80"
+                }`}
+              >
+                {keepPlanRatio ? (
+                  <>
+                    <Lock className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Ratio 🔒</span>
+                  </>
+                ) : (
+                  <>
+                    <Unlock className="h-3.5 w-3.5 text-amber-400" />
+                    <span>Déformer 🔓</span>
+                  </>
+                )}
+              </button>
+
+              {isPlanDeformed && (
+                <button
+                  type="button"
+                  onClick={handleRestorePlanRatio}
+                  title="Le plan est déformé (proportions largeur/hauteur altérées). Cliquer pour restaurer automatiquement ses proportions réelles 1:1."
+                  className="flex cursor-pointer items-center gap-1.5 rounded border border-amber-500/60 bg-amber-950/80 px-2 py-1 text-[11px] font-semibold text-amber-200 hover:bg-amber-900 transition-colors shadow-sm"
+                >
+                  <Maximize2 className="h-3.5 w-3.5 text-amber-400" />
+                  <span>1:1</span>
+                </button>
+              )}
+
+              {selectedOverlayId && selectedOverlayId !== MAIN_PLAN_ID && (
+                <button
+                  onClick={handleDeleteSelectedOverlay}
+                  title="Supprimer le plan secondaire sélectionné"
+                  className="flex cursor-pointer items-center gap-1.5 rounded border border-red-600/40 bg-red-950/60 px-2 py-1 text-[11px] font-semibold text-red-200 transition-colors hover:bg-red-900/80 hover:text-white"
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                  <span>Supprimer</span>
+                </button>
+              )}
+
+              <button
+                onClick={openPolygonCrop}
+                disabled={cropping || changingBackground || cleaning || grokCleaning}
+                title="Rogner / Croper le plan avec un tracé libre au crayon/lasso ou un cadre"
+                className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
+              >
+                {cropping ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />
+                ) : (
+                  <Crop className="h-3.5 w-3.5 text-sky-400" />
+                )}
+                <span>Rogner</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setSelectedCleanTargetId(selectedOverlayId || "main");
+                  setCleanModalOpen(true);
+                }}
+                disabled={cleaning || grokCleaning}
+                title="Nettoyer le plan sélectionné"
+                className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
+              >
+                {cleaning || grokCleaning ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" />
+                )}
+                <span>Nettoyer</span>
+              </button>
+
+              {(selectedOverlay
+                ? selectedOverlay.canRevertOriginal && !selectedOverlay.isOriginal
+                : plan?.use_cleaned_background) && (
+                <button
+                  onClick={() => {
+                    setSelectedCleanTargetId(selectedOverlay?.tempId || MAIN_PLAN_ID);
+                    setRevertConfirmOpen(true);
+                  }}
+                  disabled={cleaning}
+                  title="Revenir au plan original"
+                  className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
+                >
+                  {cleaning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                  <span>Original</span>
                 </button>
               )}
             </div>
+          </div>
 
-            <button
-              type="button"
-              onClick={openLogoManager}
-              title="Importer le logo client ou changer le logo du studio"
-              className="flex cursor-pointer items-center gap-1.5 rounded border border-white/10 bg-black/20 px-2.5 py-1.5 text-[11px] font-semibold text-neutral-300 transition-colors hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-white"
-            >
-              <ImagePlus className="h-3.5 w-3.5 text-emerald-400" />
-              <span>Logos</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={openWatermarkSettings}
-              title="Configurer la version filigranée et le bloc Bon à tirer"
-              className={`flex cursor-pointer items-center gap-1.5 rounded border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
-                watermarkConfig.enabled
-                  ? "border-red-500/50 bg-red-950/70 text-red-100 hover:bg-red-900/80"
-                  : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
-              }`}
-            >
-              <Stamp className={`h-3.5 w-3.5 ${watermarkConfig.enabled ? "text-red-400" : "text-neutral-400"}`} />
-              <span>{watermarkConfig.enabled ? "Version filigranée active" : "Version filigranée"}</span>
-            </button>
-            {watermarkConfig.enabled && (
-              <button
-                type="button"
-                onClick={disableWatermark}
-                title="Retirer uniquement le filigrane et le bloc BAT"
-                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1.5 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+          {/* Right Column: Pinned Actions (Status, Export, Save) */}
+          <div className="flex shrink-0 items-center gap-2 pr-1">
+            {saveStatus && (
+              <span
+                className="max-w-[190px] truncate rounded-full border border-emerald-500/30 bg-emerald-950/70 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-300"
+                title={saveStatus}
               >
-                <X className="h-3 w-3" />
-                Désactiver
-              </button>
+                {saveStatus}
+              </span>
             )}
 
             {/* One export, for both modes: it always captures the studio. */}
@@ -11391,7 +11667,7 @@ const MAX_HISTORY_STEPS = 50;
               onQualityChange={setExportQuality}
             />
 
-            <div className="flex items-center">
+            <div className="flex items-center shadow-sm">
               <button
                 type="button"
                 onClick={() => setAutoSaveModalOpen(true)}
@@ -11414,310 +11690,14 @@ const MAX_HISTORY_STEPS = 50;
               </button>
 
               <button
-                onClick={handleSave}
+                onClick={() => void handleSave()}
                 disabled={saving}
                 title="Sauvegarder le projet (Ctrl+S)"
                 className="flex cursor-pointer items-center gap-1.5 rounded-r bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-40"
               >
                 {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                <span>{saveStatus || "Sauvegarder"}</span>
+                <span>{saving ? "Sauvegarde…" : "Sauvegarder"}</span>
               </button>
-            </div>
-
-            </div>
-
-            <div className="flex min-h-7 min-w-0 items-center gap-1.5 whitespace-nowrap overflow-x-auto no-scrollbar [&>*]:shrink-0">
-
-            <span className="h-5 w-px bg-white/10" />
-
-            <input
-              type="file"
-              ref={changePlanInputRef}
-              accept="image/*,application/pdf"
-              onChange={handleChangePlanFile}
-              className="hidden"
-            />
-
-            <input
-              type="file"
-              ref={planOverlayInputRef}
-              accept="image/*,application/pdf"
-              multiple
-              onChange={handleAddPlanOverlayFile}
-              className="hidden"
-            />
-
-            <button
-              onClick={() => changePlanInputRef.current?.click()}
-              disabled={changingBackground || cleaning || grokCleaning}
-              title="Importer un autre plan d'arrière-plan principal (Image ou PDF)"
-              className="flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
-            >
-              {changingBackground ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />
-              ) : (
-                <FileUp className="h-3.5 w-3.5 text-sky-400" />
-              )}
-              <span>Changer le plan</span>
-            </button>
-
-            <button
-              onClick={() => planOverlayInputRef.current?.click()}
-              disabled={importingOverlays}
-              title="Insérer une ou plusieurs images/PDF sur le canvas (chaque page PDF devient un plan manipulable)"
-              className="flex cursor-pointer items-center gap-1.5 rounded border border-sky-600/40 bg-sky-950/60 px-2.5 py-1.5 text-[11px] font-semibold text-sky-200 transition-colors hover:bg-sky-900/80 hover:text-white"
-            >
-              {importingOverlays ? <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" /> : <FileUp className="h-3.5 w-3.5 text-sky-400" />}
-              <span>{importingOverlays ? "Import..." : "+ Insérer des plans"}</span>
-            </button>
-
-            {selectedOverlayId && selectedOverlayId !== MAIN_PLAN_ID && (
-              <button
-                onClick={() => {
-                  setSelectedCleanTargetId(selectedOverlayId);
-                  setCleanModalOpen(true);
-                }}
-                disabled={cleaning || grokCleaning}
-                title="Nettoyer directement le plan secondaire actuellement sélectionné"
-                className="flex cursor-pointer items-center gap-1.5 rounded border border-emerald-600/40 bg-emerald-950/60 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-200 transition-colors hover:bg-emerald-900/80 hover:text-white"
-              >
-                <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
-                <span>Nettoyer ce plan</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={activateAreaSelection}
-              title={sheetActive
-                ? "Tracer un rectangle avec la souris pour sélectionner plusieurs éléments du template"
-                : "Tracer un rectangle avec la souris pour sélectionner plusieurs pictogrammes, formes et textes"}
-              className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
-                areaSelectionMode
-                  ? "border-sky-400 bg-sky-900/80 text-sky-100"
-                  : (sheetActive ? sheetSelectionCount : multiSelectionCount) > 0
-                    ? "border-sky-600/50 bg-sky-950/70 text-sky-200 hover:bg-sky-900/80"
-                    : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
-              }`}
-            >
-              <BoxSelect className="h-3.5 w-3.5" />
-              <span>{areaSelectionMode ? "Tracez la zone…" : (sheetActive ? sheetSelectionCount : multiSelectionCount) > 0 ? `${sheetActive ? sheetSelectionCount : multiSelectionCount} sélectionnés` : "Sélection par zone"}</span>
-            </button>
-
-            {sheetActive && sheetSelectionCount >= 2 && (
-              <button
-                type="button"
-                onClick={handleGroupSheetSelection}
-                title="Regrouper les éléments sélectionnés du template"
-                className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
-                  sharedSheetObjectGroupId
-                    ? "border-violet-500/50 bg-violet-950/70 text-violet-200 hover:bg-violet-900/80"
-                    : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
-                }`}
-              >
-                <GroupIcon className="h-3.5 w-3.5" />
-                <span>{sharedSheetObjectGroupId ? "Groupe actif" : "Regrouper la sélection"}</span>
-              </button>
-            )}
-            {sheetActive && sheetSelectionCount > 0 && selectedSheetObjectGroupIds.length > 0 && (
-              <button
-                type="button"
-                onClick={handleUngroupSheetSelection}
-                title="Dissocier le groupe sans supprimer ses éléments"
-                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1.5 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
-              >
-                <Ungroup className="h-3.5 w-3.5" />
-                <span>Dissocier le groupe</span>
-              </button>
-            )}
-
-            {!sheetActive && multiSelectionCount >= 2 && (
-              <button
-                type="button"
-                onClick={handleGroupMultiSelection}
-                title="Créer un groupe indépendant avec les objets sélectionnés"
-                className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
-                  sharedObjectGroupId
-                    ? "border-violet-500/50 bg-violet-950/70 text-violet-200 hover:bg-violet-900/80"
-                    : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
-                }`}
-              >
-                <GroupIcon className="h-3.5 w-3.5" />
-                <span>{sharedObjectGroupId ? "Mettre à jour le groupe d’objets" : "Regrouper la sélection"}</span>
-              </button>
-            )}
-            {!sheetActive && multiSelectionCount > 0 && selectedMultiObjectGroupIds.length > 0 && (
-              <button
-                type="button"
-                onClick={handleUngroupMultiSelection}
-                title="Dissocier le groupe d’objets sans supprimer ses éléments"
-                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1.5 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
-              >
-                <Ungroup className="h-3.5 w-3.5" />
-                <span>Dissocier les objets</span>
-              </button>
-            )}
-            {!sheetActive && multiSelectionCount > 0 && (
-              <button
-                type="button"
-                onClick={handleExportSelectedGroupSvg}
-                title="Exporter la sélection ou le groupe d’objets en SVG"
-                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1.5 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
-              >
-                <Download className="h-3.5 w-3.5" />
-                <span>Exporter SVG</span>
-              </button>
-            )}
-
-            {selectedOverlayId && (
-              <button
-                type="button"
-                onClick={handleGroupSelectedPlan}
-                title="Associer au plan sélectionné les pictogrammes, zones et textes placés visuellement dessus"
-                className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
-                  selectedPlanGroupId
-                    ? "border-indigo-500/50 bg-indigo-950/70 text-indigo-200 hover:bg-indigo-900/80"
-                    : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
-                }`}
-              >
-                <GroupIcon className="h-3.5 w-3.5" />
-                <span>{selectedPlanGroupId ? "Mettre à jour le groupe" : "Regrouper avec le plan"}</span>
-              </button>
-            )}
-            {selectedOverlayId && selectedPlanGroupId && (
-              <button
-                type="button"
-                onClick={handleUngroupSelectedPlan}
-                title="Dissocier uniquement les éléments regroupés, sans les supprimer"
-                className="flex cursor-pointer items-center gap-1 rounded px-2 py-1.5 text-[10px] font-semibold text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
-              >
-                <Ungroup className="h-3.5 w-3.5" />
-                <span>Dissocier</span>
-              </button>
-            )}
-
-            {hasLockableSelection && (
-              <button
-                type="button"
-                disabled={Boolean(
-                  selectedBlock && (!canEditSelectedSheetBlock || protectedPdfBackgroundSelected)
-                )}
-                onClick={toggleSelectedObjectLock}
-                title={protectedPdfBackgroundSelected
-                  ? "Le fond PDF reste verrouillé pour protéger la mise en page"
-                  : selectedBlock && !canEditSelectedSheetBlock
-                    ? "Déverrouillage interdit : autorisation administrateur requise"
-                  : selectedObjectLocked
-                    ? "Déverrouiller l’objet sélectionné"
-                    : "Verrouiller l’objet sélectionné pour éviter un déplacement accidentel"}
-                className={`flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${
-                  selectedObjectLocked
-                    ? "border-amber-500/50 bg-amber-950/70 text-amber-200 hover:bg-amber-900/80"
-                    : "border-white/10 bg-black/20 text-neutral-300 hover:bg-white/10 hover:text-white"
-                }`}
-              >
-                {selectedObjectLocked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
-                <span>{selectedObjectLocked ? "Objet verrouillé" : "Verrouiller l’objet"}</span>
-              </button>
-            )}
-
-            <button
-              onClick={() => setKeepPlanRatio((prev) => !prev)}
-              title={
-                keepPlanRatio
-                  ? "Mode d'agrandissement actuel : Proportions réelles conservées (🔒 Garder ratio). Cliquer pour passer en Déformation libre."
-                  : "Mode d'agrandissement actuel : Déformation libre (🔓 Déformer). Cliquer pour verrouiller les proportions réelles."
-              }
-              className={`flex cursor-pointer items-center gap-1.5 rounded border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
-                keepPlanRatio
-                  ? "border-emerald-600/40 bg-emerald-950/60 text-emerald-200 hover:bg-emerald-900/80"
-                  : "border-amber-600/40 bg-amber-950/60 text-amber-200 hover:bg-amber-900/80"
-              }`}
-            >
-              {keepPlanRatio ? (
-                <>
-                  <Lock className="h-3.5 w-3.5 text-emerald-400" />
-                  <span>Proportions réelles (🔒 Garder)</span>
-                </>
-              ) : (
-                <>
-                  <Unlock className="h-3.5 w-3.5 text-amber-400" />
-                  <span>Déformation libre (🔓 Déformer)</span>
-                </>
-              )}
-            </button>
-
-            {isPlanDeformed && (
-              <button
-                type="button"
-                onClick={handleRestorePlanRatio}
-                title="Le plan est déformé (proportions largeur/hauteur altérées). Cliquer pour restaurer automatiquement ses proportions réelles 1:1."
-                className="flex cursor-pointer items-center gap-1.5 rounded border border-amber-500/60 bg-amber-950/80 px-2.5 py-1.5 text-[11px] font-semibold text-amber-200 hover:bg-amber-900 transition-colors shadow-sm"
-              >
-                <Maximize2 className="h-3.5 w-3.5 text-amber-400" />
-                <span>Restaurer forme d&apos;origine (1:1)</span>
-              </button>
-            )}
-
-            {selectedOverlayId && selectedOverlayId !== MAIN_PLAN_ID && (
-              <button
-                onClick={handleDeleteSelectedOverlay}
-                title="Supprimer le plan secondaire sélectionné"
-                className="flex cursor-pointer items-center gap-1.5 rounded border border-red-600/40 bg-red-950/60 px-2 py-1 text-[11px] font-semibold text-red-200 transition-colors hover:bg-red-900/80 hover:text-white"
-              >
-                <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                <span>Supprimer plan</span>
-              </button>
-            )}
-
-            <button
-              onClick={openPolygonCrop}
-              disabled={cropping || changingBackground || cleaning || grokCleaning}
-              title="Rogner / Croper le plan avec un tracé libre au crayon/lasso ou un cadre"
-              className="flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
-            >
-              {cropping ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />
-              ) : (
-                <Crop className="h-3.5 w-3.5 text-sky-400" />
-              )}
-              <span>Rogner</span>
-            </button>
-
-            <button
-              onClick={() => {
-                setSelectedCleanTargetId(selectedOverlayId || "main");
-                setCleanModalOpen(true);
-              }}
-              disabled={cleaning || grokCleaning}
-              title="Nettoyer le plan sélectionné"
-              className="flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
-            >
-              {cleaning || grokCleaning ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Sparkles className="h-3.5 w-3.5" />
-              )}
-              <span>Nettoyer</span>
-            </button>
-
-            {(selectedOverlay
-              ? selectedOverlay.canRevertOriginal && !selectedOverlay.isOriginal
-              : plan?.use_cleaned_background) && (
-              <button
-                onClick={() => {
-                  setSelectedCleanTargetId(selectedOverlay?.tempId || MAIN_PLAN_ID);
-                  setRevertConfirmOpen(true);
-                }}
-                disabled={cleaning}
-                title="Revenir au plan original"
-                className="flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
-              >
-                {cleaning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                <span>Original</span>
-              </button>
-            )}
-
             </div>
           </div>
         </header>
@@ -12025,7 +12005,10 @@ const MAX_HISTORY_STEPS = 50;
                   resetEraseSignal={resetEraseSignal}
                   eraseStrokeTarget={eraseStrokeTarget}
                   onEraseStrokesChange={(count) => {
+                    if (count === eraseStrokeCount) return;
                     isEraseDirtyRef.current = true;
+                    eraseRevisionRef.current += 1;
+                    setEraseRevision(eraseRevisionRef.current);
                     setEraseStrokeCount(count);
                   }}
                   shapes={shapes}
@@ -12801,6 +12784,41 @@ const MAX_HISTORY_STEPS = 50;
                     ))}
                   </div>
 
+                  {selectedBlock.kind === "picto" && selectedBlockPictoCompliance && (
+                    <div
+                      className={`mt-2.5 rounded-lg border p-2.5 transition-colors ${selectedBlockPictoCompliance.compliance.borderColor} ${selectedBlockPictoCompliance.compliance.bgColor}`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className={`text-[11px] font-bold leading-snug ${selectedBlockPictoCompliance.compliance.badgeText}`}>
+                          {selectedBlockPictoCompliance.compliance.badgeLabel}
+                        </span>
+                        <div className="relative group shrink-0">
+                          <button
+                            type="button"
+                            className="rounded p-0.5 text-neutral-400 hover:text-white transition-colors cursor-help"
+                            title={NF_X08_070_ICON_TOOLTIP}
+                            aria-label="Informations norme NF X08-070"
+                          >
+                            <HelpCircle className="h-3.5 w-3.5" />
+                          </button>
+                          <div className="pointer-events-none absolute right-0 bottom-full z-50 mb-1.5 hidden w-64 rounded-md border border-white/15 bg-neutral-900 p-2.5 text-[10px] leading-relaxed text-neutral-200 shadow-xl group-hover:block">
+                            <p className="font-bold text-white mb-1">Norme NF X08-070</p>
+                            <p>{NF_X08_070_ICON_TOOLTIP}</p>
+                          </div>
+                        </div>
+                      </div>
+                      <p className="mt-1 text-[10px] leading-relaxed text-neutral-300">
+                        {selectedBlockPictoCompliance.compliance.description}
+                      </p>
+                      <div className="mt-2 flex items-center justify-between border-t border-white/10 pt-1.5 text-[9px] text-neutral-400">
+                        <span>Taille estimée à l’impression :</span>
+                        <span className="font-semibold tabular-nums text-neutral-200">
+                          ~{selectedBlockPictoCompliance.sizeMm.toFixed(1)} mm ({exportPaperFormat.toUpperCase()})
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
                   {isCopyableSheetBlock(selectedBlock) && (
                     <div className="border-t border-white/10 pt-3">
                       <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
@@ -13243,6 +13261,42 @@ const MAX_HISTORY_STEPS = 50;
                         onChange={(e) => handleUpdateSelectedIcon("height", e.currentTarget.valueAsNumber)}
                         className="h-1 w-full cursor-pointer accent-emerald-500"
                       />
+
+                      {/* --- Format Badge / Statut de Conformité NF X08-070 --- */}
+                      {selectedIconCompliance && selectedIconPrintedMm && (
+                        <div
+                          className={`mt-2.5 rounded-lg border p-2.5 transition-colors ${selectedIconCompliance.borderColor} ${selectedIconCompliance.bgColor}`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <span className={`text-[11px] font-bold leading-snug ${selectedIconCompliance.badgeText}`}>
+                              {selectedIconCompliance.badgeLabel}
+                            </span>
+                            <div className="relative group shrink-0">
+                              <button
+                                type="button"
+                                className="rounded p-0.5 text-neutral-400 hover:text-white transition-colors cursor-help"
+                                title={NF_X08_070_ICON_TOOLTIP}
+                                aria-label="Informations norme NF X08-070"
+                              >
+                                <HelpCircle className="h-3.5 w-3.5" />
+                              </button>
+                              <div className="pointer-events-none absolute right-0 bottom-full z-50 mb-1.5 hidden w-64 rounded-md border border-white/15 bg-neutral-900 p-2.5 text-[10px] leading-relaxed text-neutral-200 shadow-xl group-hover:block">
+                                <p className="font-bold text-white mb-1">Norme NF X08-070</p>
+                                <p>{NF_X08_070_ICON_TOOLTIP}</p>
+                              </div>
+                            </div>
+                          </div>
+                          <p className="mt-1 text-[10px] leading-relaxed text-neutral-300">
+                            {selectedIconCompliance.description}
+                          </p>
+                          <div className="mt-2 flex items-center justify-between border-t border-white/10 pt-1.5 text-[9px] text-neutral-400">
+                            <span>Taille estimée à l’impression :</span>
+                            <span className="font-semibold tabular-nums text-neutral-200">
+                              ~{selectedIconPrintedMm.sizeMm.toFixed(1)} mm ({exportPaperFormat.toUpperCase()})
+                            </span>
+                          </div>
+                        </div>
+                      )}
 
                       <div className="flex items-center justify-between pt-1">
                         <span className="text-[10px] text-neutral-500">Rotation</span>
@@ -15360,7 +15414,7 @@ const MAX_HISTORY_STEPS = 50;
                     ) : (
                       <div className="flex flex-col items-center gap-3 text-sm text-slate-500">
                         <Loader2 className="h-8 w-8 animate-spin text-safety-green" />
-                        <span>Génération de l'aperçu exact...</span>
+                        <span>Génération de l&apos;aperçu exact...</span>
                       </div>
                     )}
                   </div>
@@ -15368,7 +15422,7 @@ const MAX_HISTORY_STEPS = 50;
 
 	                <div className="space-y-3 lg:max-h-[calc(92vh-7rem)] lg:overflow-y-auto lg:pr-1">
                   <div className="rounded-xl border border-slate-200 bg-white p-3">
-                    <h3 className="mb-3 text-sm font-bold text-slate-950">Thème d'export</h3>
+                    <h3 className="mb-3 text-sm font-bold text-slate-950">Thème d&apos;export</h3>
 	                    <div className="grid grid-cols-2 gap-2">
 	                      {(Object.keys(EXPORT_THEMES) as ExportTheme[]).map((theme) => (
 	                        <button
@@ -16037,7 +16091,7 @@ const MAX_HISTORY_STEPS = 50;
                   <>
                   <div>
                     <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Consignes en cas d'incendie
+                      Consignes en cas d&apos;incendie
                     </label>
                     <textarea
                       value={exportSafetyText}
@@ -16159,7 +16213,7 @@ const MAX_HISTORY_STEPS = 50;
                   <div className="rounded-xl border border-slate-200 bg-white p-3">
                     <h3 className="mb-1 text-sm font-bold text-slate-950">Sections affichées</h3>
                     <p className="mb-3 text-[11px] leading-4 text-slate-500">
-                      Masquez les blocs inutiles. Le plan s'agrandit pour occuper l'espace libéré.
+                      Masquez les blocs inutiles. Le plan s&apos;agrandit pour occuper l&apos;espace libéré.
                     </p>
                     <div className="space-y-2">
                       {([
@@ -16388,7 +16442,7 @@ const MAX_HISTORY_STEPS = 50;
           onStateChange={applyPlanSituationState}
           onToggleTitle={toggleSituationTitle}
           onUpload={(file) => void uploadSituationBackground(file)}
-          onUseMainPlan={() => void useMainPlanForSituation()}
+          onUseMainPlan={() => void handleUseMainPlanForSituation()}
           onRemoveBackground={() => void removeSituationBackground()}
           onTraceOutline={() => startSituationTrace("building_outline")}
           onAddAnotherOutline={() => startSituationTrace("building_outline", undefined, true)}
@@ -16453,6 +16507,11 @@ const MAX_HISTORY_STEPS = 50;
           onClose={() => setAutoSaveModalOpen(false)}
           secondsUntilNextSave={secondsUntilAutoSave}
           hasUnsavedChanges={hasUnsavedChanges()}
+          pauseReason={saving ? "Enregistrement en cours…"
+            : !canEditPlan ? "Plan en lecture seule"
+            : !rememberedTemplateReady ? "Chargement du plan…"
+            : sheetTemplate !== "none" && missingPlanInformationCount > 0
+              ? "En attente des informations obligatoires du plan" : undefined}
         />
 
         {/* Classic Crop Modal */}

@@ -730,8 +730,7 @@ Describe precisely:
 9. Doors.
 10. Door leaves.
 11. Door swing arcs.
-12. Windows and glazed openings.
-13. Structural columns/pillars.
+12. Structural columns/pillars.
 14. Wall thicknesses.
 15. Interior partitions.
 16. Exterior walls.
@@ -762,9 +761,8 @@ Use labels such as:
 - corridor
 - opening
 - door
-- door_leaf
-- door_swing
-- window
+- door_opening (clear wall break)
+- door_leaf (thin blade only, no arcs)
 - stair
 - curved_stair
 - landing
@@ -842,6 +840,9 @@ REMOVE when visible and when they are NOT architectural geometry:
 - colored revision clouds
 - revision symbols
 - temporary construction annotations
+- all door swing arcs (quarter-circle rotation arcs)
+- detailed door frames and complex threshold carpentry
+- detail inspection circles, reference bubbles, and zoom callouts
 
 REMOVE non-essential furnishing when clearly identifiable:
 
@@ -909,11 +910,9 @@ Never delete:
 - actual wall thickness
 - columns
 - pillars
-- doors
+- doors (preserve the clear wall opening and door jambs; remove swing arcs)
 - door jambs
 - door leaves
-- door swing arcs
-- windows
 - stairs
 - individual stair treads where visible
 - landings
@@ -1027,8 +1026,8 @@ Include these principles:
 - Preserve wall thicknesses.
 - Preserve all openings.
 - Preserve every visible door.
-- Preserve every visible door swing.
-- Preserve every visible window.
+- Convert all doors into clean, unobstructed openings with door leaves or jambs (remove curved swing arcs completely to maintain clear corridor circulation).
+- Replace all exterior facade windows with the same continuous solid black wall line, closing the exterior perimeter envelope without white breaks.
 - Preserve every stair and landing.
 - Preserve elevator and shaft geometry.
 - Preserve columns.
@@ -1082,6 +1081,30 @@ Mention any unusual geometry detected, such as:
 - technical zones
 - overlapping CAD layers
 
+SPECIAL EVACUATION RULE FOR EXTERIOR FAÇADE WINDOWS (NF X08-070 / ISO 23601):
+- REPLACE ALL EXTERIOR FAÇADE WINDOWS WITH THE SAME SOLID BLACK WALL LINE: Never leave white gaps, openings, breaks, notches, or thin glass lines where exterior windows are located.
+- Draw the solid black exterior wall line continuously straight through every window location, sealing the building envelope into one closed continuous perimeter.
+
+SPECIAL EVACUATION RULE FOR DOORS AND CORRIDORS (NF X08-070 / ISO 23601):
+- Strip away every curved door swing arc (quarter-circle CAD lines) to guarantee clear, unobstructed corridor circulation.
+- Retain the thin straight door leaf line (at its angled position) or door jambs so the room boundary remains unmistakably defined.
+- Under NO circumstance should a door removal create an oversized opening or gap; the passage opening must be strictly 80-90 cm.
+- Preserve only the outer leaf or double-leaf lines for primary exterior emergency exits and stairwell enclosures.
+- Remove all detail inspection circles, section callout bubbles, and interior annotation text without erasing any underlying walls.
+
+CRITICAL WALL AND DETAIL RECONSTRUCTION RULES (ZERO BROKEN WALLS):
+1. WALL CONTINUITY: Every wall line from the original drawing must run continuously from column to column or partition to partition. Never erase horizontal or vertical partitions when removing doors, text, or callouts.
+2. DETAIL CALLOUT CIRCLES & TEXT OVERLAPS: When erasing inspection circles, detail bubbles, or overlapping room labels (e.g., zoom circles around rooms or corridors), you MUST bridge and reconnect every architectural wall and partition passing through them. Do NOT leave broken walls or floating "T" or "L" fragments.
+3. ROOM ENCLOSURE: Every room must remain a fully enclosed space bounded on all sides by continuous walls and its door opening. Do NOT turn rooms into open bays or broken boundaries.
+4. FLOATING PARTITIONS FORBIDDEN: Extend and join all partition lines until they solidly intersect their perpendicular walls or columns.
+5. TECHNICAL CORES, STAIRS & ELEVATORS: NEVER delete internal staircases, stair steps/treads, landings, elevator cabs, or service shafts, even if they contain arrows, symbols, or small technical lines. They are permanent structural architecture and must be preserved with 100% fidelity.
+6. EXTERIOR WALLS & EXTERNAL STAIRS (NATURAL THICKNESS, NO PUFFY BORDER):
+   - REPLACE EVERY SINGLE EXTERIOR WINDOW WITH THE SAME SOLID BLACK WALL LINE! The entire exterior perimeter must be an unbroken, solid continuous wall.
+   - DO NOT draw an exaggerated thick black border, halo, or puffy envelope around the building!
+   - Keep exterior walls at their natural, crisp architectural thickness, strictly following the original facade footprint.
+   - EXTERNAL STAIRS RULE: External emergency stairs attached outside the facade MUST NEVER be enclosed in thick black walls or borders! Render external stairs with fine, delicate, open technical lines as in the original CAD plan.
+7. UNIFORM APPLICATION: Apply these preservation rules with strict, identical geometric precision across every single wing, zone, and room of the entire building plan.
+
 
 ======================================================================
 AMBIGUOUS AREAS
@@ -1111,6 +1134,8 @@ Desired appearance:
 
 - pure white background
 - black or very dark architectural linework
+- clean crisp architectural linework at natural thickness (NO outer puffy black halo)
+- external emergency stairs rendered with delicate open technical lines
 - clean crisp lines
 - no unnecessary colors
 - no shadows
@@ -1408,6 +1433,57 @@ The final result must look like a digitally drafted CAD-style architectural base
 """.strip()
 
 
+# Direct image-generation prompt injection for AutoCAD plans (Step 2 - Pass 1).
+# Dedicated to 100% preservation of all interior details, partitions, rooms, and stairs.
+AUTOCAD_GENERATION_REQUIREMENTS = r"""
+Clean this AutoCAD architectural plan and generate a professional, high-contrast architectural floor-plan base for evacuation and fire-safety use (NF X08-070 / ISO 23601).
+
+PRIMARY OBJECTIVE: COMPLETE PRESERVATION OF ALL INTERIOR ARCHITECTURAL DETAILS.
+
+1. INTERIOR WALLS & ROOM PARTITIONS (ZERO MISSING WALLS):
+- Keep 100% of all interior walls, partitions, room dividers, and room boundaries intact, solid, and continuous.
+- DO NOT DELETE ANY ROOM PARTITIONS: Every room dividing wall, horizontal partition, vertical wall, and alcove nook/return must remain fully drawn from wall to wall.
+- Reconnect and bridge every horizontal and vertical partition across any areas where text, labels, or detail inspection circles/bubbles were removed.
+- Every room must remain a strictly enclosed space bounded by continuous walls on all sides except for its narrow door opening (80-90 cm). DO NOT leave open bays or missing wall segments.
+- DO NOT leave floating "T" or "L" partition ends: extend every partition line until it meets its perpendicular wall or column.
+- Doors must appear as simple, clean rectangular wall openings (narrow passage gap of 80-90 cm). DO NOT draw dots, pins, circles, or symbols on doors.
+
+2. PRESERVATION OF STAIRS, ELEVATORS & STRUCTURAL ELEMENTS:
+- NEVER delete internal stairs, stair treads/steps, landings, elevator cabs, or service shafts. Preserve 100% of their geometry exactly as drawn with clear, solid black lines ({wall_color}) so all stairs and treads remain clearly visible.
+- Keep structural columns, pillars, and shafts solid and intact.
+- EXTERNAL EMERGENCY STAIRS: Keep external metal stairs on facades completely open to the outside, rendered with clear, crisp black lines ({wall_color}) so all treads remain clearly visible. DO NOT enclose them in solid walls.
+
+3. CLEANUP & REMOVALS:
+- Delete ALL dimension lines, numbers, coordinates, room names, text labels, title blocks, revision clouds, and detail inspection circles.
+- Delete ALL curved quarter-circle door swing arcs and furniture.
+- Render on a pure flat solid background ({background_color}) with crisp architectural linework in {wall_color}.
+- Spatially registered: do NOT redesign, move, crop, or distort the original building geometry.
+""".strip()
+
+
+# Direct image-generation prompt for Step 3 (Pass 2, AutoCAD only).
+# Dedicated EXCLUSIVELY to sealing the exterior perimeter contour and replacing windows with solid black wall lines.
+AUTOCAD_EXTERIOR_PASS_PROMPT = r"""
+This image is an already-cleaned architectural floor plan with verified interior details.
+YOUR SOLE OBJECTIVE IN THIS PASS: Trace the entire exterior building perimeter contour as ONE CONTINUOUS, SOLID, UNBROKEN BLACK WALL LINE ({wall_color}) by replacing every single exterior window with a direct black wall line.
+
+MANDATORY EXTERIOR CONTOUR RULES:
+1. CONTINUOUS SOLID EXTERIOR WALL PERIMETER (REPLACE ALL WINDOWS DIRECTLY):
+   - Every single exterior facade window MUST BE REPLACED by a continuous, direct solid black wall line ({wall_color}).
+   - NO GAPS, NO BREAKS, NO NOTCHES: The exterior wall line must run directly and continuously through every window opening, joining adjacent wall segments seamlessly.
+   - The entire outer building contour must form a 100% closed, solid, unbroken black perimeter envelope at natural architectural wall thickness.
+   - DO NOT draw a blurry cloud, balloon, or puffy halo around the building.
+
+2. PRESERVE EXTERNAL EMERGENCY STAIRS:
+   - External metal stairs on the facade MUST remain open to the outside with visible treads. DO NOT turn them into solid black blocks.
+
+3. FREEZE ALL INTERIOR GEOMETRY (DO NOT TOUCH THE INTERIOR):
+   - DO NOT modify, simplify, or erase ANY interior partitions, rooms, doors, stairs, or corridors. Keep all interior geometry 100% identical to the input image.
+
+4. Pure flat background ({background_color}) with crisp, high-contrast black linework in {wall_color}.
+""".strip()
+
+
 def _run_analysis(client, source_data_url: str, analysis_model: str, instruction: str = ANALYSIS_INSTRUCTION) -> dict:
     from xai_sdk.chat import image, user
     chat = client.chat.create(model=analysis_model)
@@ -1494,6 +1570,15 @@ def _validate_analysis(
             f"{SKETCH_GENERATION_REQUIREMENTS.format(wall_color=wall_color, background_color=background_color)}\n\n"
             "SOURCE-SPECIFIC GEOMETRY ANALYSIS:\n"
             f"{prompt}"
+        )
+    elif preset == "autocad":
+        analysis_text = prompt.strip()
+        if len(analysis_text) > 1500:
+            analysis_text = analysis_text[:1500]
+        prompt = (
+            f"{AUTOCAD_GENERATION_REQUIREMENTS.format(wall_color=wall_color, background_color=background_color)}\n\n"
+            "SOURCE-SPECIFIC GEOMETRY ANALYSIS:\n"
+            f"{analysis_text}"
         )
 
     color_instruction = _format_background_color_instruction(
@@ -1597,6 +1682,36 @@ def analyze_and_clean_plan(
 
     cleaned_image_bytes = _extract_image_bytes(edit_response)
     cleaned_image_bytes = _normalize_background_color(cleaned_image_bytes, background_color)
+
+    # ── Étape 3 (spécifique AutoCAD) : 3ème requête dédiée aux murs extérieurs (norme NF X08-070) ──
+    if preset == "autocad":
+        try:
+            pass1_data_url = image_bytes_to_data_url(cleaned_image_bytes)
+            pass2_prompt = AUTOCAD_EXTERIOR_PASS_PROMPT.format(
+                wall_color=wall_color,
+                background_color=background_color,
+            )
+            color_instruction = _format_background_color_instruction(
+                background_color,
+                wall_color=wall_color,
+                preset=preset,
+            )
+            pass2_prompt = f"{pass2_prompt}\n\n{color_instruction}"
+            pass2_response = client.image.sample(
+                prompt=pass2_prompt,
+                model=edit_model,
+                image_url=pass1_data_url,
+                resolution=resolution,
+                image_format="base64",
+            )
+            pass2_bytes = _extract_image_bytes(pass2_response)
+            if pass2_bytes:
+                cleaned_image_bytes = _normalize_background_color(pass2_bytes, background_color)
+        except Exception as exc:
+            logger.warning(
+                "grok_clean.autocad_exterior_pass_failed: %s (fallback sur le résultat de la passe 1)",
+                exc,
+            )
 
     return GrokCleaningResult(
         analysis=analysis,

@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useCallback } from "react";
-import { X, Crop, Check, RotateCcw, Loader2, Sparkles, Move, Maximize2 } from "lucide-react";
+import React, { useState, useRef } from "react";
+import { X, Crop, Check, RotateCcw, Loader2 } from "lucide-react";
 import { imageCrossOrigin } from "@/lib/api";
 
 interface CropRect {
@@ -19,7 +19,11 @@ interface CropModalProps {
   loading: boolean;
 }
 
-export function CropModal({
+export function CropModal(props: CropModalProps) {
+  return props.isOpen ? <CropModalContent key={props.imageUrl} {...props} /> : null;
+}
+
+function CropModalContent({
   isOpen,
   onClose,
   imageUrl,
@@ -33,12 +37,6 @@ export function CropModal({
   const [cropStart, setCropStart] = useState<CropRect>({ x: 0, y: 0, width: 1, height: 1 });
 
   const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (isOpen) {
-      setCrop({ x: 0.05, y: 0.05, width: 0.9, height: 0.9 });
-    }
-  }, [isOpen]);
 
   const handlePointerDown = (handle: string | null, e: React.PointerEvent) => {
     e.stopPropagation();

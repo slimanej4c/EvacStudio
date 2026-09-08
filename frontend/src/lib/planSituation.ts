@@ -699,7 +699,7 @@ export function refreshPlanSituationVisibleArea(
 
   const subzonesToAdd: SheetBlock[] = [];
 
-  let newBlocks = baseBlocks.map((block) => {
+  const newBlocks = baseBlocks.map((block) => {
     const vis = visibilityList.find((v) => v.outline.id === block.id);
     if (!vis) return block;
 
