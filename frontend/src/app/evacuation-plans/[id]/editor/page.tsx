@@ -943,6 +943,9 @@ function isAccidentallyHiddenFreshImport(plan: EvacuationPlanBackend): boolean {
 interface PlanPictogramBackend {
   type: string;
   label: string;
+  original_label?: string;
+  custom_label?: string;
+  custom_label_scope?: "plan" | "all";
   file_name: string;
   url: string;
   deletable?: boolean;
@@ -957,6 +960,9 @@ interface PlanPictogramBackend {
 const pictogramBackendDefinition = (pictogram: PlanPictogramBackend): SafetyIconDefinition => ({
   type: pictogram.type,
   label: pictogram.label,
+  originalLabel: pictogram.original_label || pictogram.label,
+  customLabel: pictogram.custom_label || "",
+  customLabelScope: pictogram.custom_label_scope,
   fileName: pictogram.file_name,
   imageUrl: pictogram.url,
   color: inferPictogramColor(pictogram.type, pictogram.label),
@@ -1860,6 +1866,8 @@ const MAX_HISTORY_STEPS = 50;
     const definition: SafetyIconDefinition = {
       type: payload.type,
       label: payload.label,
+      originalLabel: payload.original_label || payload.label,
+      customLabel: payload.custom_label || "",
       fileName: payload.file_name,
       imageUrl: payload.url,
       color: inferPictogramColor(payload.type, payload.label),
@@ -1940,6 +1948,8 @@ const MAX_HISTORY_STEPS = 50;
     const renamedDefinition: SafetyIconDefinition = {
       type: payload.type,
       label: payload.label,
+      originalLabel: payload.original_label || payload.label,
+      customLabel: payload.custom_label || "",
       fileName: payload.file_name,
       imageUrl: payload.url,
       color: inferPictogramColor(payload.type, payload.label),
@@ -1965,6 +1975,97 @@ const MAX_HISTORY_STEPS = 50;
     if (placementIconType === definition.type) {
       setPlacementIconType(renamedDefinition.type);
     }
+  };
+
+  const handleRenamePictogramLibraryLabel = async (
+    definition: SafetyIconDefinition,
+    name: string,
+    scope: "plan" | "all",
+  ) => {
+    const response = await fetch(buildApiUrl("/api/plans/pictogram-labels/"), {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...getPlanAuthHeaders(),
+      },
+      body: JSON.stringify({ icon_type: definition.type, label: name, scope, plan_id: id }),
+    });
+
+    let payload: { icon_type?: string; label?: string; scope?: "plan" | "all"; error?: string } | null = null;
+    try {
+      payload = await response.json();
+    } catch {
+      // Keep the fallback below when the server returns no JSON.
+    }
+    if (!response.ok || !payload?.icon_type || !payload.label) {
+      throw new Error(payload?.error || "Le nom personnalisé n’a pas pu être enregistré.");
+    }
+    const savedLabel = payload.label;
+    const savedScope = payload.scope || scope;
+
+    const applySavedLabel = (current: Record<string, SafetyIconDefinition>) => {
+      const baseDefinition = current[definition.type] || definition;
+      return {
+        ...current,
+        [definition.type]: {
+          ...baseDefinition,
+          originalLabel: baseDefinition.originalLabel || definition.originalLabel || definition.label,
+          customLabel: savedLabel,
+          customLabelScope: savedScope,
+          label: savedLabel,
+        },
+      };
+    };
+    setAvailableIconDefinitions(applySavedLabel);
+    setProjectIconDefinitions(applySavedLabel);
+  };
+
+  const handleResetPictogramLibraryLabel = async (definition: SafetyIconDefinition) => {
+    const scope = definition.customLabelScope || "plan";
+    const query = new URLSearchParams({ icon_type: definition.type, scope, plan_id: String(id) });
+    const response = await fetch(buildApiUrl(`/api/plans/pictogram-labels/?${query.toString()}`), {
+      method: "DELETE",
+      headers: getPlanAuthHeaders(),
+    });
+    if (!response.ok && response.status !== 204) {
+      let message = "Le nom personnalisé n’a pas pu être supprimé.";
+      try {
+        const payload = await response.json() as { error?: string };
+        message = payload.error || message;
+      } catch {
+        // Keep the fallback.
+      }
+      throw new Error(message);
+    }
+
+    const catalogQuery = new URLSearchParams({ plan_id: String(id) });
+    const catalogResponse = await fetch(buildApiUrl(`/api/plans/pictograms/?${catalogQuery.toString()}`), {
+      headers: getPlanAuthHeaders(),
+      cache: "no-store",
+    });
+    const catalog = catalogResponse.ok ? await catalogResponse.json() as PlanPictogramBackend[] : [];
+    const effective = catalog.find((item) => item.type === definition.type);
+    const restoredDefinition = effective ? pictogramBackendDefinition(effective) : {
+      ...definition,
+      label: definition.originalLabel || definition.label,
+      customLabel: "",
+      customLabelScope: undefined,
+    };
+    const applyRestoredLabel = (current: Record<string, SafetyIconDefinition>) => {
+      const baseDefinition = current[definition.type] || definition;
+      return {
+        ...current,
+        [definition.type]: {
+          ...baseDefinition,
+          label: restoredDefinition.label,
+          originalLabel: restoredDefinition.originalLabel || baseDefinition.originalLabel,
+          customLabel: restoredDefinition.customLabel || "",
+          customLabelScope: restoredDefinition.customLabelScope,
+        },
+      };
+    };
+    setAvailableIconDefinitions(applyRestoredLabel);
+    setProjectIconDefinitions(applyRestoredLabel);
   };
 
   const revokeObjectUrlSafely = (url: string) => {
@@ -2277,7 +2378,8 @@ const MAX_HISTORY_STEPS = 50;
       if (!("Authorization" in headers)) return;
 
       try {
-        const res = await fetch(buildApiUrl(`/api/plans/pictograms/`), {
+        const query = new URLSearchParams({ plan_id: String(id) });
+        const res = await fetch(buildApiUrl(`/api/plans/pictograms/?${query.toString()}`), {
           headers,
           cache: "no-store",
         });
@@ -2298,7 +2400,7 @@ const MAX_HISTORY_STEPS = 50;
     };
 
     if (!authLoading) void fetchPictograms();
-  }, [authLoading, token]);
+  }, [authLoading, id, token]);
 
   useEffect(() => {
     return () => {
@@ -11741,6 +11843,8 @@ const MAX_HISTORY_STEPS = 50;
                   onAddSvg={handleAddSvgPictogram}
                   onDeleteSvg={handleDeleteSvgPictogram}
                   onRenameSvg={handleRenameSvgPictogram}
+                  onRenameLibraryLabel={handleRenamePictogramLibraryLabel}
+                  onResetLibraryLabel={handleResetPictogramLibraryLabel}
                   onAddText={handleAddText}
                   placementTextActive={placementText}
                   onCancelTextPlacement={() => setPlacementText(false)}

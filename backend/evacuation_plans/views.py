@@ -38,6 +38,7 @@ from .models import (
     PlanText,
     SheetTemplateAsset,
     SheetTemplateVersion,
+    UserPictogramLabel,
     UserXaiSettings,
     WorkspaceInvitation,
     WorkspaceMembership,
@@ -300,9 +301,12 @@ def serialize_plan_pictogram(
 ):
     name, _extension = os.path.splitext(filename)
     relative_path = os.path.join(directory, filename)
+    display_label = label or name
     return {
         'type': icon_type or name,
-        'label': label or name,
+        'label': display_label,
+        'original_label': display_label,
+        'custom_label': '',
         'file_name': '/'.join(relative_path.split(os.sep)),
         'url': build_plan_pictogram_url(request, relative_path),
         'deletable': bool(deletable and filename.lower().endswith('.svg')),
@@ -313,6 +317,36 @@ def serialize_plan_pictogram(
         'subcategory': subcategory,
         'subcategory_label': subcategory_label,
     }
+
+
+def apply_user_pictogram_labels(request, pictograms):
+    if not getattr(request, 'user', None) or not request.user.is_authenticated:
+        return pictograms
+    plan_id = request.query_params.get('plan_id')
+    if not plan_id and getattr(request, 'resolver_match', None):
+        plan_id = request.resolver_match.kwargs.get('pk')
+    labels = {
+        item.icon_type: (item.label, 'all')
+        for item in UserPictogramLabel.objects.filter(user=request.user, plan__isnull=True)
+    }
+    if plan_id:
+        labels.update({
+            item.icon_type: (item.label, 'plan')
+            for item in UserPictogramLabel.objects.filter(
+                user=request.user,
+                plan_id=plan_id,
+            )
+        })
+    if not labels:
+        return pictograms
+    for pictogram in pictograms:
+        custom_label_data = labels.get(pictogram.get('type'))
+        if custom_label_data:
+            custom_label, custom_label_scope = custom_label_data
+            pictogram['custom_label'] = custom_label
+            pictogram['custom_label_scope'] = custom_label_scope
+            pictogram['label'] = custom_label
+    return pictograms
 
 
 def flat_pictogram_metadata(directory):
@@ -587,7 +621,7 @@ def list_plan_pictograms(request):
 
     append_registered_catalogues(request, pictograms, seen_types)
 
-    return pictograms
+    return apply_user_pictogram_labels(request, pictograms)
 
 
 def project_pictogram_capture_inputs(request):
@@ -2156,6 +2190,95 @@ class EvacuationPlanViewSet(viewsets.ModelViewSet):
                 **destination_metadata,
             ),
             status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=['get', 'post', 'patch', 'delete'], url_path='pictogram-labels')
+    def pictogram_labels(self, request):
+        if request.method == 'GET':
+            labels = UserPictogramLabel.objects.filter(user=request.user)
+            return Response(
+                [
+                    {
+                        'icon_type': item.icon_type,
+                        'label': item.label,
+                        'scope': 'plan' if item.plan_id else 'all',
+                        'plan_id': item.plan_id,
+                    }
+                    for item in labels
+                ],
+                status=status.HTTP_200_OK,
+            )
+
+        scope = str(
+            request.data.get('scope', 'plan')
+            if request.method != 'DELETE'
+            else request.query_params.get('scope', 'plan')
+        ).strip()
+        if scope not in {'plan', 'all'}:
+            return Response(
+                {'error': "La portée du nom personnalisé est invalide."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        plan = None
+        if scope == 'plan':
+            plan_id = (
+                request.data.get('plan_id')
+                if request.method != 'DELETE'
+                else request.query_params.get('plan_id')
+            )
+            plan = self.get_queryset().filter(pk=plan_id).first()
+            if plan is None:
+                return Response(
+                    {'error': "Le projet courant est introuvable."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        icon_type = str(
+            request.data.get('icon_type')
+            if request.method != 'DELETE'
+            else request.query_params.get('icon_type', '')
+        ).strip()
+        if not icon_type or len(icon_type) > 255:
+            return Response(
+                {'error': "Le pictogramme est invalide."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if request.method == 'DELETE':
+            UserPictogramLabel.objects.filter(
+                user=request.user,
+                plan=plan,
+                icon_type=icon_type,
+            ).delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        label = str(request.data.get('label') or '').strip()
+        if not label:
+            return Response(
+                {'error': "Le nom personnalisé ne peut pas être vide."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(label) > 255:
+            return Response(
+                {'error': "Le nom personnalisé est trop long."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        item, _created = UserPictogramLabel.objects.update_or_create(
+            user=request.user,
+            plan=plan,
+            icon_type=icon_type,
+            defaults={'label': label},
+        )
+        return Response(
+            {
+                'icon_type': item.icon_type,
+                'label': item.label,
+                'scope': scope,
+                'plan_id': item.plan_id,
+            },
+            status=status.HTTP_200_OK,
         )
 
     @action(detail=True, methods=['post'], url_path='clean', throttle_classes=[AiRateThrottle])

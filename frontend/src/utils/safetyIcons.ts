@@ -3,6 +3,9 @@ export type IconType = string;
 export interface SafetyIconDefinition {
   type: IconType;
   label: string;
+  originalLabel?: string;
+  customLabel?: string;
+  customLabelScope?: "plan" | "all";
   color: string;
   svg?: string;
   imageUrl?: string;

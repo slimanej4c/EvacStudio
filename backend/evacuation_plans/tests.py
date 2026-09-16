@@ -1092,6 +1092,57 @@ class PictogramLibraryTests(_PlanFactoryMixin, TestCase):
         client.cookies[django_settings.MEDIA_SESSION_COOKIE_NAME] = media_session_value(user)
         return client
 
+    def test_private_labels_default_to_current_plan_and_override_global_label(self):
+        self.write_catalogue_pictogram("01-evacuation/sortie.svg")
+        plan = self.make_plan(self.user, name="label-scope")
+        icon_type = "nfx08070:01-evacuation:sortie"
+
+        global_response = self.client.patch(
+            "/api/plans/pictogram-labels/",
+            {
+                "icon_type": icon_type,
+                "label": "Sortie globale",
+                "scope": "all",
+            },
+            format="json",
+        )
+        plan_response = self.client.patch(
+            "/api/plans/pictogram-labels/",
+            {
+                "icon_type": icon_type,
+                "label": "Sortie de ce plan",
+                "plan_id": plan.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(global_response.status_code, 200, global_response.content)
+        self.assertEqual(plan_response.status_code, 200, plan_response.content)
+        self.assertEqual(plan_response.json()["scope"], "plan")
+
+        global_icon = self.client.get("/api/plans/pictograms/").json()[0]
+        plan_icon = self.client.get(
+            "/api/plans/pictograms/",
+            {"plan_id": plan.id},
+        ).json()[0]
+        self.assertEqual(global_icon["label"], "Sortie globale")
+        self.assertEqual(global_icon["custom_label_scope"], "all")
+        self.assertEqual(plan_icon["label"], "Sortie de ce plan")
+        self.assertEqual(plan_icon["custom_label_scope"], "plan")
+
+        deleted = self.client.delete(
+            "/api/plans/pictogram-labels/"
+            f"?icon_type={quote(icon_type, safe='')}&scope=plan&plan_id={plan.id}",
+        )
+        fallback_icon = self.client.get(
+            "/api/plans/pictograms/",
+            {"plan_id": plan.id},
+        ).json()[0]
+
+        self.assertEqual(deleted.status_code, 204, deleted.content)
+        self.assertEqual(fallback_icon["label"], "Sortie globale")
+        self.assertEqual(fallback_icon["custom_label_scope"], "all")
+
     def test_registered_standard_catalogue_is_recursive_and_categorized(self):
         self.write_catalogue_pictogram("03-lutte/3A-extincteurs/lutte_ext_CO2.svg")
 

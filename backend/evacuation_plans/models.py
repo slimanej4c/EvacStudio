@@ -364,6 +364,42 @@ class PlanIcon(models.Model):
         return f"{self.icon_type} on {self.plan.title}"
 
 
+class UserPictogramLabel(models.Model):
+    """Private display label chosen by one user for a catalogue pictogram."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='pictogram_labels')
+    plan = models.ForeignKey(
+        EvacuationPlan,
+        on_delete=models.CASCADE,
+        related_name='pictogram_labels',
+        null=True,
+        blank=True,
+    )
+    icon_type = models.CharField(max_length=255)
+    label = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['icon_type']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'icon_type'],
+                condition=models.Q(plan__isnull=True),
+                name='unique_global_pictogram_label_per_user',
+            ),
+            models.UniqueConstraint(
+                fields=['user', 'plan', 'icon_type'],
+                condition=models.Q(plan__isnull=False),
+                name='unique_plan_pictogram_label_per_user',
+            ),
+        ]
+
+    def __str__(self):
+        scope = self.plan_id or 'all'
+        return f"{self.user}: {self.icon_type} ({scope}) → {self.label}"
+
+
 class PlanOverlay(models.Model):
     """A secondary plan image dropped onto the canvas next to the main plan.
 

@@ -4,7 +4,7 @@ import React, { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { SAFETY_ICONS, IconType, SafetyIconDefinition, getLibraryVisibleIcons } from "@/utils/safetyIcons";
 import { SafetyIconArtwork } from "@/components/SafetyIconArtwork";
-import { FileCode2, Loader2, Pencil, Plus, Search, Trash2, Type, Upload, X } from "lucide-react";
+import { FileCode2, FolderOpen, Globe2, Loader2, Pencil, Plus, Search, Trash2, Type, Upload, X } from "lucide-react";
 
 export interface AddSvgPictogramInput {
   name: string;
@@ -30,6 +30,10 @@ interface IconToolbarProps {
   onDeleteSvg?: (icon: SafetyIconDefinition) => Promise<void>;
   /** Rename a user-created SVG and keep placed instances linked to it. */
   onRenameSvg?: (icon: SafetyIconDefinition, name: string) => Promise<void>;
+  /** Set a private user-facing label for any pictogram. */
+  onRenameLibraryLabel?: (icon: SafetyIconDefinition, name: string, scope: "plan" | "all") => Promise<void>;
+  /** Remove the private user-facing label and show the original catalogue label. */
+  onResetLibraryLabel?: (icon: SafetyIconDefinition) => Promise<void>;
 }
 
 const EMPTY_SVG_TEMPLATE = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 170 170">
@@ -84,6 +88,8 @@ export default function IconToolbar({
   onAddSvg,
   onDeleteSvg,
   onRenameSvg,
+  onRenameLibraryLabel,
+  onResetLibraryLabel,
 }: IconToolbarProps) {
   const [search, setSearch] = useState("");
   const [selectedStandard, setSelectedStandard] = useState(DEFAULT_PICTOGRAM_STANDARD);
@@ -97,6 +103,10 @@ export default function IconToolbar({
   const [svgError, setSvgError] = useState("");
   const [deletingIconType, setDeletingIconType] = useState<IconType | null>(null);
   const [renamingIconType, setRenamingIconType] = useState<IconType | null>(null);
+  const [renamingLabelIconType, setRenamingLabelIconType] = useState<IconType | null>(null);
+  const [labelModalIcon, setLabelModalIcon] = useState<SafetyIconDefinition | null>(null);
+  const [labelName, setLabelName] = useState("");
+  const [labelScope, setLabelScope] = useState<"plan" | "all">("plan");
   const [libraryError, setLibraryError] = useState("");
   const svgFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -322,6 +332,54 @@ export default function IconToolbar({
     }
   };
 
+  const handleRenameLibraryLabel = (icon: SafetyIconDefinition) => {
+    if (!onRenameLibraryLabel || renamingLabelIconType || deletingIconType || renamingIconType) return;
+    setLabelModalIcon(icon);
+    setLabelName(icon.label);
+    setLabelScope("plan");
+    setLibraryError("");
+  };
+
+  const closeLabelModal = () => {
+    if (renamingLabelIconType) return;
+    setLabelModalIcon(null);
+    setLibraryError("");
+  };
+
+  const submitLibraryLabel = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!onRenameLibraryLabel || !labelModalIcon || renamingLabelIconType) return;
+    const name = labelName.trim();
+    if (!name) {
+      setLibraryError("Le nom personnalisé ne peut pas être vide.");
+      return;
+    }
+
+    setRenamingLabelIconType(labelModalIcon.type);
+    setLibraryError("");
+    try {
+      await onRenameLibraryLabel(labelModalIcon, name, labelScope);
+      setLabelModalIcon(null);
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : "Le nom personnalisé n’a pas pu être enregistré.");
+    } finally {
+      setRenamingLabelIconType(null);
+    }
+  };
+
+  const handleResetLibraryLabel = async (icon: SafetyIconDefinition) => {
+    if (!onResetLibraryLabel || !icon.customLabel || renamingLabelIconType || deletingIconType || renamingIconType) return;
+    setRenamingLabelIconType(icon.type);
+    setLibraryError("");
+    try {
+      await onResetLibraryLabel(icon);
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : "Le nom personnalisé n’a pas pu être supprimé.");
+    } finally {
+      setRenamingLabelIconType(null);
+    }
+  };
+
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-[#252527]">
       {/* Panel title */}
@@ -519,6 +577,7 @@ export default function IconToolbar({
             const isActive = activeIconType === icon.type;
             const isDeleting = deletingIconType === icon.type;
             const isRenaming = renamingIconType === icon.type;
+            const isRenamingLabel = renamingLabelIconType === icon.type;
             return (
               <div key={icon.type} className="group/item relative min-w-0">
                 <button
@@ -553,6 +612,34 @@ export default function IconToolbar({
                     {icon.label}
                   </span>
                 </button>
+
+                {onRenameLibraryLabel && (
+                  <button
+                    type="button"
+                    onClick={() => void handleRenameLibraryLabel(icon)}
+                    disabled={Boolean(deletingIconType || renamingIconType || renamingLabelIconType)}
+                    title={`Nom personnalisé pour ${icon.originalLabel || icon.label}`}
+                    className="absolute left-1 top-1 flex h-5 w-5 cursor-pointer items-center justify-center rounded bg-[#252527]/95 text-neutral-400 opacity-80 shadow transition hover:bg-emerald-500/20 hover:text-emerald-300 hover:opacity-100 focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {isRenamingLabel ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Pencil className="h-3 w-3" />
+                    )}
+                  </button>
+                )}
+
+                {onResetLibraryLabel && icon.customLabel && (
+                  <button
+                    type="button"
+                    onClick={() => void handleResetLibraryLabel(icon)}
+                    disabled={Boolean(deletingIconType || renamingIconType || renamingLabelIconType)}
+                    title={`Revenir au nom original : ${icon.originalLabel || icon.type}`}
+                    className="absolute left-7 top-1 flex h-5 w-5 cursor-pointer items-center justify-center rounded bg-[#252527]/95 text-neutral-400 opacity-80 shadow transition hover:bg-amber-500/20 hover:text-amber-300 hover:opacity-100 focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
 
                 {onRenameSvg && icon.deletable && (
                   <button
@@ -596,6 +683,118 @@ export default function IconToolbar({
           </p>
         )}
       </div>
+
+      {labelModalIcon && typeof document !== "undefined" && createPortal(
+        <div
+          className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeLabelModal();
+          }}
+        >
+          <form
+            onSubmit={submitLibraryLabel}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pictogram-label-title"
+            className="w-full max-w-md overflow-hidden rounded-lg border border-white/10 bg-[#252527] shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-black/40 px-4 py-3">
+              <div className="min-w-0">
+                <h2 id="pictogram-label-title" className="text-sm font-semibold text-white">
+                  Renommer le pictogramme
+                </h2>
+                <p className="mt-0.5 truncate text-[11px] text-neutral-500">
+                  {labelModalIcon.originalLabel || labelModalIcon.label}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeLabelModal}
+                disabled={Boolean(renamingLabelIconType)}
+                title="Fermer"
+                className="cursor-pointer rounded p-1.5 text-neutral-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="p-4">
+              <fieldset>
+                <legend className="text-[11px] font-semibold text-neutral-200">1. Où appliquer ce nom ?</legend>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setLabelScope("plan")}
+                    aria-pressed={labelScope === "plan"}
+                    className={`flex cursor-pointer items-center gap-2 rounded border px-3 py-2.5 text-left text-xs transition ${
+                      labelScope === "plan"
+                        ? "border-emerald-500 bg-emerald-500/15 text-emerald-200"
+                        : "border-white/10 bg-[#1b1b1d] text-neutral-400 hover:border-white/20 hover:text-neutral-200"
+                    }`}
+                  >
+                    <FolderOpen className="h-4 w-4 shrink-0" />
+                    <span>
+                      <span className="block font-semibold">Projet courant</span>
+                      <span className="mt-0.5 block text-[9px] opacity-70">Choix par défaut</span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLabelScope("all")}
+                    aria-pressed={labelScope === "all"}
+                    className={`flex cursor-pointer items-center gap-2 rounded border px-3 py-2.5 text-left text-xs transition ${
+                      labelScope === "all"
+                        ? "border-emerald-500 bg-emerald-500/15 text-emerald-200"
+                        : "border-white/10 bg-[#1b1b1d] text-neutral-400 hover:border-white/20 hover:text-neutral-200"
+                    }`}
+                  >
+                    <Globe2 className="h-4 w-4 shrink-0" />
+                    <span className="font-semibold">Tous les projets</span>
+                  </button>
+                </div>
+              </fieldset>
+
+              <label className="mt-4 block text-[11px] font-semibold text-neutral-200">
+                2. Nouveau nom
+                <input
+                  autoFocus
+                  type="text"
+                  maxLength={255}
+                  value={labelName}
+                  onChange={(event) => setLabelName(event.target.value)}
+                  className="mt-2 w-full rounded border border-black/50 bg-[#1b1b1d] px-3 py-2 text-xs text-neutral-100 focus:border-emerald-500/60 focus:outline-none"
+                />
+              </label>
+
+              {libraryError && (
+                <p className="mt-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
+                  {libraryError}
+                </p>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-black/40 px-4 py-3">
+              <button
+                type="button"
+                onClick={closeLabelModal}
+                disabled={Boolean(renamingLabelIconType)}
+                className="cursor-pointer rounded border border-white/10 px-3 py-2 text-xs font-medium text-neutral-300 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                disabled={Boolean(renamingLabelIconType) || !labelName.trim()}
+                className="flex cursor-pointer items-center gap-2 rounded bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {renamingLabelIconType && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                Enregistrer
+              </button>
+            </div>
+          </form>
+        </div>,
+        document.body
+      )}
 
       {svgModalOpen && typeof document !== "undefined" && createPortal(
         <div

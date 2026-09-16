@@ -30,6 +30,7 @@ from .models import (
     PlanText,
     SheetTemplateAsset,
     SheetTemplateVersion,
+    UserPictogramLabel,
     accessible_library_owner_ids,
 )
 from .pictogram_security import validate_and_sanitize_pictogram_svg
@@ -519,12 +520,27 @@ def project_pictograms(plan, request=None):
     from .media_access import build_protected_media_url
 
     result = []
+    labels = {}
+    if request is not None and getattr(request, 'user', None) and request.user.is_authenticated:
+        labels = {
+            item.icon_type: (item.label, 'all')
+            for item in UserPictogramLabel.objects.filter(user=request.user, plan__isnull=True)
+        }
+        labels.update({
+            item.icon_type: (item.label, 'plan')
+            for item in UserPictogramLabel.objects.filter(user=request.user, plan=plan)
+        })
     resources = plan.project_resources.filter(role='pictogram').select_related('asset')
     for resource in resources:
         metadata = resource.metadata if isinstance(resource.metadata, dict) else {}
+        original_label = metadata.get('label') or resource.key
+        custom_label, custom_label_scope = labels.get(resource.key, ('', None))
         result.append({
             'type': resource.key,
-            'label': metadata.get('label') or resource.key,
+            'label': custom_label or original_label,
+            'original_label': original_label,
+            'custom_label': custom_label,
+            'custom_label_scope': custom_label_scope,
             'file_name': resource.asset.file.name,
             'url': build_protected_media_url(request, resource.asset.file.name),
             'standard': metadata.get('standard') or 'project',
